@@ -148,7 +148,9 @@ impl PrimitiveKind {
 
     pub fn is_clock_pin(self, pin: &str) -> bool {
         self.is_sequential()
-            && (trimmed_eq_ignore_ascii_case(pin, "CK") || trimmed_eq_ignore_ascii_case(pin, "CLK"))
+            && (trimmed_eq_ignore_ascii_case(pin, "C")
+                || trimmed_eq_ignore_ascii_case(pin, "CK")
+                || trimmed_eq_ignore_ascii_case(pin, "CLK"))
     }
 
     pub fn is_clock_enable_pin(self, pin: &str) -> bool {
@@ -192,6 +194,7 @@ mod tests {
         let ff = PrimitiveKind::classify("logic_ff", "DFF");
         assert!(ff.is_sequential());
         assert!(ff.is_register_output_pin("Q"));
+        assert!(ff.is_clock_pin("C"));
         assert!(ff.is_clock_pin("clk"));
         assert!(ff.is_register_data_pin("D"));
 

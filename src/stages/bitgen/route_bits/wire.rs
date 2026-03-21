@@ -49,7 +49,11 @@ pub(crate) fn tile_distance(x0: usize, y0: usize, x1: usize, y1: usize) -> usize
 }
 
 pub(crate) fn step_cost(raw: &str, programmable: bool) -> usize {
-    let base = if raw.contains("LLH") || raw.contains("LLV") || raw.starts_with("LH") || raw.starts_with("LV") {
+    let base = if raw.contains("LLH")
+        || raw.contains("LLV")
+        || raw.starts_with("LH")
+        || raw.starts_with("LV")
+    {
         1
     } else if raw.contains("H6") || raw.contains("V6") {
         2

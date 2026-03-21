@@ -75,8 +75,10 @@ pub fn build_config_image(
             continue;
         };
 
-        let requests =
-            merge_site_requests(site_def, derive_site_requests(&site, device, &index, site_def));
+        let requests = merge_site_requests(
+            site_def,
+            derive_site_requests(&site, device, &index, site_def),
+        );
         for request in requests {
             match resolve_site_config(site_def, &request.cfg_name, &request.function_name) {
                 ConfigResolution::Matched(bits) => {

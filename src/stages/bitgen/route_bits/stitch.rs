@@ -80,10 +80,9 @@ pub(crate) fn load_tile_stitch_db(path: &Path, wires: &mut WireInterner) -> Resu
                 };
                 let wire = wires.intern(net_name);
                 let mut refs = SmallVec::<[TilePortRef; 2]>::new();
-                for port_ref in net
-                    .children()
-                    .filter(|node| node.has_tag_name("portRef") && node.attribute("instanceRef").is_none())
-                {
+                for port_ref in net.children().filter(|node| {
+                    node.has_tag_name("portRef") && node.attribute("instanceRef").is_none()
+                }) {
                     let Some(port_name) = port_ref.attribute("name") else {
                         continue;
                     };
@@ -99,7 +98,10 @@ pub(crate) fn load_tile_stitch_db(path: &Path, wires: &mut WireInterner) -> Resu
                 }
                 tile.net_ports.insert(wire, refs.clone());
                 for port in refs {
-                    tile.port_nets.entry((port.side, port.index)).or_default().push(wire);
+                    tile.port_nets
+                        .entry((port.side, port.index))
+                        .or_default()
+                        .push(wire);
                 }
             }
             db.tiles.insert(tile_type.to_string(), tile);
@@ -225,8 +227,14 @@ fn parse_tile_port_def(node: roxmltree::Node<'_, '_>) -> Option<TilePortDef> {
         "bottom" => TileSide::Bottom,
         _ => return None,
     };
-    let lsb = node.attribute("lsb").and_then(|value| value.parse().ok()).unwrap_or(0);
-    let msb = node.attribute("msb").and_then(|value| value.parse().ok()).unwrap_or(lsb);
+    let lsb = node
+        .attribute("lsb")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let msb = node
+        .attribute("msb")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(lsb);
     Some(TilePortDef {
         name,
         side,
@@ -257,11 +265,7 @@ fn port_index(name: &str, port: &TilePortDef) -> Option<usize> {
     (port.lsb..=port.msb).contains(&index).then_some(index)
 }
 
-fn neighbor_for_port(
-    x: usize,
-    y: usize,
-    port: TilePortRef,
-) -> Option<(usize, usize, TileSide)> {
+fn neighbor_for_port(x: usize, y: usize, port: TilePortRef) -> Option<(usize, usize, TileSide)> {
     match port.side {
         TileSide::Left => y.checked_sub(1).map(|next_y| (x, next_y, TileSide::Right)),
         TileSide::Right => y.checked_add(1).map(|next_y| (x, next_y, TileSide::Left)),
@@ -410,25 +414,43 @@ mod tests {
         let mut wires = WireInterner::default();
         let db = load_tile_stitch_db(&arch_path, &mut wires).expect("load stitch db");
 
-        let right_llh = stitched_neighbors(&db, &arch, &RouteNode::new(4, 53, wires.intern("RIGHT_LLH3")));
-        assert!(right_llh
-            .iter()
-            .any(|&(x, y, wire)| x == 4 && y == 52 && wires.resolve(wire) == "LLH4"));
+        let right_llh = stitched_neighbors(
+            &db,
+            &arch,
+            &RouteNode::new(4, 53, wires.intern("RIGHT_LLH3")),
+        );
+        assert!(
+            right_llh
+                .iter()
+                .any(|&(x, y, wire)| x == 4 && y == 52 && wires.resolve(wire) == "LLH4")
+        );
 
-        let right_h6 = stitched_neighbors(&db, &arch, &RouteNode::new(4, 53, wires.intern("RIGHT_H6W10")));
-        assert!(right_h6
-            .iter()
-            .any(|&(x, y, wire)| x == 4 && y == 52 && wires.resolve(wire) == "H6D10"));
+        let right_h6 = stitched_neighbors(
+            &db,
+            &arch,
+            &RouteNode::new(4, 53, wires.intern("RIGHT_H6W10")),
+        );
+        assert!(
+            right_h6
+                .iter()
+                .any(|&(x, y, wire)| x == 4 && y == 52 && wires.resolve(wire) == "H6D10")
+        );
 
-        let left_short = stitched_neighbors(&db, &arch, &RouteNode::new(5, 1, wires.intern("LEFT_E13")));
-        assert!(left_short
-            .iter()
-            .any(|&(x, y, wire)| x == 5 && y == 2 && wires.resolve(wire) == "W13"));
+        let left_short =
+            stitched_neighbors(&db, &arch, &RouteNode::new(5, 1, wires.intern("LEFT_E13")));
+        assert!(
+            left_short
+                .iter()
+                .any(|&(x, y, wire)| x == 5 && y == 2 && wires.resolve(wire) == "W13")
+        );
 
-        let left_h6 = stitched_neighbors(&db, &arch, &RouteNode::new(5, 1, wires.intern("LEFT_H6E3")));
-        assert!(left_h6
-            .iter()
-            .any(|&(x, y, wire)| x == 5 && y == 2 && wires.resolve(wire) == "H6A3"));
+        let left_h6 =
+            stitched_neighbors(&db, &arch, &RouteNode::new(5, 1, wires.intern("LEFT_H6E3")));
+        assert!(
+            left_h6
+                .iter()
+                .any(|&(x, y, wire)| x == 5 && y == 2 && wires.resolve(wire) == "H6A3")
+        );
     }
 
     #[test]

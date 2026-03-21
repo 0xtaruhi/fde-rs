@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::super::device::{DeviceCell, DeviceCellId, DeviceDesign, DeviceDesignIndex, DeviceEndpoint};
+use super::super::device::{
+    DeviceCell, DeviceCellId, DeviceDesign, DeviceDesignIndex, DeviceEndpoint,
+};
 use super::{
     literal::{address_count, parse_bit_literal},
     lookup::{bel_slot, cell_property},
@@ -114,7 +116,10 @@ fn normalized_lut_function_name(
     let logical_bits = parse_bit_literal(init, logical_table_bits)?;
 
     let expanded_bits = if site_table_bits <= logical_bits.len() {
-        logical_bits.into_iter().take(site_table_bits).collect::<Vec<_>>()
+        logical_bits
+            .into_iter()
+            .take(site_table_bits)
+            .collect::<Vec<_>>()
     } else {
         (0..site_table_bits)
             .map(|index| logical_bits[index % logical_bits.len()])
@@ -135,7 +140,9 @@ fn site_truth_table_bits(site_def: &SiteDef, cfg_name: &str) -> Option<usize> {
 
 fn logical_truth_table_bits(primitive: PrimitiveKind) -> Option<usize> {
     let inputs = match primitive {
-        PrimitiveKind::Lut { inputs: Some(inputs) } => inputs,
+        PrimitiveKind::Lut {
+            inputs: Some(inputs),
+        } => inputs,
         PrimitiveKind::Lut { inputs: None } => return None,
         PrimitiveKind::FlipFlop
         | PrimitiveKind::Latch
@@ -154,11 +161,7 @@ fn format_truth_table_literal(bits: &[u8]) -> String {
     let mut digits = String::with_capacity(digit_count);
     for digit_index in (0..digit_count).rev() {
         let nibble = (0..4).fold(0u8, |value, bit_index| {
-            let bit = bits
-                .get(digit_index * 4 + bit_index)
-                .copied()
-                .unwrap_or(0)
-                & 1;
+            let bit = bits.get(digit_index * 4 + bit_index).copied().unwrap_or(0) & 1;
             value | (bit << bit_index)
         });
         digits.push(match nibble {

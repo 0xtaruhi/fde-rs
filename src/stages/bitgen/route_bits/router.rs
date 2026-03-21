@@ -852,11 +852,11 @@ mod tests {
 
     use crate::domain::NetOrigin;
 
+    use super::super::{lookup::TileRouteContext, types::SiteRouteArc};
     use super::{
         OrderedGuide, RouteNode, RouteSinkOwner, WireInterner, route_sink_is_available,
         should_skip_local_arc, sink_entry_penalty,
     };
-    use super::super::{lookup::TileRouteContext, types::SiteRouteArc};
 
     #[test]
     fn ordered_guide_allows_long_span_progress_along_straight_runs() {
