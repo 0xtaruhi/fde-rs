@@ -9,6 +9,7 @@ pub(crate) struct RouteMetrics {
     pub(crate) history_edges: usize,
     pub(crate) total_length: usize,
     pub(crate) overflow_nets: usize,
+    pub(crate) timing_cost: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,10 +37,10 @@ pub(crate) fn search_profile(mode: RouteMode, criticality: f64, iteration: usize
         RouteMode::TimingDriven => {
             let criticality = criticality.clamp(0.0, 1.0);
             SearchProfile {
-                present_factor: 0.2 + 2.8 * (1.0 - criticality) + iteration as f64 * 0.12,
-                history_factor: 0.35 + 1.2 * (1.0 - criticality) + iteration as f64 * 0.08,
-                heuristic_factor: 1.2 + 0.45 * criticality,
-                bend_penalty: (0.10 - 0.07 * criticality).max(0.01),
+                present_factor: 0.35 + 2.5 * (1.0 - criticality) + iteration as f64 * 0.14,
+                history_factor: 0.45 + 1.1 * (1.0 - criticality) + iteration as f64 * 0.08,
+                heuristic_factor: 1.1 + 0.55 * criticality,
+                bend_penalty: 0.04 + 0.08 * criticality,
             }
         }
     }

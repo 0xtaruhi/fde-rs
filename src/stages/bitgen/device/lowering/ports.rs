@@ -1,31 +1,37 @@
 use super::{DeviceCell, DeviceLowering, DevicePort, PadSiteKind, ResolvedPortSite};
 use crate::{
-    domain::{PinRole, PrimitiveKind},
-    ir::{Design, Port},
+    domain::{PinRole, PrimitiveKind, SiteKind},
+    ir::{Design, DesignIndex, Port, PortId},
 };
 
 impl<'a> DeviceLowering<'a> {
     pub(super) fn materialize_ports(&mut self) {
         for port in &self.design.ports {
+            let Some(port_id) = self.index.port_id(&port.name) else {
+                continue;
+            };
             let Some(binding) = self.resolve_port_site(port) else {
                 continue;
             };
-            self.device.ports.push(DevicePort {
-                port_name: port.name.clone(),
-                direction: port.direction.clone(),
-                pin_name: binding.pin_name.clone(),
-                site_kind: binding.site_kind.clone(),
-                site_name: binding.site_name.clone(),
-                tile_name: binding.tile_name.clone(),
-                tile_type: binding.tile_type.clone(),
-                x: binding.x,
-                y: binding.y,
-                z: binding.z,
-            });
+            self.push_device_port(
+                port_id,
+                DevicePort::new(
+                    port.name.clone(),
+                    port.direction.clone(),
+                    binding.pin_name.clone(),
+                )
+                .sited(
+                    binding.site_kind,
+                    binding.site_name.clone(),
+                    binding.tile_name.clone(),
+                    binding.tile_type.clone(),
+                    (binding.x, binding.y, binding.z),
+                ),
+            );
             if port.direction.is_input_like() {
-                self.materialize_input_buffer(port, &binding);
+                self.materialize_input_buffer(port_id, port, &binding);
             } else if port.direction.is_output_like() {
-                self.materialize_output_buffer(port, &binding);
+                self.materialize_output_buffer(port_id, port, &binding);
             }
         }
     }
@@ -39,14 +45,14 @@ impl<'a> DeviceLowering<'a> {
         let z = pad.map(|pad| pad.z).unwrap_or(0);
         let tile_name = pad.map(|pad| pad.tile_name.clone()).unwrap_or_default();
         let tile_type = pad.map(|pad| pad.tile_type.clone()).unwrap_or_default();
-        let site_kind = pad_kind.as_str().to_string();
+        let site_kind = pad_kind.site_kind();
         let site_name = pad
             .and_then(|pad| {
                 self.cil.and_then(|cil| {
-                    cil.site_name_for_slot(&pad.tile_type, pad.site_kind.as_str(), pad.z)
+                    cil.site_name_for_kind(&pad.tile_type, pad.site_kind.site_kind(), pad.z)
                 })
             })
-            .unwrap_or(&site_kind)
+            .unwrap_or(site_kind.as_str())
             .to_string();
         Some(ResolvedPortSite {
             pin_name,
@@ -61,83 +67,83 @@ impl<'a> DeviceLowering<'a> {
         })
     }
 
-    fn materialize_input_buffer(&mut self, port: &Port, binding: &ResolvedPortSite) {
+    fn materialize_input_buffer(
+        &mut self,
+        port_id: PortId,
+        port: &Port,
+        binding: &ResolvedPortSite,
+    ) {
         let io_name = format!("$iob${}", port.name);
-        let io_type = match binding.pad_kind {
-            PadSiteKind::Iob => "IOB",
-            PadSiteKind::GclkIob => "GCLKIOB",
-        };
-        self.device.cells.push(DeviceCell {
-            cell_name: io_name.clone(),
-            type_name: io_type.to_string(),
-            properties: Vec::new(),
-            site_kind: binding.site_kind.clone(),
-            site_name: binding.site_name.clone(),
-            bel: "PAD".to_string(),
-            tile_name: binding.tile_name.clone(),
-            tile_type: binding.tile_type.clone(),
-            x: binding.x,
-            y: binding.y,
-            z: binding.z,
-            cluster_name: None,
-            synthetic: true,
-        });
-        self.port_to_io.insert(port.name.clone(), io_name.clone());
+        let io_type = binding.pad_kind.io_type_name();
+        self.bind_io_cell(
+            port_id,
+            DeviceCell::new(io_name.clone(), io_type)
+                .placed(
+                    binding.site_kind,
+                    binding.site_name.clone(),
+                    "PAD",
+                    binding.tile_name.clone(),
+                    binding.tile_type.clone(),
+                    (binding.x, binding.y, binding.z),
+                )
+                .synthetic(),
+        );
 
-        if !is_clock_port(self.design, &port.name) || binding.pad_kind != PadSiteKind::GclkIob {
+        if !is_clock_port(self.design, &self.index, port_id)
+            || binding.pad_kind != PadSiteKind::GclkIob
+        {
             return;
         }
 
         let gclk_name = format!("$gclk${}", port.name);
         let gclk_site_name = self
             .cil
-            .and_then(|cil| cil.site_name_for_slot(&binding.tile_type, "GCLK", binding.z))
+            .and_then(|cil| cil.site_name_for_kind(&binding.tile_type, SiteKind::Gclk, binding.z))
             .unwrap_or("GCLK")
             .to_string();
-        self.device.cells.push(DeviceCell {
-            cell_name: gclk_name.clone(),
-            type_name: "GCLK".to_string(),
-            properties: Vec::new(),
-            site_kind: "GCLK".to_string(),
-            site_name: gclk_site_name,
-            bel: "BUF".to_string(),
-            tile_name: binding.tile_name.clone(),
-            tile_type: binding.tile_type.clone(),
-            x: binding.x,
-            y: binding.y,
-            z: binding.z,
-            cluster_name: None,
-            synthetic: true,
-        });
-        self.port_to_gclk.insert(port.name.clone(), gclk_name);
+        self.bind_gclk_cell(
+            port_id,
+            DeviceCell::new(gclk_name.clone(), "GCLK")
+                .placed(
+                    SiteKind::Gclk,
+                    gclk_site_name,
+                    "BUF",
+                    binding.tile_name.clone(),
+                    binding.tile_type.clone(),
+                    (binding.x, binding.y, binding.z),
+                )
+                .synthetic(),
+        );
     }
 
-    fn materialize_output_buffer(&mut self, port: &Port, binding: &ResolvedPortSite) {
+    fn materialize_output_buffer(
+        &mut self,
+        port_id: PortId,
+        port: &Port,
+        binding: &ResolvedPortSite,
+    ) {
         let io_name = format!("$iob${}", port.name);
-        self.device.cells.push(DeviceCell {
-            cell_name: io_name.clone(),
-            type_name: "IOB".to_string(),
-            properties: Vec::new(),
-            site_kind: binding.site_kind.clone(),
-            site_name: binding.site_name.clone(),
-            bel: "PAD".to_string(),
-            tile_name: binding.tile_name.clone(),
-            tile_type: binding.tile_type.clone(),
-            x: binding.x,
-            y: binding.y,
-            z: binding.z,
-            cluster_name: None,
-            synthetic: true,
-        });
-        self.port_to_io.insert(port.name.clone(), io_name);
+        self.bind_io_cell(
+            port_id,
+            DeviceCell::new(io_name.clone(), "IOB")
+                .placed(
+                    binding.site_kind,
+                    binding.site_name.clone(),
+                    "PAD",
+                    binding.tile_name.clone(),
+                    binding.tile_type.clone(),
+                    (binding.x, binding.y, binding.z),
+                )
+                .synthetic(),
+        );
     }
 }
 
-fn is_clock_port(design: &Design, port_name: &str) -> bool {
+fn is_clock_port(design: &Design, index: &DesignIndex<'_>, port_id: PortId) -> bool {
     design.nets.iter().any(|net| {
         net.driver
             .as_ref()
-            .is_some_and(|driver| driver.is_port() && driver.name == port_name)
+            .is_some_and(|driver| index.port_for_endpoint(driver) == Some(port_id))
             && net.sinks.iter().any(|sink| {
                 PinRole::classify_for_primitive(PrimitiveKind::FlipFlop, &sink.pin)
                     == PinRole::RegisterClock

@@ -1,23 +1,27 @@
+use std::collections::BTreeMap;
+
+use super::super::device::{DeviceCell, DeviceCellId, DeviceDesign, DeviceDesignIndex, DeviceEndpoint};
+use super::{
+    literal::{address_count, parse_bit_literal},
+    lookup::{bel_slot, cell_property},
+    resolve::resolve_site_config,
+    types::{RequestedConfig, SiteInstance},
+};
 use crate::{
     cil::SiteDef,
-    config_image::{
-        literal::{address_count, lut_hex_to_equation, parse_bit_literal},
-        lookup::{bel_slot, cell_property, is_ff_type, is_lut_type},
-        types::{RequestedConfig, SiteInstance},
-    },
-    device::DeviceDesign,
+    domain::{PrimitiveKind, SiteKind},
 };
-use std::collections::BTreeMap;
 
 pub(crate) fn derive_site_requests(
     site: &SiteInstance,
     device: &DeviceDesign,
+    index: &DeviceDesignIndex<'_>,
     site_def: &SiteDef,
 ) -> Vec<RequestedConfig> {
-    match site.site_kind.as_str() {
-        "SLICE" => derive_slice_requests(site, site_def),
-        "IOB" => derive_iob_requests(site, device),
-        "GCLK" => vec![
+    match site.site_kind {
+        SiteKind::LogicSlice => derive_slice_requests(site, site_def),
+        SiteKind::Iob => derive_iob_requests(site, device, index),
+        SiteKind::Gclk => vec![
             RequestedConfig {
                 cfg_name: "CEMUX".to_string(),
                 function_name: "1".to_string(),
@@ -27,35 +31,35 @@ pub(crate) fn derive_site_requests(
                 function_name: "LOW".to_string(),
             },
         ],
-        "GCLKIOB" => vec![RequestedConfig {
+        SiteKind::GclkIob => vec![RequestedConfig {
             cfg_name: "IOATTRBOX".to_string(),
             function_name: "LVTTL".to_string(),
         }],
-        _ => Vec::new(),
+        SiteKind::Const | SiteKind::Unplaced | SiteKind::Unknown => Vec::new(),
     }
 }
 
 fn derive_slice_requests(site: &SiteInstance, site_def: &SiteDef) -> Vec<RequestedConfig> {
     let mut requests = Vec::new();
-    let mut has_ff = false;
+    let mut ff_slots = [false; 2];
 
     for cell in &site.cells {
-        let slot = bel_slot(&cell.bel).unwrap_or(site.z.min(1));
-        let lut_cfg_name = if slot == 0 { "F" } else { "G" };
-        if is_lut_type(&cell.type_name)
-            && let Some(init) = canonical_lut_function(site_def, lut_cfg_name, cell)
+        let slot = bel_slot(&cell.bel).unwrap_or(site.z.min(1)).min(1);
+        let primitive = cell.primitive_kind();
+        if primitive.is_lut()
+            && let Some(function_name) = normalized_lut_function_name(cell, site_def, slot)
         {
             requests.push(RequestedConfig {
-                cfg_name: lut_cfg_name.to_string(),
-                function_name: init,
+                cfg_name: if slot == 0 { "F" } else { "G" }.to_string(),
+                function_name,
             });
             requests.push(RequestedConfig {
                 cfg_name: if slot == 0 { "FXMUX" } else { "GYMUX" }.to_string(),
                 function_name: if slot == 0 { "F" } else { "G" }.to_string(),
             });
         }
-        if is_ff_type(&cell.type_name) {
-            has_ff = true;
+        if primitive.is_sequential() {
+            ff_slots[slot] = true;
             requests.push(RequestedConfig {
                 cfg_name: if slot == 0 { "FFX" } else { "FFY" }.to_string(),
                 function_name: "#FF".to_string(),
@@ -75,18 +79,111 @@ fn derive_slice_requests(site: &SiteInstance, site_def: &SiteDef) -> Vec<Request
         }
     }
 
-    if has_ff {
+    if ff_slots.iter().any(|present| *present) {
         requests.push(RequestedConfig {
             cfg_name: "CKINV".to_string(),
             function_name: "1".to_string(),
+        });
+        requests.push(RequestedConfig {
+            cfg_name: "SYNC_ATTR".to_string(),
+            function_name: "ASYNC".to_string(),
+        });
+    } else if !site.cells.is_empty() {
+        requests.push(RequestedConfig {
+            cfg_name: "XUSED".to_string(),
+            function_name: "0".to_string(),
+        });
+        requests.push(RequestedConfig {
+            cfg_name: "YUSED".to_string(),
+            function_name: "0".to_string(),
         });
     }
 
     dedup_requests(requests)
 }
 
-fn derive_iob_requests(site: &SiteInstance, device: &DeviceDesign) -> Vec<RequestedConfig> {
+fn normalized_lut_function_name(
+    cell: &DeviceCell,
+    site_def: &SiteDef,
+    slot: usize,
+) -> Option<String> {
+    let init = cell_property(cell, "lut_init")?;
+    let cfg_name = if slot == 0 { "F" } else { "G" };
+    let site_table_bits = site_truth_table_bits(site_def, cfg_name)?;
+    let logical_table_bits = logical_truth_table_bits(cell.primitive_kind())?;
+    let logical_bits = parse_bit_literal(init, logical_table_bits)?;
+
+    let expanded_bits = if site_table_bits <= logical_bits.len() {
+        logical_bits.into_iter().take(site_table_bits).collect::<Vec<_>>()
+    } else {
+        (0..site_table_bits)
+            .map(|index| logical_bits[index % logical_bits.len()])
+            .collect::<Vec<_>>()
+    };
+
+    Some(format_truth_table_literal(&expanded_bits))
+}
+
+fn site_truth_table_bits(site_def: &SiteDef, cfg_name: &str) -> Option<usize> {
+    site_def
+        .config_element(cfg_name)?
+        .functions
+        .iter()
+        .filter_map(address_count)
+        .max()
+}
+
+fn logical_truth_table_bits(primitive: PrimitiveKind) -> Option<usize> {
+    let inputs = match primitive {
+        PrimitiveKind::Lut { inputs: Some(inputs) } => inputs,
+        PrimitiveKind::Lut { inputs: None } => return None,
+        PrimitiveKind::FlipFlop
+        | PrimitiveKind::Latch
+        | PrimitiveKind::Constant(_)
+        | PrimitiveKind::Buffer
+        | PrimitiveKind::Io
+        | PrimitiveKind::GlobalClockBuffer
+        | PrimitiveKind::Generic
+        | PrimitiveKind::Unknown => return None,
+    };
+    1usize.checked_shl(inputs as u32)
+}
+
+fn format_truth_table_literal(bits: &[u8]) -> String {
+    let digit_count = bits.len().max(1).div_ceil(4);
+    let mut digits = String::with_capacity(digit_count);
+    for digit_index in (0..digit_count).rev() {
+        let nibble = (0..4).fold(0u8, |value, bit_index| {
+            let bit = bits
+                .get(digit_index * 4 + bit_index)
+                .copied()
+                .unwrap_or(0)
+                & 1;
+            value | (bit << bit_index)
+        });
+        digits.push(match nibble {
+            0..=9 => char::from(b'0' + nibble),
+            10..=15 => char::from(b'A' + (nibble - 10)),
+            _ => return "0x0".to_string(),
+        });
+    }
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        "0x0".to_string()
+    } else {
+        format!("0x{digits}")
+    }
+}
+
+fn derive_iob_requests(
+    site: &SiteInstance,
+    device: &DeviceDesign,
+    index: &DeviceDesignIndex<'_>,
+) -> Vec<RequestedConfig> {
     let Some(cell) = site.cells.first() else {
+        return Vec::new();
+    };
+    let Some(cell_id) = index.cell_id(&cell.cell_name) else {
         return Vec::new();
     };
     let mut requests = vec![RequestedConfig {
@@ -94,14 +191,14 @@ fn derive_iob_requests(site: &SiteInstance, device: &DeviceDesign) -> Vec<Reques
         function_name: "LVTTL".to_string(),
     }];
     let input_used = device.nets.iter().any(|net| {
-        net.driver.as_ref().is_some_and(|driver| {
-            driver.kind == "cell" && driver.name == cell.cell_name && driver.pin == "IN"
-        })
+        net.driver
+            .as_ref()
+            .is_some_and(|driver| endpoint_matches_cell_pin(index, driver, cell_id, "IN"))
     });
     let output_used = device.nets.iter().any(|net| {
         net.sinks
             .iter()
-            .any(|sink| sink.kind == "cell" && sink.name == cell.cell_name && sink.pin == "OUT")
+            .any(|sink| endpoint_matches_cell_pin(index, sink, cell_id, "OUT"))
     });
     if input_used {
         requests.push(RequestedConfig {
@@ -130,65 +227,41 @@ fn derive_iob_requests(site: &SiteInstance, device: &DeviceDesign) -> Vec<Reques
     dedup_requests(requests)
 }
 
+fn endpoint_matches_cell_pin(
+    index: &DeviceDesignIndex<'_>,
+    endpoint: &DeviceEndpoint,
+    cell_id: DeviceCellId,
+    pin_name: &str,
+) -> bool {
+    index
+        .cell_for_endpoint(endpoint)
+        .is_some_and(|endpoint_cell_id| endpoint_cell_id == cell_id)
+        && endpoint.pin == pin_name
+}
+
 fn dedup_requests(requests: Vec<RequestedConfig>) -> Vec<RequestedConfig> {
     let mut deduped = BTreeMap::new();
-    for request in requests {
-        deduped.insert(request.cfg_name.clone(), request);
+    for (index, request) in requests.into_iter().enumerate() {
+        deduped.insert(request.cfg_name.clone(), (index, request));
     }
-    deduped.into_values().collect()
+    let mut ordered = deduped.into_values().collect::<Vec<_>>();
+    ordered.sort_by_key(|(index, _)| *index);
+    ordered.into_iter().map(|(_, request)| request).collect()
 }
 
-fn canonical_lut_function(
+pub(crate) fn merge_site_requests(
     site_def: &SiteDef,
-    cfg_name: &str,
-    cell: &crate::device::DeviceCell,
-) -> Option<String> {
-    let raw = cell_property(cell, "lut_init")?;
-    let cfg = site_def.config_element(cfg_name);
-    if cfg
-        .and_then(|cfg| cfg.computation_function("equation"))
-        .is_some()
-    {
-        if raw.trim_start().starts_with("#LUT:") {
-            return Some(raw.to_string());
-        }
-        let source_width = infer_lut_width(&cell.type_name);
-        let expr = lut_hex_to_equation(raw, source_width)?;
-        return Some(format!("#LUT:D={expr}"));
-    }
-
-    let source_width = infer_lut_width(&cell.type_name);
-    let source_bits = 1usize.checked_shl(source_width.min(7) as u32)?;
-    let target_bits = cfg
-        .and_then(|cfg| {
-            cfg.computation_function("srambit")
-                .or_else(|| cfg.computation_function("equation"))
-        })
-        .and_then(address_count)
-        .unwrap_or(source_bits);
-    if target_bits <= source_bits {
-        return Some(raw.to_string());
-    }
-    let bits = parse_bit_literal(raw, source_bits)?;
-    let expanded = (0..target_bits)
-        .map(|index| bits[index % source_bits])
-        .collect::<Vec<_>>();
-    Some(bits_to_hex_literal(&expanded))
-}
-
-fn infer_lut_width(type_name: &str) -> usize {
-    type_name
-        .chars()
-        .skip_while(|ch| !ch.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or(2)
-        .max(1)
-}
-
-fn bits_to_hex_literal(bits: &[u8]) -> String {
-    let value = bits.iter().enumerate().fold(0u128, |acc, (index, bit)| {
-        acc | (u128::from(*bit != 0) << index)
-    });
-    format!("0x{value:X}")
+    explicit: Vec<RequestedConfig>,
+) -> Vec<RequestedConfig> {
+    dedup_requests(
+        explicit
+            .into_iter()
+            .filter(|request| {
+                matches!(
+                    resolve_site_config(site_def, &request.cfg_name, &request.function_name),
+                    super::ConfigResolution::Matched(_)
+                )
+            })
+            .collect(),
+    )
 }

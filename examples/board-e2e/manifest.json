@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "name": "invert",
+      "edf": "invert/invert.edf",
+      "constraints": "invert/constraints.xml",
+      "expected_outputs": ["0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd"]
+    },
+    {
+      "name": "loopback",
+      "edf": "loopback/loopback.edf",
+      "constraints": "loopback/constraints.xml",
+      "expected_outputs": ["0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf"]
+    },
+    {
+      "name": "logic-mesh",
+      "edf": "logic-mesh/logic_mesh.edf",
+      "constraints": "logic-mesh/constraints.xml",
+      "expected_outputs": ["0x8", "0xc", "0xd", "0xc", "0x8", "0xb", "0x8", "0xc", "0xd", "0xc", "0xc", "0xd", "0xc", "0x8"]
+    },
+    {
+      "name": "ff-data-check",
+      "edf": "ff-data-check/ff_data_check.edf",
+      "constraints": "ff-data-check/constraints.xml",
+      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd"]
+    },
+    {
+      "name": "ff-shift2-check",
+      "edf": "ff-shift2-check/ff_shift2_check.edf",
+      "constraints": "ff-shift2-check/constraints.xml",
+      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xe", "0xe", "0xe", "0xd", "0xd", "0xd", "0xf", "0xf", "0xf"]
+    },
+    {
+      "name": "ff-clock-check",
+      "edf": "ff-clock-check/ff_clock_check.edf",
+      "constraints": "ff-clock-check/constraints.xml",
+      "expected_outputs": ["0xe", "0xe", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf"]
+    },
+    {
+      "name": "ff-fanout4-check",
+      "edf": "ff-fanout4-check/ff_fanout4_check.edf",
+      "constraints": "ff-fanout4-check/constraints.xml",
+      "expected_outputs": ["0x0", "0x0", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf"]
+    },
+    {
+      "name": "ff-shift2-split-check",
+      "edf": "ff-shift2-split-check/ff_shift2_split_check.edf",
+      "constraints": "ff-shift2-split-check/constraints.xml",
+      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xe", "0xe", "0xe", "0xd", "0xd", "0xd", "0xf", "0xf", "0xf"]
+    },
+    {
+      "name": "ff-slot1-check",
+      "edf": "ff-slot1-check/ff_slot1_check.edf",
+      "constraints": "ff-slot1-check/constraints.xml",
+      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd"]
+    },
+    {
+      "name": "shift2-noq0-out",
+      "edf": "shift2-noq0-out/shift2_noq0_out.edf",
+      "constraints": "shift2-noq0-out/constraints.xml",
+      "expected_outputs": ["0xc", "0xc", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd"]
+    }
+  ]
+}

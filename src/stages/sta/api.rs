@@ -1,7 +1,7 @@
 use crate::{
     ir::{Design, TimingGraph},
     report::{StageOutput, StageReport},
-    resource::{Arch, DelayModel},
+    resource::{SharedArch, SharedDelayModel},
 };
 
 use super::{
@@ -13,8 +13,8 @@ use super::{
 
 #[derive(Debug, Clone, Default)]
 pub struct StaOptions {
-    pub arch: Option<Arch>,
-    pub delay: Option<DelayModel>,
+    pub arch: Option<SharedArch>,
+    pub delay: Option<SharedDelayModel>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,19 +26,22 @@ pub struct StaArtifact {
 
 pub fn run(mut design: Design, options: &StaOptions) -> Result<StageOutput<StaArtifact>, StaError> {
     design.stage = "timed".to_string();
-    let arrivals = compute_arrivals(&design, options.arch.as_ref(), options.delay.as_ref())?;
+    let index = design.index();
+    let arrivals = compute_arrivals(&design, options.arch.as_deref(), options.delay.as_deref())?;
     let summary = timing_summary(
         &design,
+        &index,
         &arrivals,
-        options.arch.as_ref(),
-        options.delay.as_ref(),
+        options.arch.as_deref(),
+        options.delay.as_deref(),
     )?;
     let graph = build_timing_graph(
         &design,
+        &index,
         &arrivals,
         &summary,
-        options.arch.as_ref(),
-        options.delay.as_ref(),
+        options.arch.as_deref(),
+        options.delay.as_deref(),
     );
     let report_text = format_timing_report(&design, &summary);
     design.timing = Some(summary.clone());

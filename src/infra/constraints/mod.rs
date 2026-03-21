@@ -2,7 +2,9 @@ use crate::{ir::Design, resource::Arch};
 use anyhow::{Context, Result, bail};
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Arc};
+
+pub type SharedConstraints = Arc<[ConstraintEntry]>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConstraintEntry {

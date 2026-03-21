@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="ff_shift2_check">
+  <port name="clk" position="P150"/>
+  <port name="din" position="P152"/>
+  <port name="q0" position="P7"/>
+  <port name="q1" position="P6"/>
+</design>

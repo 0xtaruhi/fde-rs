@@ -1,49 +1,17 @@
-#[path = "stages/analysis/mod.rs"]
-pub(crate) mod analysis;
-#[path = "stages/bitgen/mod.rs"]
-pub mod bitgen;
-#[path = "infra/cil/mod.rs"]
-pub mod cil;
-#[path = "app/cli/mod.rs"]
-pub mod cli;
-#[path = "stages/bitgen/config_image/mod.rs"]
+mod app;
 pub mod config_image;
-#[path = "infra/constraints/mod.rs"]
-pub mod constraints;
-#[path = "stages/bitgen/device/mod.rs"]
+mod core;
 pub mod device;
-#[path = "core/domain/mod.rs"]
-pub mod domain;
-#[path = "infra/edif/mod.rs"]
-pub mod edif;
-#[path = "stages/bitgen/frame_bitstream/mod.rs"]
 pub mod frame_bitstream;
-#[path = "stages/import/mod.rs"]
-pub mod import;
-#[path = "infra/io/mod.rs"]
-pub mod io;
-#[path = "core/ir/mod.rs"]
-pub mod ir;
-#[path = "stages/map/mod.rs"]
-pub mod map;
-#[path = "stages/normalize/mod.rs"]
-pub mod normalize;
-#[path = "app/orchestrator/mod.rs"]
-pub mod orchestrator;
-#[path = "stages/pack/mod.rs"]
-pub mod pack;
-#[path = "stages/place/mod.rs"]
-pub mod place;
-#[path = "app/report/mod.rs"]
-pub mod report;
-#[path = "infra/resource/mod.rs"]
-pub mod resource;
-#[path = "stages/route/mod.rs"]
-pub mod route;
-#[path = "stages/bitgen/route_bits/mod.rs"]
+mod infra;
 pub mod route_bits;
-#[path = "stages/sta/mod.rs"]
-pub mod sta;
+mod stages;
+
+pub use app::{cli, orchestrator, report};
+pub use core::{domain, ir};
+pub use infra::{cil, constraints, edif, io, resource};
+pub(crate) use stages::analysis;
+pub use stages::{bitgen, import, map, normalize, pack, place, route, sta};
 
 pub use bitgen::{BitgenOptions, run as run_bitgen};
 pub use cil::{Cil, load_cil};
@@ -52,12 +20,14 @@ pub use config_image::{
 };
 pub use constraints::{ConstraintEntry, load_constraints};
 pub use device::{DeviceCell, DeviceDesign, DeviceEndpoint, DeviceNet, DevicePort, lower_design};
-pub use domain::{ConstantKind, EndpointKind, NetOrigin, PinRole, PrimitiveKind, SiteKind};
+pub use domain::{
+    CellKind, ClusterKind, ConstantKind, EndpointKind, NetOrigin, PinRole, PrimitiveKind, SiteKind,
+    TimingPathCategory,
+};
 pub use frame_bitstream::{SerializedTextBitstream, serialize_text_bitstream};
 pub use import::{ImportOptions, run_path as run_import};
 pub use ir::{
-    BitstreamImage, Design, Placement, PlacementSite, RoutePip, RouteSegment, TimingGraph,
-    TimingSummary,
+    BitstreamImage, Design, Placement, PlacementSite, RouteSegment, TimingGraph, TimingSummary,
 };
 pub use map::{MapOptions, load_input as load_map_input, run as run_map};
 pub use normalize::{NormalizeOptions, run as run_normalize};

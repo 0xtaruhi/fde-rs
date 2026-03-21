@@ -1,3 +1,11 @@
+use super::{
+    CellKind,
+    ascii::{
+        trimmed_contains_ignore_ascii_case, trimmed_eq_ignore_ascii_case,
+        trimmed_starts_with_ignore_ascii_case, trimmed_strip_prefix_ignore_ascii_case,
+    },
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConstantKind {
     Zero,
@@ -20,39 +28,52 @@ pub enum PrimitiveKind {
 
 impl PrimitiveKind {
     pub fn classify(kind: &str, type_name: &str) -> Self {
-        let kind_lower = kind.trim().to_ascii_lowercase();
-        let type_upper = type_name.trim().to_ascii_uppercase();
-        let type_lower = type_upper.to_ascii_lowercase();
+        Self::from_cell_kind(CellKind::classify(kind), type_name)
+    }
 
-        if kind_lower == "lut" || type_upper.starts_with("LUT") {
+    pub fn from_cell_kind(kind: CellKind, type_name: &str) -> Self {
+        let type_name = type_name.trim();
+
+        if matches!(kind, CellKind::Lut) || trimmed_starts_with_ignore_ascii_case(type_name, "LUT")
+        {
             return Self::Lut {
                 inputs: parse_lut_inputs(type_name),
             };
         }
-        if kind_lower.contains("latch") || type_lower.contains("latch") {
+        if matches!(kind, CellKind::Latch) || trimmed_contains_ignore_ascii_case(type_name, "latch")
+        {
             return Self::Latch;
         }
-        if kind_lower.contains("ff") || type_lower.contains("dff") || type_lower.contains("edff") {
+        if matches!(kind, CellKind::Ff)
+            || trimmed_contains_ignore_ascii_case(type_name, "dff")
+            || trimmed_contains_ignore_ascii_case(type_name, "edff")
+        {
             return Self::FlipFlop;
         }
-        match type_upper.as_str() {
-            "GND" => return Self::Constant(ConstantKind::Zero),
-            "VCC" => return Self::Constant(ConstantKind::One),
-            _ => {}
+        if trimmed_eq_ignore_ascii_case(type_name, "GND") {
+            return Self::Constant(ConstantKind::Zero);
         }
-        if kind_lower == "constant" {
+        if trimmed_eq_ignore_ascii_case(type_name, "VCC") {
+            return Self::Constant(ConstantKind::One);
+        }
+        if matches!(kind, CellKind::Constant) {
             return Self::Constant(ConstantKind::Unknown);
         }
-        if kind_lower == "gclk" || type_upper.contains("GCLK") {
+        if matches!(kind, CellKind::GlobalClockBuffer)
+            || trimmed_contains_ignore_ascii_case(type_name, "GCLK")
+        {
             return Self::GlobalClockBuffer;
         }
-        if kind_lower == "iob" || type_upper == "IOB" {
+        if matches!(kind, CellKind::Io) || trimmed_eq_ignore_ascii_case(type_name, "IOB") {
             return Self::Io;
         }
-        if kind_lower == "buffer" || type_lower == "buffer" || type_lower == "buf" {
+        if matches!(kind, CellKind::Buffer)
+            || trimmed_eq_ignore_ascii_case(type_name, "buffer")
+            || trimmed_eq_ignore_ascii_case(type_name, "buf")
+        {
             return Self::Buffer;
         }
-        if kind_lower == "generic" {
+        if matches!(kind, CellKind::Generic) {
             return Self::Generic;
         }
         Self::Unknown
@@ -85,62 +106,76 @@ impl PrimitiveKind {
         if !self.is_lut() {
             return None;
         }
-        let pin = pin.trim().to_ascii_uppercase();
-        if let Some(value) = pin.strip_prefix('I') {
+        if let Some(value) = trimmed_strip_prefix_ignore_ascii_case(pin, "I") {
             return value.parse().ok();
         }
-        match pin.as_str() {
-            "ADR0" => Some(0),
-            "ADR1" => Some(1),
-            "ADR2" => Some(2),
-            "ADR3" => Some(3),
-            "A" | "A1" => Some(0),
-            "B" | "A2" => Some(1),
-            "C" | "A3" => Some(2),
-            "D" | "A4" => Some(3),
-            _ => None,
+        if trimmed_eq_ignore_ascii_case(pin, "ADR0") {
+            Some(0)
+        } else if trimmed_eq_ignore_ascii_case(pin, "ADR1") {
+            Some(1)
+        } else if trimmed_eq_ignore_ascii_case(pin, "ADR2") {
+            Some(2)
+        } else if trimmed_eq_ignore_ascii_case(pin, "ADR3") {
+            Some(3)
+        } else if trimmed_eq_ignore_ascii_case(pin, "A") || trimmed_eq_ignore_ascii_case(pin, "A1")
+        {
+            Some(0)
+        } else if trimmed_eq_ignore_ascii_case(pin, "B") || trimmed_eq_ignore_ascii_case(pin, "A2")
+        {
+            Some(1)
+        } else if trimmed_eq_ignore_ascii_case(pin, "C") || trimmed_eq_ignore_ascii_case(pin, "A3")
+        {
+            Some(2)
+        } else if trimmed_eq_ignore_ascii_case(pin, "D") || trimmed_eq_ignore_ascii_case(pin, "A4")
+        {
+            Some(3)
+        } else {
+            None
         }
     }
 
     pub fn is_lut_output_pin(self, pin: &str) -> bool {
         self.is_lut()
-            && matches!(
-                pin.trim().to_ascii_uppercase().as_str(),
-                "O" | "Y" | "OUT" | "Q"
-            )
+            && (trimmed_eq_ignore_ascii_case(pin, "O")
+                || trimmed_eq_ignore_ascii_case(pin, "Y")
+                || trimmed_eq_ignore_ascii_case(pin, "OUT")
+                || trimmed_eq_ignore_ascii_case(pin, "Q"))
     }
 
     pub fn is_register_output_pin(self, pin: &str) -> bool {
-        self.is_sequential() && pin.trim().eq_ignore_ascii_case("Q")
+        self.is_sequential() && trimmed_eq_ignore_ascii_case(pin, "Q")
     }
 
     pub fn is_clock_pin(self, pin: &str) -> bool {
-        self.is_sequential() && matches!(pin.trim().to_ascii_uppercase().as_str(), "CK" | "CLK")
+        self.is_sequential()
+            && (trimmed_eq_ignore_ascii_case(pin, "CK") || trimmed_eq_ignore_ascii_case(pin, "CLK"))
     }
 
     pub fn is_clock_enable_pin(self, pin: &str) -> bool {
-        self.is_sequential() && pin.trim().eq_ignore_ascii_case("CE")
+        self.is_sequential() && trimmed_eq_ignore_ascii_case(pin, "CE")
     }
 
     pub fn is_set_reset_pin(self, pin: &str) -> bool {
         self.is_sequential()
-            && matches!(
-                pin.trim().to_ascii_uppercase().as_str(),
-                "R" | "S" | "SR" | "RST" | "RESET"
-            )
+            && (trimmed_eq_ignore_ascii_case(pin, "R")
+                || trimmed_eq_ignore_ascii_case(pin, "S")
+                || trimmed_eq_ignore_ascii_case(pin, "SR")
+                || trimmed_eq_ignore_ascii_case(pin, "RST")
+                || trimmed_eq_ignore_ascii_case(pin, "RESET"))
     }
 
     pub fn is_register_data_pin(self, pin: &str) -> bool {
-        self.is_sequential() && pin.trim().eq_ignore_ascii_case("D")
+        self.is_sequential() && trimmed_eq_ignore_ascii_case(pin, "D")
     }
 }
 
 fn parse_lut_inputs(type_name: &str) -> Option<usize> {
-    let digits = type_name
-        .chars()
-        .skip_while(|ch| !ch.is_ascii_digit())
-        .collect::<String>();
-    digits.parse().ok()
+    let digit_offset = type_name
+        .trim()
+        .char_indices()
+        .find(|(_, ch)| ch.is_ascii_digit())
+        .map(|(index, _)| index)?;
+    type_name.trim().get(digit_offset..)?.parse().ok()
 }
 
 #[cfg(test)]

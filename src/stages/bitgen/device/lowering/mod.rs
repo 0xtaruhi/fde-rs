@@ -8,11 +8,11 @@ use crate::{
     constraints::{
         ConstraintEntry, apply_constraints, ensure_cluster_positions, ensure_port_positions,
     },
-    ir::Design,
+    domain::SiteKind,
+    ir::{CellId, Design, DesignIndex, PortId},
     resource::{Arch, PadSiteKind},
 };
 use anyhow::Result;
-use std::collections::BTreeMap;
 
 pub fn lower_design(
     mut design: Design,
@@ -39,15 +39,18 @@ struct DeviceLowering<'a> {
     design: &'a Design,
     arch: &'a Arch,
     cil: Option<&'a Cil>,
+    index: DesignIndex<'a>,
     device: DeviceDesign,
-    port_to_io: BTreeMap<String, String>,
-    port_to_gclk: BTreeMap<String, String>,
+    device_ports: Vec<Option<usize>>,
+    original_cells: Vec<Option<usize>>,
+    io_cells: Vec<Option<usize>>,
+    gclk_cells: Vec<Option<usize>>,
 }
 
 #[derive(Clone)]
 struct ResolvedPortSite {
     pin_name: String,
-    site_kind: String,
+    site_kind: SiteKind,
     site_name: String,
     tile_name: String,
     tile_type: String,
@@ -63,13 +66,16 @@ impl<'a> DeviceLowering<'a> {
             design,
             arch,
             cil,
+            index: design.index(),
             device: DeviceDesign {
                 name: design.name.clone(),
                 device: arch.name.clone(),
                 ..DeviceDesign::default()
             },
-            port_to_io: BTreeMap::new(),
-            port_to_gclk: BTreeMap::new(),
+            device_ports: vec![None; design.ports.len()],
+            original_cells: vec![None; design.cells.len()],
+            io_cells: vec![None; design.ports.len()],
+            gclk_cells: vec![None; design.ports.len()],
         }
     }
 
@@ -77,20 +83,73 @@ impl<'a> DeviceLowering<'a> {
         self.device
     }
 
+    fn push_device_port(&mut self, port_id: PortId, port: DevicePort) -> usize {
+        let slot = self.device.ports.len();
+        self.device.ports.push(port);
+        self.device_ports[port_id.index()] = Some(slot);
+        slot
+    }
+
+    fn push_original_cell(&mut self, cell_id: CellId, cell: DeviceCell) -> usize {
+        let slot = self.device.cells.len();
+        self.device.cells.push(cell);
+        self.original_cells[cell_id.index()] = Some(slot);
+        slot
+    }
+
+    fn push_synthetic_cell(&mut self, cell: DeviceCell) -> usize {
+        let slot = self.device.cells.len();
+        self.device.cells.push(cell);
+        slot
+    }
+
+    fn bind_io_cell(&mut self, port_id: PortId, cell: DeviceCell) -> usize {
+        let slot = self.push_synthetic_cell(cell);
+        self.io_cells[port_id.index()] = Some(slot);
+        slot
+    }
+
+    fn bind_gclk_cell(&mut self, port_id: PortId, cell: DeviceCell) -> usize {
+        let slot = self.push_synthetic_cell(cell);
+        self.gclk_cells[port_id.index()] = Some(slot);
+        slot
+    }
+
+    fn device_port(&self, port_id: PortId) -> Option<&DevicePort> {
+        self.device_ports
+            .get(port_id.index())
+            .copied()
+            .flatten()
+            .and_then(|slot| self.device.ports.get(slot))
+    }
+
+    fn original_cell(&self, cell_id: CellId) -> Option<&DeviceCell> {
+        self.original_cells
+            .get(cell_id.index())
+            .copied()
+            .flatten()
+            .and_then(|slot| self.device.cells.get(slot))
+    }
+
+    fn io_cell(&self, port_id: PortId) -> Option<&DeviceCell> {
+        self.io_cells
+            .get(port_id.index())
+            .copied()
+            .flatten()
+            .and_then(|slot| self.device.cells.get(slot))
+    }
+
+    fn gclk_cell(&self, port_id: PortId) -> Option<&DeviceCell> {
+        self.gclk_cells
+            .get(port_id.index())
+            .copied()
+            .flatten()
+            .and_then(|slot| self.device.cells.get(slot))
+    }
+
     fn finish_notes(&mut self) {
         self.device.notes.push(
             "Device lowering materializes synthetic IOB/GCLK sites and BEL anchors for future Rust bitgen.".to_string(),
         );
-        if self.design.clusters.iter().any(|cluster| {
-            cluster.members.len() > 1
-                && self
-                    .arch
-                    .tile_at(cluster.x.unwrap_or(0), cluster.y.unwrap_or(0))
-                    .is_some()
-        }) {
-            self.device.notes.push(
-                "Cluster placement is still one-site-per-coordinate; multi-site tile packing remains a follow-up.".to_string(),
-            );
-        }
     }
 }

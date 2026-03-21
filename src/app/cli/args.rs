@@ -1,7 +1,10 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-use crate::{orchestrator::ImplementationOptions, place::PlaceMode, route::RouteMode};
+use crate::{
+    orchestrator::ImplementationOptions, pack::DEFAULT_PACK_CAPACITY, place::PlaceMode,
+    route::RouteMode,
+};
 
 #[derive(Parser)]
 #[command(
@@ -120,7 +123,7 @@ pub(crate) struct PackArgs {
     pub(crate) output: PathBuf,
     #[arg(long)]
     pub(crate) family: Option<String>,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = DEFAULT_PACK_CAPACITY)]
     pub(crate) capacity: usize,
     #[arg(long)]
     pub(crate) cell_library: Option<PathBuf>,
@@ -242,7 +245,7 @@ pub(crate) struct ImplArgs {
     pub(crate) family: String,
     #[arg(long, default_value_t = 4)]
     pub(crate) lut_size: usize,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = DEFAULT_PACK_CAPACITY)]
     pub(crate) pack_capacity: usize,
     #[arg(long, value_enum, default_value = "timing")]
     pub(crate) place_mode: CliPlaceMode,
@@ -311,7 +314,7 @@ pub(crate) struct CompatPackArgs {
     pub(crate) output: PathBuf,
     #[arg(short = 'g')]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = DEFAULT_PACK_CAPACITY)]
     pub(crate) capacity: usize,
     #[arg(short = 'e')]
     pub(crate) emit: bool,

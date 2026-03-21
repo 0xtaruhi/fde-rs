@@ -1,3 +1,4 @@
+use crate::domain::TimingPathCategory;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -25,7 +26,7 @@ pub struct TimingGraph {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TimingPath {
-    pub category: String,
+    pub category: TimingPathCategory,
     pub endpoint: String,
     pub delay_ns: f64,
     #[serde(default)]

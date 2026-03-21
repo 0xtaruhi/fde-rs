@@ -1,8 +1,8 @@
 use crate::{
-    domain::{ConstantKind, PrimitiveKind},
+    domain::{CellKind, ConstantKind, PrimitiveKind},
     edif::load_edif,
     io::load_design,
-    ir::{Cell, Design},
+    ir::{Cell, CellId, Design},
     normalize::prune_disconnected_nets,
     report::{StageOutput, StageReport},
 };
@@ -67,19 +67,20 @@ pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapAr
     }
 
     for cell in &mut design.cells {
+        if cell.is_lut() {
+            canonicalize_lut_init(cell);
+        }
         if cell.is_lut() && cell.property("lut_init").is_none() {
             let width = infer_lut_width(&cell.type_name).max(1);
-            let lut_init = inherited_lut_init(cell).unwrap_or_else(|| default_lut_mask(width));
-            cell.set_property("lut_init", lut_init);
+            cell.set_property("lut_init", default_lut_mask(width));
         }
         if matches!(cell.primitive_kind(), PrimitiveKind::Generic) {
             let input_count = cell.inputs.len().clamp(1, options.lut_size.max(1));
-            cell.kind = "lut".to_string();
+            cell.kind = CellKind::Lut;
             cell.type_name = format!("LUT{}", input_count.max(2));
+            canonicalize_lut_init(cell);
             if cell.property("lut_init").is_none() {
-                let lut_init =
-                    inherited_lut_init(cell).unwrap_or_else(|| default_lut_mask(input_count));
-                cell.set_property("lut_init", lut_init);
+                cell.set_property("lut_init", default_lut_mask(input_count));
             }
         }
     }
@@ -114,6 +115,7 @@ pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapAr
 
 pub fn export_structural_verilog(design: &Design) -> String {
     let mut output = String::new();
+    let index = design.index();
     let port_list = design
         .ports
         .iter()
@@ -124,7 +126,7 @@ pub fn export_structural_verilog(design: &Design) -> String {
         let _ = writeln!(output, "  {} {};", port.direction.as_str(), port.name);
     }
     for net in &design.nets {
-        if !design.ports.iter().any(|port| port.name == net.name) {
+        if index.port_id(&net.name).is_none() {
             let _ = writeln!(output, "  wire {};", net.name);
         }
     }
@@ -157,6 +159,16 @@ fn infer_lut_width(type_name: &str) -> usize {
         .unwrap_or(2)
 }
 
+fn canonicalize_lut_init(cell: &mut Cell) {
+    if let Some(value) = cell
+        .property("lut_init")
+        .or_else(|| cell.property("init"))
+        .map(str::to_owned)
+    {
+        cell.set_property("lut_init", value);
+    }
+}
+
 fn default_lut_mask(width: usize) -> String {
     match width {
         0 | 1 => "2".to_string(),
@@ -168,40 +180,47 @@ fn default_lut_mask(width: usize) -> String {
     }
 }
 
-fn inherited_lut_init(cell: &Cell) -> Option<String> {
-    cell.property("init").map(ToOwned::to_owned)
-}
-
 fn lower_constant_sources(design: &mut Design, lut_size: usize) -> usize {
     let lut_size = lut_size.max(1);
     let mut lowered = BTreeSet::new();
 
-    for cell in &mut design.cells {
+    for (cell_index, cell) in design.cells.iter_mut().enumerate() {
         let Some(init) = constant_lut_init(cell, lut_size) else {
             continue;
         };
         if cell.outputs.is_empty() {
             continue;
         }
-        cell.kind = "lut".to_string();
+        cell.kind = CellKind::Lut;
         cell.type_name = format!("LUT{lut_size}");
         cell.inputs.clear();
         for output in &mut cell.outputs {
             output.port = "O".to_string();
         }
         cell.set_property("lut_init", init);
-        lowered.insert(cell.name.clone());
+        lowered.insert(CellId::new(cell_index));
     }
 
     if lowered.is_empty() {
         return 0;
     }
 
-    for net in &mut design.nets {
-        if let Some(driver) = &mut net.driver
-            && driver.is_cell()
-            && lowered.contains(&driver.name)
-        {
+    let lowered_net_drivers = {
+        let index = design.index();
+        design
+            .nets
+            .iter()
+            .map(|net| {
+                net.driver
+                    .as_ref()
+                    .and_then(|driver| index.cell_for_endpoint(driver))
+                    .is_some_and(|cell_id| lowered.contains(&cell_id))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (net, is_lowered_driver) in design.nets.iter_mut().zip(lowered_net_drivers) {
+        if is_lowered_driver && let Some(driver) = &mut net.driver {
             driver.pin = "O".to_string();
         }
     }
@@ -227,9 +246,9 @@ fn all_ones_truth_table(lut_size: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MapOptions, all_ones_truth_table, run};
+    use super::{MapOptions, all_ones_truth_table, export_structural_verilog, run};
     use crate::{
-        ir::{Cell, CellPin, Design, Endpoint, Net, Property},
+        ir::{Cell, CellKind, Design, Endpoint, EndpointKind, Net, Port},
         map::MapArtifact,
     };
     use anyhow::Result;
@@ -238,76 +257,20 @@ mod tests {
         Design {
             name: "const-lower".to_string(),
             cells: vec![
-                Cell {
-                    name: "GND".to_string(),
-                    kind: "constant".to_string(),
-                    type_name: "GND".to_string(),
-                    outputs: vec![CellPin {
-                        port: "G".to_string(),
-                        net: "gnd_net".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "VCC".to_string(),
-                    kind: "constant".to_string(),
-                    type_name: "VCC".to_string(),
-                    outputs: vec![CellPin {
-                        port: "P".to_string(),
-                        net: "vcc_net".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "sink".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![
-                        CellPin {
-                            port: "ADR0".to_string(),
-                            net: "gnd_net".to_string(),
-                        },
-                        CellPin {
-                            port: "ADR1".to_string(),
-                            net: "vcc_net".to_string(),
-                        },
-                    ],
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "out_net".to_string(),
-                    }],
-                    ..Cell::default()
-                },
+                Cell::new("GND", CellKind::Constant, "GND").with_output("G", "gnd_net"),
+                Cell::new("VCC", CellKind::Constant, "VCC").with_output("P", "vcc_net"),
+                Cell::new("sink", CellKind::Lut, "LUT4")
+                    .with_input("ADR0", "gnd_net")
+                    .with_input("ADR1", "vcc_net")
+                    .with_output("O", "out_net"),
             ],
             nets: vec![
-                Net {
-                    name: "gnd_net".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "GND".to_string(),
-                        pin: "G".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "sink".to_string(),
-                        pin: "ADR0".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "vcc_net".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "VCC".to_string(),
-                        pin: "P".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "sink".to_string(),
-                        pin: "ADR1".to_string(),
-                    }],
-                    ..Net::default()
-                },
+                Net::new("gnd_net")
+                    .with_driver(Endpoint::new(EndpointKind::Cell, "GND", "G"))
+                    .with_sink(Endpoint::new(EndpointKind::Cell, "sink", "ADR0")),
+                Net::new("vcc_net")
+                    .with_driver(Endpoint::new(EndpointKind::Cell, "VCC", "P"))
+                    .with_sink(Endpoint::new(EndpointKind::Cell, "sink", "ADR1")),
             ],
             ..Design::default()
         }
@@ -341,12 +304,12 @@ mod tests {
             .find(|cell| cell.name == "VCC")
             .expect("vcc cell");
 
-        assert_eq!(gnd.kind, "lut");
+        assert_eq!(gnd.kind, CellKind::Lut);
         assert_eq!(gnd.type_name, "LUT4");
         assert_eq!(gnd.property("lut_init"), Some("0"));
         assert_eq!(gnd.outputs.first().map(|pin| pin.port.as_str()), Some("O"));
 
-        assert_eq!(vcc.kind, "lut");
+        assert_eq!(vcc.kind, CellKind::Lut);
         assert_eq!(vcc.type_name, "LUT4");
         assert_eq!(vcc.property("lut_init"), Some(vcc_mask.as_str()));
         assert_eq!(vcc.outputs.first().map(|pin| pin.port.as_str()), Some("O"));
@@ -383,23 +346,49 @@ mod tests {
     }
 
     #[test]
-    fn map_promotes_existing_init_property_into_lut_init() -> Result<()> {
+    fn structural_verilog_skips_port_named_nets_when_declaring_wires() {
         let design = Design {
-            cells: vec![Cell {
-                name: "pass".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT2".to_string(),
-                properties: vec![Property {
-                    key: "init".to_string(),
-                    value: "10".to_string(),
-                }],
-                ..Cell::default()
-            }],
+            name: "top".to_string(),
+            ports: vec![Port::input("in"), Port::output("out")],
+            cells: vec![
+                Cell::lut("u0", "LUT4")
+                    .with_input("A", "in")
+                    .with_output("O", "out")
+                    .with_output("Q", "n1"),
+            ],
+            nets: vec![Net::new("out"), Net::new("n1")],
             ..Design::default()
         };
 
+        let verilog = export_structural_verilog(&design);
+
+        assert!(verilog.contains("wire n1;"));
+        assert!(!verilog.contains("wire out;"));
+    }
+
+    #[test]
+    fn map_canonicalizes_init_property_for_structural_luts() -> Result<()> {
+        let design = Design {
+            name: "top".to_string(),
+            cells: vec![
+                Cell::lut("u0", "LUT2")
+                    .with_input("ADR0", "a")
+                    .with_input("ADR1", "b")
+                    .with_output("O", "y"),
+            ],
+            ..Design::default()
+        };
+        let mut design = design;
+        design.cells[0].set_property("init", "10");
+
         let artifact = run(design, &MapOptions::default())?.value;
-        let cell = artifact.design.cells.first().expect("lut cell");
+        let cell = artifact
+            .design
+            .cells
+            .iter()
+            .find(|cell| cell.name == "u0")
+            .expect("u0");
+
         assert_eq!(cell.property("init"), Some("10"));
         assert_eq!(cell.property("lut_init"), Some("10"));
 

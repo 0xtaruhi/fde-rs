@@ -1,11 +1,14 @@
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     bitgen::BitgenOptions,
     cil::load_cil,
-    constraints::{ConstraintEntry, load_constraints},
-    device::annotate_exact_route_pips,
+    constraints::{SharedConstraints, load_constraints},
+    device::lower_design,
     ir::Design,
     place::PlaceMode,
     resource::load_arch,
@@ -16,10 +19,10 @@ pub(crate) struct PreparedBitgen {
     pub(crate) options: BitgenOptions,
 }
 
-pub(crate) fn load_constraints_or_empty(path: Option<&PathBuf>) -> Result<Vec<ConstraintEntry>> {
+pub(crate) fn load_constraints_or_empty(path: Option<&PathBuf>) -> Result<SharedConstraints> {
     match path {
-        Some(path) => load_constraints(path),
-        None => Ok(Vec::new()),
+        Some(path) => load_constraints(path).map(Arc::<[_]>::from),
+        None => Ok(Arc::from([])),
     }
 }
 
@@ -41,10 +44,8 @@ pub(crate) fn prepare_bitgen(
         Some(path) => Some(load_cil(path)?),
         None => None,
     };
-    let device_design = match (arch.as_ref(), cil.as_ref(), arch_path.as_ref()) {
-        (Some(arch), Some(cil), Some(arch_path)) => {
-            Some(annotate_exact_route_pips(design, arch, arch_path, cil, &[])?.device)
-        }
+    let device_design = match (arch.as_ref(), cil.as_ref()) {
+        (Some(arch), Some(cil)) => Some(lower_design(design, arch, Some(cil), &[])?),
         _ => None,
     };
     Ok(PreparedBitgen {

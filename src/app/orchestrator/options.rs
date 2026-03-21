@@ -1,4 +1,4 @@
-use crate::{place::PlaceMode, route::RouteMode};
+use crate::{pack::DEFAULT_PACK_CAPACITY, place::PlaceMode, route::RouteMode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -41,7 +41,7 @@ impl Default for ImplementationOptions {
             cil: None,
             family: Some("fdp3".to_string()),
             lut_size: 4,
-            pack_capacity: 4,
+            pack_capacity: DEFAULT_PACK_CAPACITY,
             place_mode: PlaceMode::TimingDriven,
             route_mode: RouteMode::TimingDriven,
             seed: 0xFDE_2024,

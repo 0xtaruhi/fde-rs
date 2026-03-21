@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="logic_mesh">
+  <port name="a" position="P151"/>
+  <port name="b" position="P150"/>
+  <port name="c" position="P152"/>
+  <port name="y0" position="P7"/>
+  <port name="y1" position="P6"/>
+  <port name="y2" position="P5"/>
+  <port name="y3" position="P4"/>
+</design>

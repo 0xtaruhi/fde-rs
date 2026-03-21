@@ -8,7 +8,7 @@ pub struct SerializedTextBitstream {
     pub memory_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TileFrameImage {
     pub tile_name: String,
     pub tile_type: String,

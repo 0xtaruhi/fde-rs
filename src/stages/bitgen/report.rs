@@ -1,0 +1,36 @@
+use super::artifacts::PreparedArtifacts;
+use crate::report::StageReport;
+
+pub(super) fn build_report(byte_count: usize, artifacts: &PreparedArtifacts) -> StageReport {
+    let mut report = StageReport::new("bitgen");
+    if let Some(serialized) = artifacts.text_bitstream.as_ref() {
+        report.push(format!(
+            "Generated {} bytes of textual bitstream across {} major chunks and {} memory chunks.",
+            byte_count, serialized.major_count, serialized.memory_count
+        ));
+    } else {
+        report.push(format!(
+            "Generated {} bytes of deterministic bitstream payload.",
+            byte_count
+        ));
+    }
+    if let Some(config_image) = artifacts.config_image.as_ref() {
+        let set_bits = config_image
+            .tiles
+            .iter()
+            .map(|tile| tile.set_bit_count())
+            .sum::<usize>();
+        let routed_pips = artifacts
+            .route_image
+            .as_ref()
+            .map(|image| image.pips.len())
+            .unwrap_or(0);
+        report.push(format!(
+            "Materialized {} config bits across {} tile images with {} routed pips.",
+            set_bits,
+            config_image.tiles.len(),
+            routed_pips
+        ));
+    }
+    report
+}

@@ -1,16 +1,28 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+use super::ascii::trimmed_eq_ignore_ascii_case;
+use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub enum EndpointKind {
+    #[serde(rename = "cell")]
     Cell,
+    #[serde(rename = "port")]
     Port,
+    #[default]
+    #[serde(rename = "unknown")]
     Unknown,
 }
 
 impl EndpointKind {
     pub fn classify(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "cell" => Self::Cell,
-            "port" => Self::Port,
-            _ => Self::Unknown,
+        if trimmed_eq_ignore_ascii_case(raw, "cell") {
+            Self::Cell
+        } else if trimmed_eq_ignore_ascii_case(raw, "port") {
+            Self::Port
+        } else {
+            Self::Unknown
         }
     }
 
@@ -20,6 +32,40 @@ impl EndpointKind {
 
     pub fn is_port(self) -> bool {
         matches!(self, Self::Port)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cell => "cell",
+            Self::Port => "port",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl FromStr for EndpointKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::classify(value))
+    }
+}
+
+impl From<&str> for EndpointKind {
+    fn from(value: &str) -> Self {
+        Self::classify(value)
+    }
+}
+
+impl From<String> for EndpointKind {
+    fn from(value: String) -> Self {
+        Self::classify(&value)
+    }
+}
+
+impl fmt::Display for EndpointKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

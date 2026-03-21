@@ -5,12 +5,20 @@ mod model;
 
 use crate::{cil::Cil, config_image::ConfigImage, resource::Arch};
 use anyhow::{Context, Result};
+use std::path::Path;
 
 pub use model::SerializedTextBitstream;
+
+#[cfg(test)]
+mod decode;
+
+#[cfg(test)]
+mod tests;
 
 pub fn serialize_text_bitstream(
     design_name: &str,
     arch: &Arch,
+    arch_path: &Path,
     cil: &Cil,
     config_image: &ConfigImage,
 ) -> Result<Option<SerializedTextBitstream>> {
@@ -19,7 +27,10 @@ pub fn serialize_text_bitstream(
     }
 
     let mut notes = Vec::new();
-    let tile_columns = layout::build_tile_columns(arch, cil, config_image, &mut notes);
+    let transmission_defaults = super::route_bits::load_site_route_defaults(arch_path, cil)
+        .context("failed to load transmission default SRAM state")?;
+    let tile_columns =
+        layout::build_tile_columns(arch, cil, config_image, &transmission_defaults, &mut notes);
     let major_payloads = encode::build_major_payloads(cil, &tile_columns)
         .context("failed to encode textual major frame payloads")?;
     let memory_payloads =

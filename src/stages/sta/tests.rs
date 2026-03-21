@@ -1,6 +1,6 @@
 use super::{StaOptions, run};
 use crate::{
-    ir::{Cell, CellPin, Cluster, Design, Endpoint, Net, Port, PortDirection, RouteSegment},
+    ir::{Cell, Cluster, Design, Endpoint, Net, Port, RouteSegment},
     resource::Arch,
 };
 use anyhow::Result;
@@ -22,143 +22,41 @@ fn timed_design() -> Design {
     Design {
         name: "sta-mini".to_string(),
         stage: "routed".to_string(),
-        ports: vec![
-            Port {
-                name: "in".to_string(),
-                direction: PortDirection::Input,
-                x: Some(0),
-                y: Some(1),
-                ..Port::default()
-            },
-            Port {
-                name: "out".to_string(),
-                direction: PortDirection::Output,
-                x: Some(3),
-                y: Some(1),
-                ..Port::default()
-            },
-        ],
+        ports: vec![Port::input("in").at(0, 1), Port::output("out").at(3, 1)],
         cells: vec![
-            Cell {
-                name: "u0".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                inputs: vec![CellPin {
-                    port: "A".to_string(),
-                    net: "in_net".to_string(),
-                }],
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: "mid_net".to_string(),
-                }],
-                cluster: Some("clb0".to_string()),
-                ..Cell::default()
-            },
-            Cell {
-                name: "u1".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                inputs: vec![CellPin {
-                    port: "A".to_string(),
-                    net: "mid_net".to_string(),
-                }],
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: "out_net".to_string(),
-                }],
-                cluster: Some("clb1".to_string()),
-                ..Cell::default()
-            },
+            Cell::lut("u0", "LUT4")
+                .with_input("A", "in_net")
+                .with_output("O", "mid_net")
+                .in_cluster("clb0"),
+            Cell::lut("u1", "LUT4")
+                .with_input("A", "mid_net")
+                .with_output("O", "out_net")
+                .in_cluster("clb1"),
         ],
         nets: vec![
-            Net {
-                name: "in_net".to_string(),
-                driver: Some(Endpoint {
-                    kind: "port".to_string(),
-                    name: "in".to_string(),
-                    pin: "IN".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u0".to_string(),
-                    pin: "A".to_string(),
-                }],
-                route: vec![RouteSegment {
-                    x0: 0,
-                    y0: 1,
-                    x1: 1,
-                    y1: 1,
-                }],
-                ..Net::default()
-            },
-            Net {
-                name: "mid_net".to_string(),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u0".to_string(),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u1".to_string(),
-                    pin: "A".to_string(),
-                }],
-                route: vec![
-                    RouteSegment {
-                        x0: 1,
-                        y0: 1,
-                        x1: 2,
-                        y1: 1,
-                    },
-                    RouteSegment {
-                        x0: 2,
-                        y0: 1,
-                        x1: 2,
-                        y1: 2,
-                    },
-                ],
-                ..Net::default()
-            },
-            Net {
-                name: "out_net".to_string(),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u1".to_string(),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "port".to_string(),
-                    name: "out".to_string(),
-                    pin: "OUT".to_string(),
-                }],
-                route: vec![RouteSegment {
-                    x0: 2,
-                    y0: 2,
-                    x1: 3,
-                    y1: 2,
-                }],
-                ..Net::default()
-            },
+            Net::new("in_net")
+                .with_driver(Endpoint::port("in", "IN"))
+                .with_sink(Endpoint::cell("u0", "A"))
+                .with_route_segment(RouteSegment::new((0, 1), (1, 1))),
+            Net::new("mid_net")
+                .with_driver(Endpoint::cell("u0", "O"))
+                .with_sink(Endpoint::cell("u1", "A"))
+                .with_route_segment(RouteSegment::new((1, 1), (2, 1)))
+                .with_route_segment(RouteSegment::new((2, 1), (2, 2))),
+            Net::new("out_net")
+                .with_driver(Endpoint::cell("u1", "O"))
+                .with_sink(Endpoint::port("out", "OUT"))
+                .with_route_segment(RouteSegment::new((2, 2), (3, 2))),
         ],
         clusters: vec![
-            Cluster {
-                name: "clb0".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["u0".to_string()],
-                capacity: 1,
-                x: Some(1),
-                y: Some(1),
-                ..Cluster::default()
-            },
-            Cluster {
-                name: "clb1".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["u1".to_string()],
-                capacity: 1,
-                x: Some(2),
-                y: Some(2),
-                ..Cluster::default()
-            },
+            Cluster::logic("clb0")
+                .with_member("u0")
+                .with_capacity(1)
+                .at(1, 1),
+            Cluster::logic("clb1")
+                .with_member("u1")
+                .with_capacity(1)
+                .at(2, 2),
         ],
         ..Design::default()
     }
@@ -169,7 +67,7 @@ fn sta_computes_expected_critical_path_and_graph_shape() -> Result<()> {
     let artifact = run(
         timed_design(),
         &StaOptions {
-            arch: Some(mini_arch()),
+            arch: Some(mini_arch().into()),
             delay: None,
         },
     )?

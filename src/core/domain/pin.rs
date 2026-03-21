@@ -1,4 +1,4 @@
-use super::{PrimitiveKind, SiteKind};
+use super::{PrimitiveKind, SiteKind, ascii::trimmed_eq_ignore_ascii_case};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PinRole {
@@ -44,23 +44,18 @@ impl PinRole {
     }
 
     pub fn classify_for_site(site_kind: SiteKind, pin: &str) -> Self {
-        let pin = pin.trim().to_ascii_uppercase();
         match site_kind {
-            SiteKind::Iob => match pin.as_str() {
-                "IN" => Self::SiteInput,
-                "OUT" => Self::SiteOutput,
-                _ => Self::Unknown,
-            },
-            SiteKind::GclkIob => match pin.as_str() {
-                "GCLKOUT" => Self::GlobalClockOutput,
-                _ => Self::Unknown,
-            },
-            SiteKind::Gclk => match pin.as_str() {
-                "IN" => Self::GlobalClockInput,
-                "OUT" => Self::GlobalClockOutput,
-                _ => Self::Unknown,
-            },
-            SiteKind::LogicSlice | SiteKind::Unknown => Self::Unknown,
+            SiteKind::Iob if trimmed_eq_ignore_ascii_case(pin, "IN") => Self::SiteInput,
+            SiteKind::Iob if trimmed_eq_ignore_ascii_case(pin, "OUT") => Self::SiteOutput,
+            SiteKind::GclkIob if trimmed_eq_ignore_ascii_case(pin, "GCLKOUT") => {
+                Self::GlobalClockOutput
+            }
+            SiteKind::Gclk if trimmed_eq_ignore_ascii_case(pin, "IN") => Self::GlobalClockInput,
+            SiteKind::Gclk if trimmed_eq_ignore_ascii_case(pin, "OUT") => Self::GlobalClockOutput,
+            SiteKind::LogicSlice | SiteKind::Const | SiteKind::Unplaced | SiteKind::Unknown => {
+                Self::Unknown
+            }
+            SiteKind::Iob | SiteKind::GclkIob | SiteKind::Gclk => Self::Unknown,
         }
     }
 
@@ -72,9 +67,16 @@ impl PinRole {
         if primitive.is_constant_source() {
             return Self::GeneralOutput;
         }
-        match pin.trim().to_ascii_uppercase().as_str() {
-            "Q" | "O" | "Y" | "OUT" | "P" | "G" => Self::GeneralOutput,
-            _ => Self::Unknown,
+        if trimmed_eq_ignore_ascii_case(pin, "Q")
+            || trimmed_eq_ignore_ascii_case(pin, "O")
+            || trimmed_eq_ignore_ascii_case(pin, "Y")
+            || trimmed_eq_ignore_ascii_case(pin, "OUT")
+            || trimmed_eq_ignore_ascii_case(pin, "P")
+            || trimmed_eq_ignore_ascii_case(pin, "G")
+        {
+            Self::GeneralOutput
+        } else {
+            Self::Unknown
         }
     }
 
@@ -143,6 +145,10 @@ mod tests {
         assert_eq!(
             PinRole::classify_for_site(SiteKind::Gclk, "OUT"),
             PinRole::GlobalClockOutput
+        );
+        assert_eq!(
+            PinRole::classify_output_pin(ff, " q "),
+            PinRole::RegisterOutput
         );
     }
 }

@@ -2,15 +2,16 @@ use super::{
     PlaceMode, PlaceOptions,
     cost::{PlacementEvaluator, evaluate},
     graph::build_cluster_graph,
-    model::PlacementModel,
+    model::{PlacementModel, Point},
     run, solver,
 };
 use crate::{
-    ir::{Cell, CellPin, Cluster, Design, Endpoint, Net, Port, PortDirection},
+    ir::{Cell, CellPin, Cluster, ClusterId, Design, Endpoint, Net, Port},
     resource::{Arch, DelayModel},
 };
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 fn mini_arch() -> Arch {
@@ -74,149 +75,39 @@ fn synthetic_delay(width: usize, height: usize) -> DelayModel {
 fn clustered_design() -> Design {
     Design {
         name: "place-mini".to_string(),
-        ports: vec![
-            Port {
-                name: "in".to_string(),
-                direction: PortDirection::Input,
-                x: Some(0),
-                y: Some(2),
-                ..Port::default()
-            },
-            Port {
-                name: "out".to_string(),
-                direction: PortDirection::Output,
-                x: Some(5),
-                y: Some(2),
-                ..Port::default()
-            },
-        ],
+        ports: vec![Port::input("in").at(0, 2), Port::output("out").at(5, 2)],
         cells: vec![
-            Cell {
-                name: "u0".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                inputs: vec![CellPin {
-                    port: "A".to_string(),
-                    net: "in_net".to_string(),
-                }],
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: "mid0".to_string(),
-                }],
-                cluster: Some("clb0".to_string()),
-                ..Cell::default()
-            },
-            Cell {
-                name: "u1".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                inputs: vec![CellPin {
-                    port: "A".to_string(),
-                    net: "mid0".to_string(),
-                }],
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: "mid1".to_string(),
-                }],
-                cluster: Some("clb1".to_string()),
-                ..Cell::default()
-            },
-            Cell {
-                name: "u2".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                inputs: vec![CellPin {
-                    port: "A".to_string(),
-                    net: "mid1".to_string(),
-                }],
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: "out_net".to_string(),
-                }],
-                cluster: Some("clb2".to_string()),
-                ..Cell::default()
-            },
+            Cell::lut("u0", "LUT4")
+                .with_input("A", "in_net")
+                .with_output("O", "mid0")
+                .in_cluster("clb0"),
+            Cell::lut("u1", "LUT4")
+                .with_input("A", "mid0")
+                .with_output("O", "mid1")
+                .in_cluster("clb1"),
+            Cell::lut("u2", "LUT4")
+                .with_input("A", "mid1")
+                .with_output("O", "out_net")
+                .in_cluster("clb2"),
         ],
         nets: vec![
-            Net {
-                name: "in_net".to_string(),
-                driver: Some(Endpoint {
-                    kind: "port".to_string(),
-                    name: "in".to_string(),
-                    pin: "IN".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u0".to_string(),
-                    pin: "A".to_string(),
-                }],
-                ..Net::default()
-            },
-            Net {
-                name: "mid0".to_string(),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u0".to_string(),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u1".to_string(),
-                    pin: "A".to_string(),
-                }],
-                ..Net::default()
-            },
-            Net {
-                name: "mid1".to_string(),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u1".to_string(),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u2".to_string(),
-                    pin: "A".to_string(),
-                }],
-                ..Net::default()
-            },
-            Net {
-                name: "out_net".to_string(),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: "u2".to_string(),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "port".to_string(),
-                    name: "out".to_string(),
-                    pin: "OUT".to_string(),
-                }],
-                ..Net::default()
-            },
+            Net::new("in_net")
+                .with_driver(Endpoint::port("in", "IN"))
+                .with_sink(Endpoint::cell("u0", "A")),
+            Net::new("mid0")
+                .with_driver(Endpoint::cell("u0", "O"))
+                .with_sink(Endpoint::cell("u1", "A")),
+            Net::new("mid1")
+                .with_driver(Endpoint::cell("u1", "O"))
+                .with_sink(Endpoint::cell("u2", "A")),
+            Net::new("out_net")
+                .with_driver(Endpoint::cell("u2", "O"))
+                .with_sink(Endpoint::port("out", "OUT")),
         ],
         clusters: vec![
-            Cluster {
-                name: "clb0".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["u0".to_string()],
-                capacity: 1,
-                ..Cluster::default()
-            },
-            Cluster {
-                name: "clb1".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["u1".to_string()],
-                capacity: 1,
-                ..Cluster::default()
-            },
-            Cluster {
-                name: "clb2".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["u2".to_string()],
-                capacity: 1,
-                ..Cluster::default()
-            },
+            Cluster::logic("clb0").with_member("u0").with_capacity(1),
+            Cluster::logic("clb1").with_member("u1").with_capacity(1),
+            Cluster::logic("clb2").with_member("u2").with_capacity(1),
         ],
         ..Design::default()
     }
@@ -238,62 +129,66 @@ fn placed_coordinates(design: &Design) -> Vec<(String, usize, usize)> {
     coords
 }
 
+fn placed_sites(design: &Design) -> Vec<(String, usize, usize, usize)> {
+    let mut coords = design
+        .clusters
+        .iter()
+        .map(|cluster| {
+            (
+                cluster.name.clone(),
+                cluster.x.unwrap_or(usize::MAX),
+                cluster.y.unwrap_or(usize::MAX),
+                cluster.z.unwrap_or(usize::MAX),
+            )
+        })
+        .collect::<Vec<_>>();
+    coords.sort();
+    coords
+}
+
 fn connected_pair_design() -> Design {
     Design {
         name: "place-pair".to_string(),
         cells: vec![
-            Cell {
-                name: "src".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: "link".to_string(),
-                }],
-                cluster: Some("clb0".to_string()),
-                ..Cell::default()
-            },
-            Cell {
-                name: "dst".to_string(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                inputs: vec![CellPin {
-                    port: "A".to_string(),
-                    net: "link".to_string(),
-                }],
-                cluster: Some("clb1".to_string()),
-                ..Cell::default()
-            },
+            Cell::lut("src", "LUT4")
+                .with_output("O", "link")
+                .in_cluster("clb0"),
+            Cell::lut("dst", "LUT4")
+                .with_input("A", "link")
+                .in_cluster("clb1"),
         ],
-        nets: vec![Net {
-            name: "link".to_string(),
-            driver: Some(Endpoint {
-                kind: "cell".to_string(),
-                name: "src".to_string(),
-                pin: "O".to_string(),
-            }),
-            sinks: vec![Endpoint {
-                kind: "cell".to_string(),
-                name: "dst".to_string(),
-                pin: "A".to_string(),
-            }],
-            ..Net::default()
-        }],
+        nets: vec![
+            Net::new("link")
+                .with_driver(Endpoint::cell("src", "O"))
+                .with_sink(Endpoint::cell("dst", "A")),
+        ],
         clusters: vec![
-            Cluster {
-                name: "clb0".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["src".to_string()],
-                capacity: 1,
-                ..Cluster::default()
-            },
-            Cluster {
-                name: "clb1".to_string(),
-                kind: "logic".to_string(),
-                members: vec!["dst".to_string()],
-                capacity: 1,
-                ..Cluster::default()
-            },
+            Cluster::logic("clb0").with_member("src").with_capacity(1),
+            Cluster::logic("clb1").with_member("dst").with_capacity(1),
+        ],
+        ..Design::default()
+    }
+}
+
+fn overfull_single_tile_design() -> Design {
+    Design {
+        name: "place-single-tile".to_string(),
+        cells: vec![
+            Cell::lut("u0", "LUT4")
+                .with_output("O", "n0")
+                .in_cluster("clb0"),
+            Cell::lut("u1", "LUT4")
+                .with_input("A", "n0")
+                .in_cluster("clb1"),
+        ],
+        nets: vec![
+            Net::new("n0")
+                .with_driver(Endpoint::cell("u0", "O"))
+                .with_sink(Endpoint::cell("u1", "A")),
+        ],
+        clusters: vec![
+            Cluster::logic("clb0").with_member("u0").with_capacity(1),
+            Cluster::logic("clb1").with_member("u1").with_capacity(1),
         ],
         ..Design::default()
     }
@@ -313,102 +208,54 @@ fn large_grid_design(width: usize, height: usize) -> Design {
             if x > 0
                 && let Some(net) = &row_input_nets[x]
             {
-                inputs.push(CellPin {
-                    port: "A".to_string(),
-                    net: net.clone(),
-                });
+                inputs.push(CellPin::new("A", net.clone()));
             }
             if y > 0 {
                 let net = format!("v_{x}_{}", y - 1);
-                inputs.push(CellPin {
-                    port: "B".to_string(),
-                    net,
-                });
+                inputs.push(CellPin::new("B", net));
             }
 
             let mut outputs = Vec::new();
             if x + 1 < width {
                 let net_name = format!("h_{x}_{y}");
-                outputs.push(CellPin {
-                    port: "OX".to_string(),
-                    net: net_name.clone(),
-                });
-                nets.push(Net {
-                    name: net_name.clone(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: cell_name.clone(),
-                        pin: "OX".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: format!("u_{}_{}", x + 1, y),
-                        pin: "A".to_string(),
-                    }],
-                    ..Net::default()
-                });
+                outputs.push(CellPin::new("OX", net_name.clone()));
+                nets.push(
+                    Net::new(net_name.clone())
+                        .with_driver(Endpoint::cell(cell_name.clone(), "OX"))
+                        .with_sink(Endpoint::cell(format!("u_{}_{}", x + 1, y), "A")),
+                );
                 row_input_nets[x + 1] = Some(net_name);
             }
             if y + 1 < height {
                 let net_name = format!("v_{x}_{y}");
-                outputs.push(CellPin {
-                    port: "OY".to_string(),
-                    net: net_name.clone(),
-                });
-                nets.push(Net {
-                    name: net_name,
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: cell_name.clone(),
-                        pin: "OY".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: format!("u_{x}_{}", y + 1),
-                        pin: "B".to_string(),
-                    }],
-                    ..Net::default()
-                });
+                outputs.push(CellPin::new("OY", net_name.clone()));
+                nets.push(
+                    Net::new(net_name)
+                        .with_driver(Endpoint::cell(cell_name.clone(), "OY"))
+                        .with_sink(Endpoint::cell(format!("u_{x}_{}", y + 1), "B")),
+                );
             }
 
             if x + 2 < width && y + 1 < height && (x + y) % 3 == 0 {
                 let net_name = format!("d_{x}_{y}");
-                outputs.push(CellPin {
-                    port: "OD".to_string(),
-                    net: net_name.clone(),
-                });
-                nets.push(Net {
-                    name: net_name,
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: cell_name.clone(),
-                        pin: "OD".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: format!("u_{}_{}", x + 2, y + 1),
-                        pin: "C".to_string(),
-                    }],
-                    ..Net::default()
-                });
+                outputs.push(CellPin::new("OD", net_name.clone()));
+                nets.push(
+                    Net::new(net_name)
+                        .with_driver(Endpoint::cell(cell_name.clone(), "OD"))
+                        .with_sink(Endpoint::cell(format!("u_{}_{}", x + 2, y + 1), "C")),
+                );
             }
 
             cells.push(Cell {
-                name: cell_name,
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
                 inputs,
                 outputs,
-                cluster: Some(cluster_name.clone()),
-                ..Cell::default()
+                ..Cell::lut(cell_name.clone(), "LUT4").in_cluster(cluster_name.clone())
             });
-            clusters.push(Cluster {
-                name: cluster_name,
-                kind: "logic".to_string(),
-                members: vec![format!("u_{x}_{y}")],
-                capacity: 1,
-                ..Cluster::default()
-            });
+            clusters.push(
+                Cluster::logic(cluster_name)
+                    .with_member(cell_name)
+                    .with_capacity(1),
+            );
         }
     }
 
@@ -428,20 +275,40 @@ fn fixed_cluster_design() -> Design {
         .iter_mut()
         .find(|cluster| cluster.name == "clb0")
     {
-        cluster.fixed = true;
-        cluster.x = Some(1);
-        cluster.y = Some(1);
+        *cluster = cluster.clone().fixed_at(1, 1);
     }
     design
+}
+
+fn apply_net_criticality(design: &mut Design, hot_nets: &[&str], default: f64, hot: f64) {
+    let hot_nets = hot_nets.iter().copied().collect::<BTreeSet<_>>();
+    for net in &mut design.nets {
+        net.criticality = if hot_nets.contains(net.name.as_str()) {
+            hot
+        } else {
+            default
+        };
+    }
+}
+
+fn placement_vec(
+    model: &PlacementModel,
+    placements: &[(ClusterId, (usize, usize))],
+) -> Vec<Option<Point>> {
+    let mut resolved = model.fixed_placements();
+    for &(cluster_id, (x, y)) in placements {
+        resolved[cluster_id.index()] = Some(Point::new(x, y));
+    }
+    resolved
 }
 
 #[test]
 fn placement_is_seed_stable_and_legal_in_both_modes() -> Result<()> {
     for mode in [PlaceMode::BoundingBox, PlaceMode::TimingDriven] {
         let options = PlaceOptions {
-            arch: mini_arch(),
-            delay: Some(mini_delay()),
-            constraints: Vec::new(),
+            arch: mini_arch().into(),
+            delay: Some(mini_delay().into()),
+            constraints: Vec::new().into(),
             mode,
             seed: 0xCAFE_BABE,
         };
@@ -459,7 +326,7 @@ fn placement_is_seed_stable_and_legal_in_both_modes() -> Result<()> {
             .iter()
             .map(|(_, x, y)| (*x, *y))
             .collect::<BTreeSet<_>>();
-        assert_eq!(unique_sites.len(), first.clusters.len());
+        assert!(unique_sites.len() <= first.clusters.len());
         assert!(
             first_coords
                 .iter()
@@ -476,9 +343,9 @@ fn strongly_connected_pair_is_placed_adjacent() -> Result<()> {
         let placed = run(
             connected_pair_design(),
             &PlaceOptions {
-                arch: mini_arch(),
-                delay: Some(mini_delay()),
-                constraints: Vec::new(),
+                arch: mini_arch().into(),
+                delay: Some(mini_delay().into()),
+                constraints: Vec::new().into(),
                 mode,
                 seed: 7,
             },
@@ -488,10 +355,9 @@ fn strongly_connected_pair_is_placed_adjacent() -> Result<()> {
         let coords = placed_coordinates(&placed);
         let lhs = (coords[0].1, coords[0].2);
         let rhs = (coords[1].1, coords[1].2);
-        assert_eq!(
-            super::manhattan(lhs, rhs),
-            1,
-            "expected adjacent placement in {mode:?}"
+        assert!(
+            super::manhattan(lhs, rhs) <= 1,
+            "expected colocated-or-adjacent placement in {mode:?}"
         );
     }
 
@@ -503,9 +369,9 @@ fn fixed_clusters_keep_their_requested_site() -> Result<()> {
     let placed = run(
         fixed_cluster_design(),
         &PlaceOptions {
-            arch: mini_arch(),
-            delay: Some(mini_delay()),
-            constraints: Vec::new(),
+            arch: mini_arch().into(),
+            delay: Some(mini_delay().into()),
+            constraints: Vec::new().into(),
             mode: PlaceMode::TimingDriven,
             seed: 99,
         },
@@ -522,26 +388,50 @@ fn fixed_clusters_keep_their_requested_site() -> Result<()> {
 }
 
 #[test]
+fn placement_uses_multiple_slice_slots_per_tile_when_capacity_allows() -> Result<()> {
+    let placed = run(
+        overfull_single_tile_design(),
+        &PlaceOptions {
+            arch: synthetic_arch(1, 1).into(),
+            delay: None,
+            constraints: Arc::from([]),
+            mode: PlaceMode::BoundingBox,
+            seed: 0xA11CE,
+        },
+    )?
+    .value;
+
+    let sites = placed_sites(&placed);
+    assert_eq!(
+        sites,
+        vec![("clb0".to_string(), 0, 0, 0), ("clb1".to_string(), 0, 0, 1),]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn timing_objective_penalizes_stretched_critical_chain_more_strongly() {
     let mut design = clustered_design();
-    for net in &mut design.nets {
-        net.criticality = match net.name.as_str() {
-            "mid0" | "mid1" => 1.0,
-            _ => 0.1,
-        };
-    }
+    apply_net_criticality(&mut design, &["mid0", "mid1"], 0.1, 1.0);
     let graph = build_cluster_graph(&design);
     let model = PlacementModel::from_design(&design);
-    let compact = BTreeMap::from([
-        ("clb0".to_string(), (1usize, 2usize)),
-        ("clb1".to_string(), (2usize, 2usize)),
-        ("clb2".to_string(), (3usize, 2usize)),
-    ]);
-    let stretched = BTreeMap::from([
-        ("clb0".to_string(), (1usize, 1usize)),
-        ("clb1".to_string(), (3usize, 3usize)),
-        ("clb2".to_string(), (4usize, 4usize)),
-    ]);
+    let compact = placement_vec(
+        &model,
+        &[
+            (ClusterId::new(0), (1usize, 2usize)),
+            (ClusterId::new(1), (2usize, 2usize)),
+            (ClusterId::new(2), (3usize, 2usize)),
+        ],
+    );
+    let stretched = placement_vec(
+        &model,
+        &[
+            (ClusterId::new(0), (1usize, 1usize)),
+            (ClusterId::new(1), (3usize, 3usize)),
+            (ClusterId::new(2), (4usize, 4usize)),
+        ],
+    );
 
     let bounding_gap = evaluate(
         &model,
@@ -586,24 +476,22 @@ fn timing_objective_penalizes_stretched_critical_chain_more_strongly() {
 #[test]
 fn incremental_evaluator_matches_full_recompute_for_move_and_swap() {
     let mut design = clustered_design();
-    for net in &mut design.nets {
-        net.criticality = match net.name.as_str() {
-            "mid0" | "mid1" => 1.0,
-            _ => 0.2,
-        };
-    }
+    apply_net_criticality(&mut design, &["mid0", "mid1"], 0.2, 1.0);
 
     let graph = build_cluster_graph(&design);
     let model = PlacementModel::from_design(&design);
-    let placements = BTreeMap::from([
-        ("clb0".to_string(), (1usize, 2usize)),
-        ("clb1".to_string(), (2usize, 2usize)),
-        ("clb2".to_string(), (4usize, 3usize)),
-    ]);
+    let placements = placement_vec(
+        &model,
+        &[
+            (ClusterId::new(0), (1usize, 2usize)),
+            (ClusterId::new(1), (2usize, 2usize)),
+            (ClusterId::new(2), (4usize, 3usize)),
+        ],
+    );
     let arch = mini_arch();
     let delay = mini_delay();
     let mode = PlaceMode::TimingDriven;
-    let mut evaluator = PlacementEvaluator::new(
+    let mut evaluator = PlacementEvaluator::new_from_positions(
         &model,
         &graph,
         placements.clone(),
@@ -612,24 +500,25 @@ fn incremental_evaluator_matches_full_recompute_for_move_and_swap() {
         mode,
     );
 
-    let move_updates = vec![("clb1".to_string(), (3usize, 1usize))];
+    let clb0 = ClusterId::new(0);
+    let clb1 = ClusterId::new(1);
+    let clb2 = ClusterId::new(2);
+
+    let move_updates = vec![(clb1, (3usize, 1usize))];
     let move_candidate = evaluator.evaluate_candidate(&move_updates);
     let mut moved = placements.clone();
-    moved.insert("clb1".to_string(), (3, 1));
+    moved[clb1.index()] = Some(Point::new(3, 1));
     let moved_metrics = evaluate(&model, &graph, &moved, &arch, Some(&delay), mode);
     assert_metrics_close(move_candidate.metrics(), &moved_metrics);
 
     evaluator.apply_candidate(move_candidate);
     assert_metrics_close(evaluator.metrics(), &moved_metrics);
 
-    let swap_updates = vec![
-        ("clb0".to_string(), (4usize, 3usize)),
-        ("clb2".to_string(), (1usize, 2usize)),
-    ];
+    let swap_updates = vec![(clb0, (4usize, 3usize)), (clb2, (1usize, 2usize))];
     let swap_candidate = evaluator.evaluate_candidate(&swap_updates);
     let mut swapped = moved.clone();
-    swapped.insert("clb0".to_string(), (4, 3));
-    swapped.insert("clb2".to_string(), (1, 2));
+    swapped[clb0.index()] = Some(Point::new(4, 3));
+    swapped[clb2.index()] = Some(Point::new(1, 2));
     let swapped_metrics = evaluate(&model, &graph, &swapped, &arch, Some(&delay), mode);
     assert_metrics_close(swap_candidate.metrics(), &swapped_metrics);
 
@@ -641,11 +530,12 @@ fn incremental_evaluator_matches_full_recompute_for_move_and_swap() {
 fn large_synthetic_design_places_legally_and_deterministically() -> Result<()> {
     let design = large_grid_design(9, 9);
     let arch = synthetic_arch(14, 14);
+    let slices_per_tile = arch.slices_per_tile;
     let delay = synthetic_delay(arch.width, arch.height);
     let options = PlaceOptions {
-        arch,
-        delay: Some(delay),
-        constraints: Vec::new(),
+        arch: arch.into(),
+        delay: Some(delay.into()),
+        constraints: Vec::new().into(),
         mode: PlaceMode::TimingDriven,
         seed: 0xC0FFEE,
     };
@@ -661,7 +551,12 @@ fn large_synthetic_design_places_legally_and_deterministically() -> Result<()> {
         .iter()
         .map(|(_, x, y)| (*x, *y))
         .collect::<BTreeSet<_>>();
-    assert_eq!(unique_sites.len(), coords_a.len());
+    assert!(unique_sites.len().saturating_mul(slices_per_tile) >= coords_a.len());
+    let mut occupancy = BTreeMap::<(usize, usize), usize>::new();
+    for (_, x, y) in &coords_a {
+        *occupancy.entry((*x, *y)).or_default() += 1;
+    }
+    assert!(occupancy.values().all(|count| *count <= slices_per_tile));
     assert!(coords_a.iter().all(|(_, x, y)| *x < 14 && *y < 14));
 
     Ok(())
@@ -674,9 +569,9 @@ fn large_synthetic_design_benchmark() -> Result<()> {
     let arch = synthetic_arch(15, 15);
     let delay = synthetic_delay(arch.width, arch.height);
     let options = PlaceOptions {
-        arch,
-        delay: Some(delay),
-        constraints: Vec::new(),
+        arch: arch.into(),
+        delay: Some(delay.into()),
+        constraints: Vec::new().into(),
         mode: PlaceMode::TimingDriven,
         seed: 0x1234_5678,
     };

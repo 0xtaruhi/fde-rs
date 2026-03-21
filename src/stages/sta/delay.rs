@@ -1,11 +1,11 @@
 use crate::{
-    domain::EndpointKind,
-    ir::{Cell, Design, Endpoint, Net, RouteSegment},
+    ir::{Cell, Design, DesignIndex, Endpoint, EndpointTarget, Net, RouteSegment},
     resource::{Arch, DelayModel},
 };
 
 pub(crate) fn net_delay_ns(
     design: &Design,
+    index: &DesignIndex<'_>,
     net: &Net,
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
@@ -23,7 +23,7 @@ pub(crate) fn net_delay_ns(
     let Some(sink) = net.sinks.first() else {
         return 0.0;
     };
-    let dxdy = endpoint_distance(driver, sink, design);
+    let dxdy = endpoint_distance(driver, sink, design, index);
     if let Some(delay) = delay {
         delay.lookup(dxdy.0, dxdy.1)
     } else {
@@ -56,23 +56,34 @@ pub(crate) fn estimate_route_delay(route: &[RouteSegment], wire_r: f64, wire_c: 
     length * (wire_r + wire_c + 0.02) + bends * 0.05
 }
 
-fn endpoint_distance(driver: &Endpoint, sink: &Endpoint, design: &Design) -> (usize, usize) {
-    let driver_pos = endpoint_position(driver, design).unwrap_or((0, 0));
-    let sink_pos = endpoint_position(sink, design).unwrap_or((0, 0));
+fn endpoint_distance(
+    driver: &Endpoint,
+    sink: &Endpoint,
+    design: &Design,
+    index: &DesignIndex<'_>,
+) -> (usize, usize) {
+    let driver_pos = endpoint_position(driver, design, index).unwrap_or((0, 0));
+    let sink_pos = endpoint_position(sink, design, index).unwrap_or((0, 0));
     (
         driver_pos.0.abs_diff(sink_pos.0),
         driver_pos.1.abs_diff(sink_pos.1),
     )
 }
 
-fn endpoint_position(endpoint: &Endpoint, design: &Design) -> Option<(usize, usize)> {
-    match endpoint.endpoint_kind() {
-        EndpointKind::Cell => design
-            .cluster_lookup(&endpoint.name)
-            .and_then(|cluster| Some((cluster.x?, cluster.y?))),
-        EndpointKind::Port => design
-            .port_lookup(&endpoint.name)
-            .and_then(|port| Some((port.x?, port.y?))),
-        EndpointKind::Unknown => None,
+fn endpoint_position(
+    endpoint: &Endpoint,
+    design: &Design,
+    index: &DesignIndex<'_>,
+) -> Option<(usize, usize)> {
+    match index.resolve_endpoint(endpoint) {
+        EndpointTarget::Cell(cell_id) => index.cluster_for_cell(cell_id).and_then(|cluster_id| {
+            let cluster = index.cluster(design, cluster_id);
+            Some((cluster.x?, cluster.y?))
+        }),
+        EndpointTarget::Port(port_id) => {
+            let port = index.port(design, port_id);
+            Some((port.x?, port.y?))
+        }
+        EndpointTarget::Unknown => None,
     }
 }

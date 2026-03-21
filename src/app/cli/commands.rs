@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::fs;
+use std::{fs, sync::Arc};
 
 use crate::{
     bitgen,
@@ -87,8 +87,8 @@ pub(crate) fn run_place(args: PlaceArgs, emit_report: bool) -> Result<()> {
     let result = place::run(
         design,
         &PlaceOptions {
-            arch,
-            delay,
+            arch: Arc::new(arch),
+            delay: delay.map(Arc::new),
             constraints,
             mode: args.mode.into(),
             seed: args.seed,
@@ -108,7 +108,7 @@ pub(crate) fn run_route(args: RouteArgs, emit_report: bool) -> Result<()> {
     let result = route::run(
         design,
         &RouteOptions {
-            arch,
+            arch: Arc::new(arch),
             constraints,
             mode: args.mode.into(),
         },
@@ -127,7 +127,13 @@ pub(crate) fn run_sta(args: StaArgs, emit_report: bool) -> Result<()> {
         None => None,
     };
     let delay = load_delay_model(args.delay.as_deref())?;
-    let mut result = sta::run(design, &StaOptions { arch, delay })?;
+    let mut result = sta::run(
+        design,
+        &StaOptions {
+            arch: arch.map(Arc::new),
+            delay: delay.map(Arc::new),
+        },
+    )?;
     if let Some(path) = args.timing_library.as_ref() {
         result
             .report

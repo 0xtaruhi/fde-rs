@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="bus_demo">
+  <port name="a[0]" position="P1"/>
+  <port name="a[1]" position="P2"/>
+  <port name="y[0]" position="P4"/>
+  <port name="y[1]" position="P5"/>
+</design>

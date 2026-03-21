@@ -5,13 +5,16 @@ mod solver;
 
 use crate::{
     analysis::annotate_net_criticality,
-    constraints::{ConstraintEntry, apply_constraints, ensure_port_positions},
+    constraints::{apply_constraints, ensure_port_positions},
     ir::Design,
     report::{StageOutput, StageReport},
-    resource::{Arch, DelayModel},
+    resource::{SharedArch, SharedDelayModel},
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use self::model::Point;
 
 #[cfg(test)]
 mod tests;
@@ -24,9 +27,9 @@ pub enum PlaceMode {
 
 #[derive(Debug, Clone)]
 pub struct PlaceOptions {
-    pub arch: Arch,
-    pub delay: Option<DelayModel>,
-    pub constraints: Vec<ConstraintEntry>,
+    pub arch: SharedArch,
+    pub delay: Option<SharedDelayModel>,
+    pub constraints: crate::constraints::SharedConstraints,
     pub mode: PlaceMode,
     pub seed: u64,
 }
@@ -51,21 +54,23 @@ pub fn run(mut design: Design, options: &PlaceOptions) -> Result<StageOutput<Des
     }
 
     let sites = options.arch.logic_sites();
-    if design.clusters.len() > sites.len() {
+    let site_capacity = options.arch.slices_per_tile.max(1);
+    if design.clusters.len() > sites.len().saturating_mul(site_capacity) {
         bail!(
             "not enough logic sites: need {}, only {} available",
             design.clusters.len(),
-            sites.len()
+            sites.len().saturating_mul(site_capacity)
         );
     }
 
     let solution = solver::solve(&design, options)?;
-    for cluster in &mut design.clusters {
-        if let Some((x, y)) = solution.placements.get(&cluster.name) {
-            cluster.x = Some(*x);
-            cluster.y = Some(*y);
+    for (cluster, point) in design.clusters.iter_mut().zip(&solution.placements) {
+        if let Some(point) = point {
+            cluster.x = Some(point.x);
+            cluster.y = Some(point.y);
         }
     }
+    assign_cluster_slots(&mut design, site_capacity)?;
 
     let mut report = StageReport::new("place");
     report.push(format!(
@@ -89,6 +94,68 @@ pub fn run(mut design: Design, options: &PlaceOptions) -> Result<StageOutput<Des
     })
 }
 
-pub(crate) fn manhattan(lhs: (usize, usize), rhs: (usize, usize)) -> usize {
-    lhs.0.abs_diff(rhs.0) + lhs.1.abs_diff(rhs.1)
+fn assign_cluster_slots(design: &mut Design, site_capacity: usize) -> Result<()> {
+    let mut by_coordinate = BTreeMap::<(usize, usize), Vec<usize>>::new();
+    for (index, cluster) in design.clusters.iter().enumerate() {
+        let Some((x, y)) = cluster.x.zip(cluster.y) else {
+            continue;
+        };
+        by_coordinate.entry((x, y)).or_default().push(index);
+    }
+
+    for ((x, y), cluster_indices) in by_coordinate {
+        if cluster_indices.len() > site_capacity {
+            bail!(
+                "logic site ({x}, {y}) over capacity: {} clusters for {} slice slot(s)",
+                cluster_indices.len(),
+                site_capacity
+            );
+        }
+
+        let mut remaining = cluster_indices;
+        remaining.sort_by(|lhs, rhs| design.clusters[*lhs].name.cmp(&design.clusters[*rhs].name));
+        let mut used = vec![false; site_capacity];
+
+        for &cluster_index in &remaining {
+            let requested = design.clusters[cluster_index].z;
+            if let Some(slot) = requested {
+                if slot >= site_capacity {
+                    bail!(
+                        "cluster {} requests slot {} at ({x}, {y}) but capacity is {}",
+                        design.clusters[cluster_index].name,
+                        slot,
+                        site_capacity
+                    );
+                }
+                if used[slot] {
+                    bail!("multiple clusters request slot {} at ({x}, {y})", slot);
+                }
+                used[slot] = true;
+            }
+        }
+
+        for cluster_index in remaining {
+            let slot = if let Some(requested) = design.clusters[cluster_index].z {
+                requested
+            } else {
+                used.iter()
+                    .position(|occupied| !*occupied)
+                    .ok_or_else(|| anyhow!("ran out of slice slots while assigning ({x}, {y})"))?
+            };
+            used[slot] = true;
+            design.clusters[cluster_index].z = Some(slot);
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn manhattan<L, R>(lhs: L, rhs: R) -> usize
+where
+    L: Into<Point>,
+    R: Into<Point>,
+{
+    let lhs = lhs.into();
+    let rhs = rhs.into();
+    lhs.x.abs_diff(rhs.x) + lhs.y.abs_diff(rhs.y)
 }

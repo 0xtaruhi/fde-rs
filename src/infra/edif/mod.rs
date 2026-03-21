@@ -1,263 +1,843 @@
 use crate::{
-    domain::{PinRole, PrimitiveKind},
-    ir::{Cell, CellPin, Design, Endpoint, Net, Port, PortDirection},
+    domain::{CellKind, PinRole, PrimitiveKind},
+    ir::{Cell, CellPin, Design, Endpoint, EndpointKind, Net, Port, PortDirection},
 };
 use anyhow::{Context, Result, anyhow, bail};
 use std::{collections::BTreeMap, fs, path::Path};
 
-#[derive(Debug, Clone)]
-enum Sexp {
-    Atom(String),
-    List(Vec<Sexp>),
-}
-
 pub fn load_edif(path: &Path) -> Result<Design> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("failed to read EDIF file {}", path.display()))?;
-    let tokens = tokenize(&source);
-    let mut cursor = 0;
-    let sexp = parse_sexp(&tokens, &mut cursor)?;
-    build_design(&sexp)
+    parse_source(&source)
 }
 
-fn tokenize(source: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let chars = source.chars().collect::<Vec<_>>();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '(' | ')' => {
-                tokens.push(chars[i].to_string());
-                i += 1;
+fn parse_source(source: &str) -> Result<Design> {
+    Parser::new(source).parse_design()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Token {
+    LParen,
+    RParen,
+    Atom(String),
+}
+
+#[derive(Debug, Clone)]
+struct ParsedName {
+    display: String,
+    reference: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingEndpoint {
+    pin: String,
+    target: EndpointTarget,
+}
+
+#[derive(Debug, Clone)]
+enum EndpointTarget {
+    Port(String),
+    InstanceRef(String),
+}
+
+#[derive(Debug, Clone)]
+struct PendingNet {
+    name: String,
+    endpoints: Vec<PendingEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+struct DesignBuilder {
+    top_name: String,
+    design: Design,
+    cell_types: BTreeMap<String, String>,
+    instance_names: BTreeMap<String, String>,
+    pending_nets: Vec<PendingNet>,
+}
+
+impl DesignBuilder {
+    fn new(top_name: String) -> Self {
+        let mut design = Design {
+            name: top_name.clone(),
+            stage: "mapped".to_string(),
+            ..Design::default()
+        };
+        design.metadata.source_format = "edif".to_string();
+        Self {
+            top_name,
+            design,
+            cell_types: BTreeMap::new(),
+            instance_names: BTreeMap::new(),
+            pending_nets: Vec::new(),
+        }
+    }
+
+    fn push_port(&mut self, port: Port) {
+        self.design.ports.push(port);
+    }
+
+    fn push_instance(&mut self, instance_ref: String, mut cell: Cell) {
+        cell.kind = classify_cell_kind(&cell.type_name);
+        self.instance_names.insert(instance_ref, cell.name.clone());
+        self.cell_types
+            .insert(cell.name.clone(), cell.type_name.clone());
+        self.design.cells.push(cell);
+    }
+
+    fn push_net(&mut self, net: PendingNet) {
+        self.pending_nets.push(net);
+    }
+
+    fn finish(mut self) -> Design {
+        for pending in self.pending_nets.drain(..) {
+            let endpoints = pending
+                .endpoints
+                .into_iter()
+                .map(|endpoint| match endpoint.target {
+                    EndpointTarget::Port(name) => Endpoint {
+                        kind: EndpointKind::Port,
+                        name,
+                        pin: endpoint.pin,
+                    },
+                    EndpointTarget::InstanceRef(instance_ref) => Endpoint {
+                        kind: EndpointKind::Cell,
+                        name: self
+                            .instance_names
+                            .get(&instance_ref)
+                            .cloned()
+                            .unwrap_or(instance_ref),
+                        pin: endpoint.pin,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let (driver, sinks) = split_endpoints(&self.design, &self.cell_types, &endpoints);
+            self.design.nets.push(Net {
+                name: pending.name,
+                driver,
+                sinks,
+                ..Net::default()
+            });
+        }
+
+        for cell in &mut self.design.cells {
+            cell.inputs.clear();
+            cell.outputs.clear();
+        }
+        let cell_index = self
+            .design
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| (cell.name.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        for net in &self.design.nets {
+            if let Some(driver) = &net.driver
+                && driver.is_cell()
+                && let Some(index) = cell_index.get(&driver.name)
+            {
+                self.design.cells[*index]
+                    .outputs
+                    .push(CellPin::new(driver.pin.clone(), net.name.clone()));
             }
-            '"' => {
-                i += 1;
-                let mut value = String::new();
-                while i < chars.len() {
-                    match chars[i] {
-                        '"' => {
-                            i += 1;
-                            break;
-                        }
-                        '\\' if i + 1 < chars.len() => {
-                            value.push(chars[i + 1]);
-                            i += 2;
-                        }
-                        ch => {
-                            value.push(ch);
-                            i += 1;
+            for sink in &net.sinks {
+                if sink.is_cell()
+                    && let Some(index) = cell_index.get(&sink.name)
+                {
+                    self.design.cells[*index]
+                        .inputs
+                        .push(CellPin::new(sink.pin.clone(), net.name.clone()));
+                }
+            }
+        }
+
+        self.design
+    }
+}
+
+struct Parser<'a> {
+    source: &'a str,
+    cursor: usize,
+    peeked: Option<Token>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            cursor: 0,
+            peeked: None,
+        }
+    }
+
+    fn parse_design(mut self) -> Result<Design> {
+        self.expect_lparen()?;
+        self.expect_head("edif")?;
+        let top_name = self
+            .parse_name_expr()?
+            .map(|name| name.display)
+            .unwrap_or_else(|| "design".to_string());
+        let mut builder = DesignBuilder::new(top_name);
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "library" => self.parse_library(&mut builder)?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()?;
+
+        if self.next_token()?.is_some() {
+            bail!("unexpected trailing EDIF input at byte {}", self.cursor);
+        }
+
+        let top_name = builder.top_name.clone();
+        let design = builder.finish();
+        if design.ports.is_empty() && design.cells.is_empty() && design.nets.is_empty() {
+            return Err(anyhow!(
+                "missing DESIGN library top cell '{}' in EDIF",
+                top_name
+            ));
+        }
+        Ok(design)
+    }
+
+    fn parse_library(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        let library_name = self
+            .parse_name_expr()?
+            .map(|name| name.display)
+            .ok_or_else(|| self.error("missing library name"))?;
+        let is_design_library = library_name == "DESIGN";
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "cell" if is_design_library => self.parse_cell(builder)?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()
+    }
+
+    fn parse_cell(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        let cell_name = self
+            .parse_name_expr()?
+            .map(|name| name.display)
+            .ok_or_else(|| self.error("missing cell name"))?;
+        let keep = cell_name == builder.top_name;
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "view" if keep => self.parse_view(builder)?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()
+    }
+
+    fn parse_view(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        let _ = self.parse_name_expr()?;
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "interface" => self.parse_interface(builder)?,
+                    "contents" => self.parse_contents(builder)?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()
+    }
+
+    fn parse_interface(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "port" => self.parse_port(builder)?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()
+    }
+
+    fn parse_port(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        let names = self.parse_port_decl_names()?;
+        if names.is_empty() {
+            return Err(self.error("malformed port"));
+        }
+        let mut direction = PortDirection::Input;
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "direction" => direction = self.parse_direction()?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()?;
+
+        for name in names {
+            let mut port = Port::new(name, direction.clone());
+            port.width = 1;
+            builder.push_port(port);
+        }
+        Ok(())
+    }
+
+    fn parse_direction(&mut self) -> Result<PortDirection> {
+        let value = self
+            .parse_name_expr()?
+            .map(|name| name.display)
+            .unwrap_or_else(|| "INPUT".to_string());
+        while !self.peek_is_rparen()? {
+            self.skip_value()?;
+        }
+        self.expect_rparen()?;
+        Ok(value.parse().unwrap_or(PortDirection::Input))
+    }
+
+    fn parse_contents(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "instance" => self.parse_instance(builder)?,
+                    "net" => self.parse_net(builder)?,
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()
+    }
+
+    fn parse_instance(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        let name = self
+            .parse_name_expr()?
+            .ok_or_else(|| self.error("malformed instance reference"))?;
+        let mut type_name = "GENERIC".to_string();
+        let mut properties = Vec::new();
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "viewRef" => {
+                        if let Some(parsed_type_name) = self.parse_view_ref()? {
+                            type_name = parsed_type_name;
                         }
                     }
-                }
-                tokens.push(value);
-            }
-            ';' => {
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-            }
-            ch if ch.is_whitespace() => i += 1,
-            _ => {
-                let start = i;
-                while i < chars.len() {
-                    let ch = chars[i];
-                    if ch.is_whitespace() || ch == '(' || ch == ')' {
-                        break;
+                    "property" => {
+                        if let Some(property) = self.parse_property()? {
+                            properties.push(property);
+                        }
                     }
-                    i += 1;
+                    _ => self.skip_current_list()?,
                 }
-                tokens.push(chars[start..i].iter().collect());
+            } else {
+                self.skip_value()?;
             }
         }
-    }
-    tokens
-}
+        self.expect_rparen()?;
 
-fn parse_sexp(tokens: &[String], cursor: &mut usize) -> Result<Sexp> {
-    let Some(token) = tokens.get(*cursor) else {
-        bail!("unexpected end of EDIF input");
-    };
-    if token == "(" {
-        *cursor += 1;
-        let mut children = Vec::new();
-        while tokens.get(*cursor).map(|token| token.as_str()) != Some(")") {
-            children.push(parse_sexp(tokens, cursor)?);
-            if *cursor >= tokens.len() {
-                bail!("unterminated EDIF list");
-            }
-        }
-        *cursor += 1;
-        Ok(Sexp::List(children))
-    } else if token == ")" {
-        bail!("unexpected ')' in EDIF input")
-    } else {
-        *cursor += 1;
-        Ok(Sexp::Atom(token.clone()))
-    }
-}
-
-fn build_design(root: &Sexp) -> Result<Design> {
-    let root_list = as_list(root)?;
-    expect_head(root_list, "edif")?;
-    let top_name = root_list.get(1).and_then(atom).unwrap_or("design");
-
-    let design_library = root_list.iter().find_map(|item| {
-        let list = as_list(item).ok()?;
-        if list.first().and_then(atom) == Some("library")
-            && list.get(1).and_then(atom) == Some("DESIGN")
-        {
-            Some(list)
-        } else {
-            None
-        }
-    });
-    let library = design_library.ok_or_else(|| anyhow!("missing DESIGN library in EDIF"))?;
-    let top_cell = library.iter().find_map(|item| {
-        let list = as_list(item).ok()?;
-        if list.first().and_then(atom) == Some("cell")
-            && resolve_name(list.get(1)) == Some(top_name.to_string())
-        {
-            Some(list)
-        } else {
-            None
-        }
-    });
-    let cell = top_cell.ok_or_else(|| anyhow!("missing top cell {top_name} in EDIF"))?;
-    let view = find_named_child(cell, "view").ok_or_else(|| anyhow!("missing top view"))?;
-    let interface =
-        find_named_child(view, "interface").ok_or_else(|| anyhow!("missing top interface"))?;
-    let contents =
-        find_named_child(view, "contents").ok_or_else(|| anyhow!("missing top contents"))?;
-
-    let mut design = Design {
-        name: top_name.to_string(),
-        stage: "mapped".to_string(),
-        ..Design::default()
-    };
-    design.metadata.source_format = "edif".to_string();
-
-    for port_sexp in interface.iter().filter(|item| has_head(item, "port")) {
-        let list = as_list(port_sexp)?;
-        let name = resolve_name(list.get(1)).ok_or_else(|| anyhow!("malformed port"))?;
-        let direction = find_named_child(list, "direction")
-            .and_then(|node| node.get(1))
-            .and_then(atom)
-            .unwrap_or("INPUT")
-            .parse()
-            .unwrap_or(PortDirection::Input);
-        design.ports.push(Port {
-            name,
-            direction,
-            width: 1,
-            ..Port::default()
-        });
-    }
-
-    let mut cell_types: BTreeMap<String, String> = BTreeMap::new();
-    let mut instance_names: BTreeMap<String, String> = BTreeMap::new();
-    for instance_sexp in contents.iter().filter(|item| has_head(item, "instance")) {
-        let instance = as_list(instance_sexp)?;
-        let instance_ref = resolve_reference_name(instance.get(1))
-            .ok_or_else(|| anyhow!("malformed instance reference"))?;
-        let name = resolve_name(instance.get(1)).unwrap_or_else(|| instance_ref.clone());
-        let view_ref =
-            find_named_child(instance, "viewRef").ok_or_else(|| anyhow!("missing viewRef"))?;
-        let cell_ref =
-            find_named_child(view_ref, "cellRef").ok_or_else(|| anyhow!("missing cellRef"))?;
-        let type_name = resolve_name(cell_ref.get(1)).unwrap_or_else(|| "GENERIC".to_string());
-        instance_names.insert(instance_ref, name.clone());
-        cell_types.insert(name.clone(), type_name.clone());
         let mut cell = Cell {
-            name,
-            kind: classify_cell_kind(&type_name),
+            name: name.display.clone(),
             type_name,
             ..Cell::default()
         };
-        for property in instance.iter().filter(|item| has_head(item, "property")) {
-            let property = as_list(property)?;
-            let key = resolve_name(property.get(1)).unwrap_or_default();
-            let value = property
-                .iter()
-                .skip(2)
-                .find_map(read_value)
-                .unwrap_or_default();
-            if !key.is_empty() {
-                cell.set_property(key.to_ascii_lowercase(), value);
-            }
+        for (key, value) in properties {
+            cell.set_property(key, value);
         }
-        design.cells.push(cell);
+        builder.push_instance(name.reference, cell);
+        Ok(())
     }
 
-    for net_sexp in contents.iter().filter(|item| has_head(item, "net")) {
-        let list = as_list(net_sexp)?;
-        let name = resolve_name(list.get(1)).ok_or_else(|| anyhow!("malformed net"))?;
-        let joined = find_named_child(list, "joined").ok_or_else(|| anyhow!("missing joined"))?;
-        let mut endpoints = Vec::new();
-        for port_ref in joined.iter().filter(|item| has_head(item, "portRef")) {
-            let port_ref = as_list(port_ref)?;
-            let pin = resolve_name(port_ref.get(1)).unwrap_or_default();
-            let instance_ref = find_named_child(port_ref, "instanceRef")
-                .and_then(|node| resolve_reference_name(node.get(1)));
-            if let Some(instance_name) = instance_ref {
-                let instance_name = instance_names
-                    .get(&instance_name)
-                    .cloned()
-                    .unwrap_or(instance_name);
-                endpoints.push(Endpoint {
-                    kind: "cell".to_string(),
-                    name: instance_name,
-                    pin,
-                });
+    fn parse_view_ref(&mut self) -> Result<Option<String>> {
+        let _ = self.parse_name_expr()?;
+        let mut type_name = None;
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "cellRef" => type_name = self.parse_cell_ref()?,
+                    _ => self.skip_current_list()?,
+                }
             } else {
-                endpoints.push(Endpoint {
-                    kind: "port".to_string(),
-                    name: pin.clone(),
-                    pin,
-                });
+                self.skip_value()?;
             }
         }
-        let (driver, sinks) = split_endpoints(&design, &cell_types, &endpoints);
-        design.nets.push(Net {
-            name: name.clone(),
-            driver,
-            sinks,
-            ..Net::default()
-        });
+        self.expect_rparen()?;
+        Ok(type_name)
     }
 
-    for cell in &mut design.cells {
-        cell.inputs.clear();
-        cell.outputs.clear();
-    }
-    let cell_index = design
-        .cells
-        .iter()
-        .enumerate()
-        .map(|(index, cell)| (cell.name.clone(), index))
-        .collect::<BTreeMap<_, _>>();
-    for net in &design.nets {
-        if let Some(driver) = &net.driver
-            && driver.kind == "cell"
-            && let Some(index) = cell_index.get(&driver.name)
-        {
-            design.cells[*index].outputs.push(CellPin {
-                port: driver.pin.clone(),
-                net: net.name.clone(),
-            });
+    fn parse_cell_ref(&mut self) -> Result<Option<String>> {
+        let type_name = self.parse_name_expr()?.map(|name| name.display);
+        while !self.peek_is_rparen()? {
+            self.skip_value()?;
         }
-        for sink in &net.sinks {
-            if sink.kind == "cell"
-                && let Some(index) = cell_index.get(&sink.name)
-            {
-                design.cells[*index].inputs.push(CellPin {
-                    port: sink.pin.clone(),
-                    net: net.name.clone(),
-                });
+        self.expect_rparen()?;
+        Ok(type_name)
+    }
+
+    fn parse_property(&mut self) -> Result<Option<(String, String)>> {
+        let key = self
+            .parse_name_expr()?
+            .map(|name| name.display)
+            .unwrap_or_default();
+        let mut value = None;
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "integer" | "string" => value = self.parse_scalar_list()?,
+                    _ => self.skip_current_list()?,
+                }
+            } else if value.is_none() {
+                value = self.parse_atom_value()?;
+            } else {
+                self.skip_value()?;
             }
+        }
+        self.expect_rparen()?;
+
+        if key.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some((key.to_ascii_lowercase(), value.unwrap_or_default())))
         }
     }
 
-    Ok(design)
+    fn parse_scalar_list(&mut self) -> Result<Option<String>> {
+        let value = self.parse_atom_value()?;
+        while !self.peek_is_rparen()? {
+            self.skip_value()?;
+        }
+        self.expect_rparen()?;
+        Ok(value)
+    }
+
+    fn parse_net(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        let name = self
+            .parse_name_expr()?
+            .map(|parsed| parsed.display)
+            .ok_or_else(|| self.error("malformed net"))?;
+        let mut endpoints = Vec::new();
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "joined" => endpoints.extend(self.parse_joined()?),
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()?;
+
+        builder.push_net(PendingNet { name, endpoints });
+        Ok(())
+    }
+
+    fn parse_joined(&mut self) -> Result<Vec<PendingEndpoint>> {
+        let mut endpoints = Vec::new();
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "portRef" => endpoints.push(self.parse_port_ref()?),
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()?;
+        Ok(endpoints)
+    }
+
+    fn parse_port_ref(&mut self) -> Result<PendingEndpoint> {
+        let pin = self
+            .parse_name_expr()?
+            .map(|name| name.display)
+            .unwrap_or_default();
+        let mut target = EndpointTarget::Port(pin.clone());
+
+        while !self.peek_is_rparen()? {
+            if self.peek_is_lparen()? {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                match head.as_str() {
+                    "instanceRef" => {
+                        target = EndpointTarget::InstanceRef(self.parse_instance_ref()?)
+                    }
+                    _ => self.skip_current_list()?,
+                }
+            } else {
+                self.skip_value()?;
+            }
+        }
+        self.expect_rparen()?;
+
+        Ok(PendingEndpoint { pin, target })
+    }
+
+    fn parse_instance_ref(&mut self) -> Result<String> {
+        let reference = self
+            .parse_name_expr()?
+            .map(|name| name.reference)
+            .unwrap_or_default();
+        while !self.peek_is_rparen()? {
+            self.skip_value()?;
+        }
+        self.expect_rparen()?;
+        Ok(reference)
+    }
+
+    fn parse_name_expr(&mut self) -> Result<Option<ParsedName>> {
+        match self.peek_token()? {
+            Some(Token::Atom(_)) => Ok(self.parse_atom_value()?.map(|value| ParsedName {
+                display: value.clone(),
+                reference: value,
+            })),
+            Some(Token::LParen) => {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                let parsed = match head.as_str() {
+                    "rename" => {
+                        let reference = self
+                            .parse_name_expr()?
+                            .map(|name| name.display)
+                            .unwrap_or_default();
+                        let display = self
+                            .parse_name_expr()?
+                            .map(|name| name.display)
+                            .unwrap_or_else(|| reference.clone());
+                        while !self.peek_is_rparen()? {
+                            self.skip_value()?;
+                        }
+                        self.expect_rparen()?;
+                        Some(ParsedName { display, reference })
+                    }
+                    "array" => {
+                        let value = self
+                            .parse_name_expr()?
+                            .map(|name| name.display)
+                            .unwrap_or_default();
+                        while !self.peek_is_rparen()? {
+                            self.skip_value()?;
+                        }
+                        self.expect_rparen()?;
+                        Some(ParsedName {
+                            display: value.clone(),
+                            reference: value,
+                        })
+                    }
+                    "member" => {
+                        let value = self
+                            .parse_name_expr()?
+                            .map(|name| name.display)
+                            .unwrap_or_default();
+                        let index = self
+                            .parse_atom_value()?
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        while !self.peek_is_rparen()? {
+                            self.skip_value()?;
+                        }
+                        self.expect_rparen()?;
+                        let indexed = indexed_name(&value, index);
+                        Some(ParsedName {
+                            display: indexed.clone(),
+                            reference: indexed,
+                        })
+                    }
+                    _ => {
+                        self.skip_current_list()?;
+                        None
+                    }
+                };
+                Ok(parsed)
+            }
+            Some(Token::RParen) | None => Ok(None),
+        }
+    }
+
+    fn parse_port_decl_names(&mut self) -> Result<Vec<String>> {
+        match self.peek_token()? {
+            Some(Token::Atom(_)) => Ok(self
+                .parse_atom_value()?
+                .map(|name| vec![name])
+                .unwrap_or_default()),
+            Some(Token::LParen) => {
+                self.expect_lparen()?;
+                let head = self.expect_atom()?;
+                let names = match head.as_str() {
+                    "array" => {
+                        let base = self
+                            .parse_name_expr()?
+                            .map(|name| name.display)
+                            .unwrap_or_default();
+                        let width = self
+                            .parse_atom_value()?
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(1);
+                        while !self.peek_is_rparen()? {
+                            self.skip_value()?;
+                        }
+                        self.expect_rparen()?;
+                        (0..width)
+                            .map(|index| indexed_name(&base, index))
+                            .collect::<Vec<_>>()
+                    }
+                    "rename" => {
+                        let _ = self.parse_name_expr()?;
+                        let display = self
+                            .parse_name_expr()?
+                            .map(|name| name.display)
+                            .unwrap_or_default();
+                        while !self.peek_is_rparen()? {
+                            self.skip_value()?;
+                        }
+                        self.expect_rparen()?;
+                        vec![display]
+                    }
+                    _ => {
+                        self.skip_current_list()?;
+                        Vec::new()
+                    }
+                };
+                Ok(names)
+            }
+            Some(Token::RParen) | None => Ok(Vec::new()),
+        }
+    }
+
+    fn parse_atom_value(&mut self) -> Result<Option<String>> {
+        match self.next_token()? {
+            Some(Token::Atom(value)) => Ok(Some(value)),
+            Some(Token::LParen) => {
+                self.skip_open_list()?;
+                Ok(None)
+            }
+            Some(Token::RParen) | None => Ok(None),
+        }
+    }
+
+    fn expect_head(&mut self, expected: &str) -> Result<()> {
+        let head = self.expect_atom()?;
+        if head == expected {
+            Ok(())
+        } else {
+            Err(self.error(format!("expected head '{expected}', found '{head}'")))
+        }
+    }
+
+    fn expect_lparen(&mut self) -> Result<()> {
+        match self.next_token()? {
+            Some(Token::LParen) => Ok(()),
+            Some(Token::Atom(value)) => Err(self.error(format!("expected '(', found '{value}'"))),
+            Some(Token::RParen) => Err(self.error("expected '(', found ')'")),
+            None => Err(self.error("unexpected end of EDIF input")),
+        }
+    }
+
+    fn expect_rparen(&mut self) -> Result<()> {
+        match self.next_token()? {
+            Some(Token::RParen) => Ok(()),
+            Some(Token::Atom(value)) => Err(self.error(format!("expected ')', found '{value}'"))),
+            Some(Token::LParen) => Err(self.error("expected ')', found '('")),
+            None => Err(self.error("unexpected end of EDIF input")),
+        }
+    }
+
+    fn expect_atom(&mut self) -> Result<String> {
+        match self.next_token()? {
+            Some(Token::Atom(value)) => Ok(value),
+            Some(Token::LParen) => Err(self.error("expected atom, found '('")),
+            Some(Token::RParen) => Err(self.error("expected atom, found ')'")),
+            None => Err(self.error("unexpected end of EDIF input")),
+        }
+    }
+
+    fn peek_is_lparen(&mut self) -> Result<bool> {
+        Ok(matches!(self.peek_token()?, Some(Token::LParen)))
+    }
+
+    fn peek_is_rparen(&mut self) -> Result<bool> {
+        Ok(matches!(self.peek_token()?, Some(Token::RParen)))
+    }
+
+    fn skip_value(&mut self) -> Result<()> {
+        match self.next_token()? {
+            Some(Token::LParen) => self.skip_open_list(),
+            Some(Token::Atom(_)) => Ok(()),
+            Some(Token::RParen) => Err(self.error("unexpected ')' in EDIF input")),
+            None => Err(self.error("unexpected end of EDIF input")),
+        }
+    }
+
+    fn skip_current_list(&mut self) -> Result<()> {
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.next_token()? {
+                Some(Token::LParen) => depth += 1,
+                Some(Token::RParen) => depth = depth.saturating_sub(1),
+                Some(Token::Atom(_)) => {}
+                None => return Err(self.error("unterminated EDIF list")),
+            }
+        }
+        Ok(())
+    }
+
+    fn skip_open_list(&mut self) -> Result<()> {
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.next_token()? {
+                Some(Token::LParen) => depth += 1,
+                Some(Token::RParen) => depth = depth.saturating_sub(1),
+                Some(Token::Atom(_)) => {}
+                None => return Err(self.error("unterminated EDIF list")),
+            }
+        }
+        Ok(())
+    }
+
+    fn peek_token(&mut self) -> Result<Option<Token>> {
+        if self.peeked.is_none() {
+            self.peeked = self.read_token()?;
+        }
+        Ok(self.peeked.clone())
+    }
+
+    fn next_token(&mut self) -> Result<Option<Token>> {
+        if let Some(token) = self.peeked.take() {
+            return Ok(Some(token));
+        }
+        self.read_token()
+    }
+
+    fn read_token(&mut self) -> Result<Option<Token>> {
+        self.skip_whitespace_and_comments();
+        let Some(ch) = self.peek_char() else {
+            return Ok(None);
+        };
+        let token = match ch {
+            '(' => {
+                self.bump_char();
+                Token::LParen
+            }
+            ')' => {
+                self.bump_char();
+                Token::RParen
+            }
+            '"' => Token::Atom(self.read_quoted_string()?),
+            _ => Token::Atom(self.read_atom()),
+        };
+        Ok(Some(token))
+    }
+
+    fn skip_whitespace_and_comments(&mut self) {
+        loop {
+            while self.peek_char().is_some_and(char::is_whitespace) {
+                self.bump_char();
+            }
+            if self.peek_char() == Some(';') {
+                while let Some(ch) = self.bump_char() {
+                    if ch == '\n' {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn read_quoted_string(&mut self) -> Result<String> {
+        match self.bump_char() {
+            Some('"') => {}
+            _ => return Err(self.error("expected string literal")),
+        }
+        let mut value = String::new();
+        while let Some(ch) = self.bump_char() {
+            match ch {
+                '"' => return Ok(value),
+                '\\' => {
+                    let escaped = self
+                        .bump_char()
+                        .ok_or_else(|| self.error("unterminated escape sequence"))?;
+                    value.push(escaped);
+                }
+                other => value.push(other),
+            }
+        }
+        Err(self.error("unterminated string literal"))
+    }
+
+    fn read_atom(&mut self) -> String {
+        let start = self.cursor;
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() || matches!(ch, '(' | ')') {
+                break;
+            }
+            self.bump_char();
+        }
+        self.source[start..self.cursor].to_string()
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.source[self.cursor..].chars().next()
+    }
+
+    fn bump_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.cursor += ch.len_utf8();
+        Some(ch)
+    }
+
+    fn error(&self, message: impl Into<String>) -> anyhow::Error {
+        anyhow!("{} at byte {}", message.into(), self.cursor)
+    }
 }
 
 fn split_endpoints(
@@ -274,16 +854,16 @@ fn split_endpoints(
     let mut sources = Vec::new();
     let mut sinks = Vec::new();
     for endpoint in endpoints {
-        let is_source = match endpoint.kind.as_str() {
-            "port" => port_dirs
+        let is_source = match endpoint.kind {
+            EndpointKind::Port => port_dirs
                 .get(&endpoint.name)
                 .map(PortDirection::is_input_like)
                 .unwrap_or(false),
-            "cell" => cell_types
+            EndpointKind::Cell => cell_types
                 .get(&endpoint.name)
                 .map(|type_name| is_output_pin(type_name, &endpoint.pin))
                 .unwrap_or(false),
-            _ => false,
+            EndpointKind::Unknown => false,
         };
         if is_source {
             sources.push(endpoint.clone());
@@ -294,7 +874,7 @@ fn split_endpoints(
 
     let driver = sources
         .iter()
-        .find(|endpoint| endpoint.kind == "cell")
+        .find(|endpoint| endpoint.is_cell())
         .cloned()
         .or_else(|| sources.first().cloned())
         .or_else(|| sinks.first().cloned());
@@ -306,16 +886,16 @@ fn split_endpoints(
     (driver, sinks)
 }
 
-fn classify_cell_kind(type_name: &str) -> String {
+fn classify_cell_kind(type_name: &str) -> CellKind {
     match PrimitiveKind::classify("", type_name) {
-        PrimitiveKind::Lut { .. } => "lut".to_string(),
-        PrimitiveKind::FlipFlop | PrimitiveKind::Latch => "ff".to_string(),
-        PrimitiveKind::Constant(_) => "constant".to_string(),
-        PrimitiveKind::Buffer => "buffer".to_string(),
-        PrimitiveKind::Generic
-        | PrimitiveKind::Unknown
-        | PrimitiveKind::Io
-        | PrimitiveKind::GlobalClockBuffer => "generic".to_string(),
+        PrimitiveKind::Lut { .. } => CellKind::Lut,
+        PrimitiveKind::FlipFlop => CellKind::Ff,
+        PrimitiveKind::Latch => CellKind::Latch,
+        PrimitiveKind::Constant(_) => CellKind::Constant,
+        PrimitiveKind::Buffer => CellKind::Buffer,
+        PrimitiveKind::Io => CellKind::Io,
+        PrimitiveKind::GlobalClockBuffer => CellKind::GlobalClockBuffer,
+        PrimitiveKind::Generic | PrimitiveKind::Unknown => CellKind::Generic,
     }
 }
 
@@ -323,78 +903,160 @@ fn is_output_pin(type_name: &str, pin: &str) -> bool {
     PinRole::classify_output_pin(PrimitiveKind::classify("", type_name), pin).is_output_like()
 }
 
-fn has_head(sexp: &Sexp, head: &str) -> bool {
-    as_list(sexp)
-        .ok()
-        .and_then(|list| list.first())
-        .and_then(atom)
-        == Some(head)
+fn indexed_name(base: &str, index: usize) -> String {
+    format!("{base}[{index}]")
 }
 
-fn find_named_child<'a>(list: &'a [Sexp], head: &str) -> Option<&'a [Sexp]> {
-    list.iter().find_map(|item| {
-        let list = as_list(item).ok()?;
-        if list.first().and_then(atom) == Some(head) {
-            Some(list)
-        } else {
-            None
-        }
-    })
-}
+#[cfg(test)]
+mod tests {
+    use super::parse_source;
 
-fn expect_head(list: &[Sexp], head: &str) -> Result<()> {
-    if list.first().and_then(atom) == Some(head) {
-        Ok(())
-    } else {
-        Err(anyhow!("expected head {head}"))
+    #[test]
+    fn parses_renamed_instance_references() {
+        let design = parse_source(
+            r#"
+            (edif top
+              (library DESIGN
+                (cell top
+                  (view NETLIST
+                    (interface
+                      (port a (direction INPUT))
+                      (port y (direction OUTPUT)))
+                    (contents
+                      (instance (rename id00001 u_lut)
+                        (viewRef NETLIST (cellRef LUT2 (libraryRef LIB))))
+                      (net net0
+                        (joined
+                          (portRef a)
+                          (portRef ADR0 (instanceRef id00001))))
+                      (net net1
+                        (joined
+                          (portRef O (instanceRef id00001))
+                          (portRef y))))))))
+            "#,
+        )
+        .expect("parse rename");
+
+        let net0 = design
+            .nets
+            .iter()
+            .find(|net| net.name == "net0")
+            .expect("net0");
+        let sink = net0.sinks.first().expect("sink");
+        assert_eq!(sink.name, "u_lut");
+        assert_eq!(sink.pin, "ADR0");
     }
-}
 
-fn resolve_name(sexp: Option<&Sexp>) -> Option<String> {
-    let sexp = sexp?;
-    match sexp {
-        Sexp::Atom(value) => Some(value.clone()),
-        Sexp::List(list) => match list.first().and_then(atom) {
-            Some("rename") => list
-                .get(2)
-                .and_then(atom)
-                .map(ToString::to_string)
-                .or_else(|| list.get(1).and_then(atom).map(ToString::to_string)),
-            Some("array") => list.get(1).and_then(atom).map(ToString::to_string),
-            _ => None,
-        },
+    #[test]
+    fn parses_string_properties_and_comments() {
+        let design = parse_source(
+            r#"
+            (edif top
+              ; comment should be ignored
+              (library DESIGN
+                (cell top
+                  (view NETLIST
+                    (interface (port a (direction INPUT)))
+                    (contents
+                      (instance u0
+                        (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
+                        (property LABEL (string "hello world"))))))))
+            "#,
+        )
+        .expect("parse property");
+
+        let cell = design
+            .cells
+            .iter()
+            .find(|cell| cell.name == "u0")
+            .expect("cell");
+        assert_eq!(cell.property("label"), Some("hello world"));
     }
-}
 
-fn resolve_reference_name(sexp: Option<&Sexp>) -> Option<String> {
-    let sexp = sexp?;
-    match sexp {
-        Sexp::Atom(value) => Some(value.clone()),
-        Sexp::List(list) => match list.first().and_then(atom) {
-            Some("rename") | Some("array") => list.get(1).and_then(atom).map(ToString::to_string),
-            _ => resolve_name(Some(sexp)),
-        },
+    #[test]
+    fn parses_integer_properties_on_structural_luts() {
+        let design = parse_source(
+            r#"
+            (edif top
+              (library DESIGN
+                (cell top
+                  (view NETLIST
+                    (interface (port a (direction INPUT)))
+                    (contents
+                      (instance u0
+                        (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
+                        (property INIT (integer 10))))))))
+            "#,
+        )
+        .expect("parse integer property");
+
+        let cell = design
+            .cells
+            .iter()
+            .find(|cell| cell.name == "u0")
+            .expect("cell");
+        assert_eq!(cell.property("init"), Some("10"));
     }
-}
 
-fn read_value(sexp: &Sexp) -> Option<String> {
-    let list = as_list(sexp).ok()?;
-    match list.first().and_then(atom) {
-        Some("integer") | Some("string") => list.get(1).and_then(atom).map(ToString::to_string),
-        _ => None,
-    }
-}
+    #[test]
+    fn parses_array_ports_and_member_references() {
+        let design = parse_source(
+            r#"
+            (edif top
+              (library DESIGN
+                (cell top
+                  (view NETLIST
+                    (interface
+                      (port clk (direction INPUT))
+                      (port (array bus_in 2) (direction INPUT))
+                      (port (array bus_out 2) (direction OUTPUT)))
+                    (contents
+                      (instance u0
+                        (viewRef NETLIST (cellRef LUT2 (libraryRef LIB))))
+                      (net net0
+                        (joined
+                          (portRef (member bus_in 0))
+                          (portRef ADR0 (instanceRef u0))))
+                      (net net1
+                        (joined
+                          (portRef (member bus_in 1))
+                          (portRef ADR1 (instanceRef u0))))
+                      (net net2
+                        (joined
+                          (portRef O (instanceRef u0))
+                          (portRef (member bus_out 1)))))))))
+            "#,
+        )
+        .expect("parse array ports");
 
-fn as_list(sexp: &Sexp) -> Result<&[Sexp]> {
-    match sexp {
-        Sexp::List(list) => Ok(list),
-        _ => bail!("expected list"),
-    }
-}
+        let port_names = design
+            .ports
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            port_names,
+            vec!["clk", "bus_in[0]", "bus_in[1]", "bus_out[0]", "bus_out[1]"]
+        );
 
-fn atom(sexp: &Sexp) -> Option<&str> {
-    match sexp {
-        Sexp::Atom(value) => Some(value.as_str()),
-        _ => None,
+        let net0 = design
+            .nets
+            .iter()
+            .find(|net| net.name == "net0")
+            .expect("net0");
+        assert_eq!(
+            net0.driver.as_ref().map(|driver| driver.name.as_str()),
+            Some("bus_in[0]")
+        );
+
+        let net2 = design
+            .nets
+            .iter()
+            .find(|net| net.name == "net2")
+            .expect("net2");
+        assert_eq!(
+            net2.sinks.first().map(|sink| sink.name.as_str()),
+            Some("bus_out[1]")
+        );
     }
 }

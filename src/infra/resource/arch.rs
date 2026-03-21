@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use roxmltree::Document;
 use std::{collections::BTreeMap, fs, path::Path};
 
+use crate::domain::SiteKind;
+
 #[derive(Debug, Clone, Default)]
 pub struct Pad {
     pub name: String,
@@ -14,6 +16,66 @@ pub struct Pad {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TileKind {
+    Logic,
+    LeftIo,
+    RightIo,
+    TopIo,
+    BottomIo,
+    ClockTop,
+    ClockBottom,
+    ClockCenter,
+    ClockVertical,
+    ClockHorizontal,
+    #[default]
+    Unknown,
+}
+
+impl TileKind {
+    pub fn classify(raw: &str) -> Self {
+        let raw = raw.trim().to_ascii_uppercase();
+        match raw.as_str() {
+            "LEFT" => Self::LeftIo,
+            "RIGHT" => Self::RightIo,
+            "TOP" => Self::TopIo,
+            "BOT" => Self::BottomIo,
+            "CLKT" => Self::ClockTop,
+            "CLKB" => Self::ClockBottom,
+            "CLKC" => Self::ClockCenter,
+            "CLKV" => Self::ClockVertical,
+            "CLKH" => Self::ClockHorizontal,
+            "CENTER" => Self::Logic,
+            _ if raw.starts_with("CENTER") => Self::Logic,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_logic(self) -> bool {
+        matches!(self, Self::Logic)
+    }
+
+    pub fn is_clock_pad_tile(self) -> bool {
+        matches!(self, Self::ClockTop | Self::ClockBottom)
+    }
+
+    pub fn canonical_name(self) -> Option<&'static str> {
+        match self {
+            Self::Logic => Some("CENTER"),
+            Self::LeftIo => Some("LEFT"),
+            Self::RightIo => Some("RIGHT"),
+            Self::TopIo => Some("TOP"),
+            Self::BottomIo => Some("BOT"),
+            Self::ClockTop => Some("CLKT"),
+            Self::ClockBottom => Some("CLKB"),
+            Self::ClockCenter => Some("CLKC"),
+            Self::ClockVertical => Some("CLKV"),
+            Self::ClockHorizontal => Some("CLKH"),
+            Self::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PadSiteKind {
     #[default]
     Iob,
@@ -22,6 +84,20 @@ pub enum PadSiteKind {
 
 impl PadSiteKind {
     pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Iob => "IOB",
+            Self::GclkIob => "GCLKIOB",
+        }
+    }
+
+    pub fn site_kind(self) -> SiteKind {
+        match self {
+            Self::Iob => SiteKind::Iob,
+            Self::GclkIob => SiteKind::GclkIob,
+        }
+    }
+
+    pub fn io_type_name(self) -> &'static str {
         match self {
             Self::Iob => "IOB",
             Self::GclkIob => "GCLKIOB",
@@ -39,6 +115,18 @@ pub struct TileInstance {
     pub bit_y: usize,
     pub phy_x: usize,
     pub phy_y: usize,
+}
+
+impl Pad {
+    pub fn tile_kind(&self) -> TileKind {
+        TileKind::classify(&self.tile_type)
+    }
+}
+
+impl TileInstance {
+    pub fn kind(&self) -> TileKind {
+        TileKind::classify(&self.tile_type)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -63,7 +151,6 @@ pub struct Arch {
     pub pad_sites: BTreeMap<String, Pad>,
     pub tiles: BTreeMap<(usize, usize), TileInstance>,
     pub tile_side_capacities: BTreeMap<String, TileSideCapacity>,
-    pub site_instance_types: BTreeMap<String, BTreeMap<String, String>>,
     pub default_horizontal_capacity: usize,
     pub default_vertical_capacity: usize,
 }
@@ -86,7 +173,6 @@ pub fn load_arch(path: &Path) -> Result<Arch> {
     populate_device_info(&mut arch, root);
     populate_tile_side_capacities(&mut arch, root);
     populate_tile_instances(&mut arch, root);
-    populate_site_instance_types(&mut arch, root);
     populate_pads(&mut arch, root);
     apply_arch_defaults(&mut arch);
 
@@ -107,7 +193,7 @@ impl Arch {
             let mut sites = self
                 .tiles
                 .values()
-                .filter(|tile| is_logic_tile_type(&tile.tile_type))
+                .filter(|tile| tile.kind().is_logic())
                 .map(|tile| (tile.logic_x, tile.logic_y))
                 .collect::<Vec<_>>();
             sites.sort_unstable();
@@ -169,13 +255,6 @@ impl Arch {
             self.side_capacity(top, TileSide::Bottom),
             self.default_vertical_capacity,
         )
-    }
-
-    pub fn site_instance_element(&self, site_type: &str, instance_name: &str) -> Option<&str> {
-        self.site_instance_types
-            .get(site_type)?
-            .get(instance_name)
-            .map(String::as_str)
     }
 
     fn side_capacity(&self, point: (usize, usize), side: TileSide) -> usize {
@@ -294,39 +373,6 @@ fn populate_tile_instances(arch: &mut Arch, root: roxmltree::Node<'_, '_>) {
     }
 }
 
-fn populate_site_instance_types(arch: &mut Arch, root: roxmltree::Node<'_, '_>) {
-    for library in root
-        .children()
-        .filter(|node| node.has_tag_name("library") && node.attribute("name") == Some("block"))
-    {
-        for cell in library.children().filter(|node| node.has_tag_name("cell")) {
-            let Some(site_type) = cell.attribute("name") else {
-                continue;
-            };
-            let mut instance_types = BTreeMap::new();
-            let Some(contents) = cell.children().find(|node| node.has_tag_name("contents")) else {
-                continue;
-            };
-            for instance in contents
-                .children()
-                .filter(|node| node.has_tag_name("instance"))
-            {
-                let Some(instance_name) = instance.attribute("name") else {
-                    continue;
-                };
-                let Some(cell_ref) = instance.attribute("cellRef") else {
-                    continue;
-                };
-                instance_types.insert(instance_name.to_string(), cell_ref.to_string());
-            }
-            if !instance_types.is_empty() {
-                arch.site_instance_types
-                    .insert(site_type.to_string(), instance_types);
-            }
-        }
-    }
-}
-
 fn populate_pads(arch: &mut Arch, root: roxmltree::Node<'_, '_>) {
     for pad in root.descendants().filter(|node| node.has_tag_name("pad")) {
         let name = pad.attribute("name").unwrap_or_default().to_string();
@@ -341,7 +387,7 @@ fn populate_pads(arch: &mut Arch, root: roxmltree::Node<'_, '_>) {
             .tiles
             .get(&(x, y))
             .map(|tile| {
-                let site_kind = if matches!(tile.tile_type.as_str(), "CLKT" | "CLKB") {
+                let site_kind = if tile.kind().is_clock_pad_tile() {
                     PadSiteKind::GclkIob
                 } else {
                     PadSiteKind::Iob
@@ -431,15 +477,10 @@ fn resolve_edge_capacity(lhs: usize, rhs: usize, fallback: usize) -> usize {
     }
 }
 
-fn is_logic_tile_type(tile_type: &str) -> bool {
-    tile_type == "CENTER" || tile_type.starts_with("CENTER")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Arch, TileInstance, load_arch};
+    use super::{Arch, TileInstance, TileKind};
     use std::collections::BTreeMap;
-    use std::{fs, path::PathBuf};
 
     #[test]
     fn logic_sites_prefer_center_tile_instances_when_available() {
@@ -478,45 +519,6 @@ mod tests {
         );
 
         assert_eq!(arch.logic_sites(), vec![(1, 1)]);
-    }
-
-    #[test]
-    fn load_arch_records_block_site_instance_element_mappings() {
-        let xml = r#"<architecture name="demo">
-  <device_info scale="2,2" slice_per_tile="2" LUT_Inputs="4" />
-  <library name="block">
-    <cell name="GSB_CNT" type="GSB">
-      <contents>
-        <instance name="SPS_OUT0" cellRef="SPS13B6X6H1" libraryRef="element" />
-        <instance name="SWITCH_S23_W1" cellRef="SWITCH2N1X0H1" libraryRef="element" />
-      </contents>
-    </cell>
-  </library>
-</architecture>"#;
-        let path = unique_test_path("arch-site-instance-map.xml");
-        fs::write(&path, xml).expect("write temp arch xml");
-        let arch = load_arch(&path).expect("load arch");
-        fs::remove_file(&path).ok();
-
-        assert_eq!(
-            arch.site_instance_element("GSB_CNT", "SPS_OUT0"),
-            Some("SPS13B6X6H1")
-        );
-        assert_eq!(
-            arch.site_instance_element("GSB_CNT", "SWITCH_S23_W1"),
-            Some("SWITCH2N1X0H1")
-        );
-    }
-
-    fn unique_test_path(name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "fde-{}-{name}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        path
+        assert_eq!(arch.tiles[&(1, 1)].kind(), TileKind::Logic);
     }
 }

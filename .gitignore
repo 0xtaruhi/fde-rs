@@ -3,3 +3,5 @@ build
 .vscode
 .DS_Store
 target
+__pycache__/
+*.pyc

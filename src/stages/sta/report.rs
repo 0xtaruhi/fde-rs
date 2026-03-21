@@ -14,7 +14,7 @@ pub(crate) fn format_timing_report(design: &Design, summary: &TimingSummary) -> 
         report.push_str(&format!(
             "Path {} [{}] {:.3} ns -> {}\n",
             index + 1,
-            path.category,
+            path.category.as_str(),
             path.delay_ns,
             path.endpoint
         ));

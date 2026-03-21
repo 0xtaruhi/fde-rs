@@ -1,4 +1,5 @@
 use crate::device::DeviceCell;
+use crate::domain::SiteKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -71,7 +72,7 @@ pub struct TileBitAssignment {
 pub(crate) struct SiteInstance {
     pub(crate) tile_name: String,
     pub(crate) tile_type: String,
-    pub(crate) site_kind: String,
+    pub(crate) site_kind: SiteKind,
     pub(crate) site_name: String,
     pub(crate) x: usize,
     pub(crate) y: usize,

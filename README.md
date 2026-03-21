@@ -33,6 +33,20 @@ cargo build
 cargo test
 ```
 
+## CI
+
+GitHub Actions runs on every pull request, push to `main`, and manual dispatch.
+The workflow currently checks:
+
+- `cargo fmt --all -- --check`
+- `cargo check --locked --all-targets`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
+- `cargo test --locked --quiet`
+- `cargo run --locked --quiet --bin fde -- impl ...` against the checked-in
+  `examples/blinky` smoke design and `tests/fixtures/hw_lib`
+
+You can run the same commands locally before opening a PR.
+
 ## Modern CLI
 
 Show the top-level help:
@@ -47,9 +61,33 @@ Run the full flow:
 cargo run --bin fde -- impl \
   --input examples/blinky/blinky.edf \
   --constraints examples/blinky/constraints.xml \
-  --resource-root tests/fixtures/hw_lib \
+  --resource-root resources/hw_lib \
   --out-dir build/blinky-run
 ```
+
+Dry-run the checked-in board-oriented EDF suite:
+
+```bash
+find examples/board-e2e -mindepth 2 -maxdepth 2 -name '*.edf' | sort | while read -r edf; do
+  case_dir=$(dirname "${edf}")
+  name=$(basename "${case_dir}")
+  cargo run --bin fde -- impl \
+    --input "${edf}" \
+    --constraints "${case_dir}/constraints.xml" \
+    --resource-root resources/hw_lib \
+    --out-dir "build/board-e2e/${name}"
+done
+```
+
+Run the live board suite in one shot:
+
+```bash
+python3 scripts/board_e2e.py run
+```
+
+The live board path uses the in-repo probe tool under [`tools/wave_probe/`](/Users/zhangzhengyi/Documents/Projects/fde-rs-standalone/tools/wave_probe), which depends on the published [`vlfd-rs` 1.0.0 crate](https://docs.rs/vlfd-rs/latest/vlfd_rs/). It does not require the legacy `FDE-Source` repository.
+
+The default full resource bundle is vendored under [`resources/hw_lib/`](/Users/zhangzhengyi/Documents/Projects/fde-rs-standalone/resources/hw_lib).
 
 Artifacts land in `build/blinky-run/`:
 
@@ -152,3 +190,4 @@ Then feed `synth.edf` into `fde map` or `fde impl`.
 - This repository only contains the Rust implementation flow.
 - Legacy C++ sources live elsewhere and are not part of `fde-rs`.
 - Resource XML compatibility is preserved at the file-format boundary, not by co-locating the old monolith.
+- Board-oriented example netlists live under [`examples/board-e2e/`](/Users/zhangzhengyi/Documents/Projects/fde-rs-standalone/examples/board-e2e) as checked-in EDF artifacts with per-case constraints and a board-probed manifest.

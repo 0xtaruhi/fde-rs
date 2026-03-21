@@ -1,9 +1,8 @@
-use crate::{
-    cil::{SiteDef, SiteFunction},
-    config_image::{
-        literal::{address_count, evaluate_equation, parse_bit_literal},
-        types::{ConfigResolution, ResolvedSiteBit},
-    },
+use crate::cil::{SiteDef, SiteFunction};
+
+use super::{
+    literal::{address_count, evaluate_equation, parse_bit_literal},
+    types::{ConfigResolution, ResolvedSiteBit},
 };
 
 pub(crate) fn resolve_site_config(
@@ -14,49 +13,19 @@ pub(crate) fn resolve_site_config(
     let Some(cfg) = site_def.config_element(cfg_name) else {
         return ConfigResolution::Unmatched;
     };
-    let exact = cfg.function(function_name);
-    let prefer_equation = prefers_equation_request(function_name);
-    let Some(function) = exact.or_else(|| {
-        if prefer_equation {
-            cfg.computation_function("equation")
-                .or_else(|| cfg.computation_function("srambit"))
-        } else {
-            cfg.computation_function("srambit")
-                .or_else(|| cfg.computation_function("equation"))
-        }
-    }) else {
-        return ConfigResolution::Unmatched;
-    };
-
-    match expand_function(function, cfg_name, function_name) {
-        Some(bits) => ConfigResolution::Matched(bits),
-        None => ConfigResolution::Unmatched,
-    }
-}
-
-fn prefers_equation_request(requested_name: &str) -> bool {
-    let value = requested_name.trim();
-    value.starts_with("#LUT:")
-        || value.starts_with("D=")
-        || value.contains('A')
-        || value.contains('*')
-        || value.contains('+')
-        || value.contains('~')
-        || value.contains('(')
-        || value.contains(')')
-}
-
-pub(crate) fn default_site_bits(site_def: &SiteDef) -> Vec<ResolvedSiteBit> {
-    let mut bits = Vec::new();
-    for cfg in &site_def.config_elements {
-        let Some(function) = cfg.default_function() else {
-            continue;
-        };
-        if let Some(expanded) = expand_function(function, &cfg.name, &function.name) {
-            bits.extend(expanded);
+    for function in [
+        cfg.function(function_name),
+        cfg.computation_function("srambit"),
+        cfg.computation_function("equation"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(bits) = expand_function(function, cfg_name, function_name) {
+            return ConfigResolution::Matched(bits);
         }
     }
-    bits
+    ConfigResolution::Unmatched
 }
 
 fn expand_function(

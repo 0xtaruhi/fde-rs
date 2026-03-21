@@ -1,23 +1,24 @@
-use crate::ir::Design;
-use std::collections::BTreeMap;
+use crate::ir::{Design, DesignIndex};
 
 pub(crate) fn annotate_net_criticality(design: &mut Design) {
-    let forward = forward_levels(design);
-    let backward = backward_levels(design);
-    let max_forward = forward.values().copied().max().unwrap_or(1) as f64;
-    let max_span = design
-        .nets
+    let index = design.index();
+    let forward = forward_levels(design, &index);
+    let backward = backward_levels(design, &index);
+    let max_forward = forward.iter().copied().max().unwrap_or(1) as f64;
+    let max_span = forward
         .iter()
-        .map(|net| {
-            forward.get(&net.name).copied().unwrap_or(0)
-                + backward.get(&net.name).copied().unwrap_or(0)
-        })
+        .zip(&backward)
+        .map(|(forward_level, backward_level)| forward_level + backward_level)
         .max()
         .unwrap_or(1) as f64;
 
-    for net in &mut design.nets {
-        let depth = forward.get(&net.name).copied().unwrap_or(0) as f64;
-        let remaining = backward.get(&net.name).copied().unwrap_or(0) as f64;
+    for (net, (depth, remaining)) in design
+        .nets
+        .iter_mut()
+        .zip(forward.into_iter().zip(backward.into_iter()))
+    {
+        let depth = depth as f64;
+        let remaining = remaining as f64;
         let span = depth + remaining;
         let fanout = net.sinks.len() as f64;
         let span_score = span / max_span.max(1.0);
@@ -27,14 +28,8 @@ pub(crate) fn annotate_net_criticality(design: &mut Design) {
     }
 }
 
-fn forward_levels(design: &Design) -> BTreeMap<String, usize> {
-    let mut levels = BTreeMap::<String, usize>::new();
-    for port in &design.ports {
-        if port.direction.is_input_like() {
-            levels.insert(port.name.clone(), 0);
-        }
-    }
-
+fn forward_levels(design: &Design, index: &DesignIndex<'_>) -> Vec<usize> {
+    let mut levels = vec![0usize; design.nets.len()];
     let mut changed = true;
     for _ in 0..design.cells.len().max(1) {
         if !changed {
@@ -43,24 +38,22 @@ fn forward_levels(design: &Design) -> BTreeMap<String, usize> {
         changed = false;
         for cell in &design.cells {
             if cell.is_sequential() {
-                for output in &cell.outputs {
-                    if levels.insert(output.net.clone(), 0).is_none() {
-                        changed = true;
-                    }
-                }
                 continue;
             }
 
             let input_level = cell
                 .inputs
                 .iter()
-                .filter_map(|pin| levels.get(&pin.net).copied())
+                .filter_map(|pin| index.net_id(&pin.net).map(|net_id| levels[net_id.index()]))
                 .max()
                 .unwrap_or(0);
             for output in &cell.outputs {
+                let Some(net_id) = index.net_id(&output.net) else {
+                    continue;
+                };
                 let candidate = input_level + 1;
-                if candidate > *levels.get(&output.net).unwrap_or(&0) {
-                    levels.insert(output.net.clone(), candidate);
+                if candidate > levels[net_id.index()] {
+                    levels[net_id.index()] = candidate;
                     changed = true;
                 }
             }
@@ -70,23 +63,16 @@ fn forward_levels(design: &Design) -> BTreeMap<String, usize> {
     levels
 }
 
-fn backward_levels(design: &Design) -> BTreeMap<String, usize> {
-    let mut levels = BTreeMap::<String, usize>::new();
-    for net in &design.nets {
+fn backward_levels(design: &Design, index: &DesignIndex<'_>) -> Vec<usize> {
+    let mut levels = vec![0usize; design.nets.len()];
+    for (net_index, net) in design.nets.iter().enumerate() {
         if net.sinks.iter().any(|sink| {
-            sink.is_port()
-                && design
-                    .port_lookup(&sink.name)
-                    .is_some_and(|port| port.direction.is_output_like())
+            index
+                .port_for_endpoint(sink)
+                .map(|port_id| index.port(design, port_id).direction.is_output_like())
+                .unwrap_or(false)
         }) {
-            levels.insert(net.name.clone(), 0);
-        }
-    }
-    for cell in &design.cells {
-        if cell.is_sequential() {
-            for input in &cell.inputs {
-                levels.entry(input.net.clone()).or_insert(0);
-            }
+            levels[net_index] = 0;
         }
     }
 
@@ -98,24 +84,22 @@ fn backward_levels(design: &Design) -> BTreeMap<String, usize> {
         changed = false;
         for cell in design.cells.iter().rev() {
             if cell.is_sequential() {
-                for input in &cell.inputs {
-                    if levels.insert(input.net.clone(), 0).is_none() {
-                        changed = true;
-                    }
-                }
                 continue;
             }
 
             let output_level = cell
                 .outputs
                 .iter()
-                .filter_map(|pin| levels.get(&pin.net).copied())
+                .filter_map(|pin| index.net_id(&pin.net).map(|net_id| levels[net_id.index()]))
                 .max()
                 .unwrap_or(0);
             for input in &cell.inputs {
+                let Some(net_id) = index.net_id(&input.net) else {
+                    continue;
+                };
                 let candidate = output_level + 1;
-                if candidate > *levels.get(&input.net).unwrap_or(&0) {
-                    levels.insert(input.net.clone(), candidate);
+                if candidate > levels[net_id.index()] {
+                    levels[net_id.index()] = candidate;
                     changed = true;
                 }
             }
@@ -128,131 +112,37 @@ fn backward_levels(design: &Design) -> BTreeMap<String, usize> {
 #[cfg(test)]
 mod tests {
     use super::annotate_net_criticality;
-    use crate::ir::{Cell, CellPin, Design, Endpoint, Net, Port, PortDirection};
+    use crate::ir::{Cell, Design, Endpoint, Net, Port};
 
     #[test]
     fn annotates_longer_path_as_more_critical() {
         let mut design = Design {
-            ports: vec![
-                Port {
-                    name: "in".to_string(),
-                    direction: PortDirection::Input,
-                    ..Port::default()
-                },
-                Port {
-                    name: "out".to_string(),
-                    direction: PortDirection::Output,
-                    ..Port::default()
-                },
-            ],
+            ports: vec![Port::input("in"), Port::output("out")],
             cells: vec![
-                Cell {
-                    name: "u0".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![CellPin {
-                        port: "A".to_string(),
-                        net: "in_net".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "mid0".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "u1".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![CellPin {
-                        port: "A".to_string(),
-                        net: "mid0".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "mid1".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "u2".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![CellPin {
-                        port: "A".to_string(),
-                        net: "in_net".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "fast".to_string(),
-                    }],
-                    ..Cell::default()
-                },
+                Cell::lut("u0", "LUT4")
+                    .with_input("A", "in_net")
+                    .with_output("O", "mid0"),
+                Cell::lut("u1", "LUT4")
+                    .with_input("A", "mid0")
+                    .with_output("O", "mid1"),
+                Cell::lut("u2", "LUT4")
+                    .with_input("A", "in_net")
+                    .with_output("O", "fast"),
             ],
             nets: vec![
-                Net {
-                    name: "in_net".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "port".to_string(),
-                        name: "in".to_string(),
-                        pin: "IN".to_string(),
-                    }),
-                    sinks: vec![
-                        Endpoint {
-                            kind: "cell".to_string(),
-                            name: "u0".to_string(),
-                            pin: "A".to_string(),
-                        },
-                        Endpoint {
-                            kind: "cell".to_string(),
-                            name: "u2".to_string(),
-                            pin: "A".to_string(),
-                        },
-                    ],
-                    ..Net::default()
-                },
-                Net {
-                    name: "mid0".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "u0".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "u1".to_string(),
-                        pin: "A".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "mid1".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "u1".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "port".to_string(),
-                        name: "out".to_string(),
-                        pin: "OUT".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "fast".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "u2".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "port".to_string(),
-                        name: "out".to_string(),
-                        pin: "OUT".to_string(),
-                    }],
-                    ..Net::default()
-                },
+                Net::new("in_net")
+                    .with_driver(Endpoint::port("in", "IN"))
+                    .with_sink(Endpoint::cell("u0", "A"))
+                    .with_sink(Endpoint::cell("u2", "A")),
+                Net::new("mid0")
+                    .with_driver(Endpoint::cell("u0", "O"))
+                    .with_sink(Endpoint::cell("u1", "A")),
+                Net::new("mid1")
+                    .with_driver(Endpoint::cell("u1", "O"))
+                    .with_sink(Endpoint::port("out", "OUT")),
+                Net::new("fast")
+                    .with_driver(Endpoint::cell("u2", "O"))
+                    .with_sink(Endpoint::port("out", "OUT")),
             ],
             ..Design::default()
         };

@@ -1,8 +1,15 @@
 use fde::{
-    ImplementationOptions, load_arch, load_map_input, resource::ResourceBundle, run_implementation,
+    ConfigImage, ImplementationOptions, load_arch, load_cil, load_map_input,
+    resource::ResourceBundle, run_implementation, serialize_text_bitstream,
 };
+use roxmltree::Document;
 use serde_json::Value;
-use std::{fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use tempfile::TempDir;
 
 fn repo_root() -> PathBuf {
@@ -33,6 +40,20 @@ fn temp_out(name: &str) -> (TempDir, PathBuf) {
 
 fn report_json(path: &PathBuf) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("read report")).expect("parse report")
+}
+
+fn xml_port_pins(path: &Path) -> BTreeMap<String, String> {
+    let text = fs::read_to_string(path).expect("read xml");
+    let doc = Document::parse(&text).expect("parse xml");
+    doc.descendants()
+        .filter(|node| node.has_tag_name("port"))
+        .filter_map(|node| {
+            Some((
+                node.attribute("name")?.to_string(),
+                node.attribute("pin").unwrap_or_default().to_string(),
+            ))
+        })
+        .collect()
 }
 
 fn bitgen_materialization_counts(report: &Value) -> Option<(usize, usize, usize)> {
@@ -91,6 +112,52 @@ fn fdri_chunks(lines: &[String]) -> Vec<(String, String)> {
     chunks
 }
 
+fn normalized_bitstream_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .expect("read bitstream text")
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(word, _)| word).trim())
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn diff_bitstream_lines(expected: &[String], actual: &[String]) -> (usize, usize, Option<String>) {
+    let mut word_diffs = 0usize;
+    let mut bit_diffs = 0usize;
+    let mut first = None;
+
+    let total = expected.len().max(actual.len());
+    for index in 0..total {
+        let lhs = expected.get(index).map(String::as_str).unwrap_or_default();
+        let rhs = actual.get(index).map(String::as_str).unwrap_or_default();
+        if lhs == rhs {
+            continue;
+        }
+        word_diffs += 1;
+        if !lhs.is_empty() && !rhs.is_empty() {
+            let lhs_word = u32::from_str_radix(&lhs.replace('_', ""), 16).expect("lhs hex word");
+            let rhs_word = u32::from_str_radix(&rhs.replace('_', ""), 16).expect("rhs hex word");
+            bit_diffs += (lhs_word ^ rhs_word).count_ones() as usize;
+        }
+        if first.is_none() {
+            first = Some(format!(
+                "first diff at word {index}: expected `{lhs}`, got `{rhs}`"
+            ));
+        }
+    }
+
+    (word_diffs, bit_diffs, first)
+}
+
+fn reference_bitstream_paths() -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+    let arch = std::env::var_os("FDE_REFERENCE_ARCH_XML").map(PathBuf::from)?;
+    let cil = std::env::var_os("FDE_REFERENCE_CIL_XML").map(PathBuf::from)?;
+    let config_image = std::env::var_os("FDE_REFERENCE_CONFIG_IMAGE_JSON").map(PathBuf::from)?;
+    let bitstream = std::env::var_os("FDE_REFERENCE_TEXT_BITSTREAM").map(PathBuf::from)?;
+    Some((arch, cil, config_image, bitstream))
+}
+
 #[test]
 fn edif_parser_smoke_test() {
     let design = load_map_input(&fixture("tests/fixtures/simple.edf")).expect("load edif");
@@ -112,10 +179,10 @@ fn edif_parser_resolves_renamed_instance_refs() {
     let driver = comb.driver.as_ref().expect("comb driver");
     let sink = comb.sinks.first().expect("comb sink");
 
-    assert_eq!(driver.kind, "cell");
+    assert!(driver.is_cell());
     assert_eq!(driver.name, "u_lut");
     assert_eq!(driver.pin, "O");
-    assert_eq!(sink.kind, "cell");
+    assert!(sink.is_cell());
     assert_eq!(sink.name, "u_ff");
     assert_eq!(sink.pin, "D");
 }
@@ -227,6 +294,35 @@ fn implementation_is_deterministic_for_same_seed() {
 }
 
 #[test]
+fn implementation_preserves_indexed_ports_and_pin_constraints() {
+    let (_temp, out_dir) = temp_out("impl-bus");
+    let report = run_implementation(&ImplementationOptions {
+        input: fixture("tests/fixtures/bus.edf"),
+        out_dir: out_dir.clone(),
+        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        constraints: Some(fixture("tests/fixtures/bus-constraints.xml")),
+        ..ImplementationOptions::default()
+    })
+    .expect("bus implementation run");
+
+    let map = PathBuf::from(report.artifacts.get("map").expect("map artifact"));
+    let route = PathBuf::from(report.artifacts.get("route").expect("route artifact"));
+    let mapped_ports = xml_port_pins(&map);
+    let routed_ports = xml_port_pins(&route);
+
+    assert_eq!(mapped_ports.len(), 4);
+    assert!(mapped_ports.contains_key("a[0]"));
+    assert!(mapped_ports.contains_key("a[1]"));
+    assert!(mapped_ports.contains_key("y[0]"));
+    assert!(mapped_ports.contains_key("y[1]"));
+
+    assert_eq!(routed_ports.get("a[0]").map(String::as_str), Some("P1"));
+    assert_eq!(routed_ports.get("a[1]").map(String::as_str), Some("P2"));
+    assert_eq!(routed_ports.get("y[0]").map(String::as_str), Some("P4"));
+    assert_eq!(routed_ports.get("y[1]").map(String::as_str), Some("P5"));
+}
+
+#[test]
 fn can_parse_external_arch_when_available() {
     let Some(resource_root) = external_resource_root() else {
         return;
@@ -234,6 +330,45 @@ fn can_parse_external_arch_when_available() {
     let arch = load_arch(&resource_root.join("fdp3p7_arch.xml")).expect("load external arch");
     assert!(arch.width > 0);
     assert!(arch.height > 0);
+}
+
+#[test]
+#[ignore = "requires external reference bitstream inputs"]
+fn reference_config_image_text_bitstream_matches_expected() {
+    let Some((arch_path, cil_path, config_image_path, reference_bitstream_path)) =
+        reference_bitstream_paths()
+    else {
+        eprintln!(
+            "skipping: set FDE_REFERENCE_ARCH_XML, FDE_REFERENCE_CIL_XML, \
+FDE_REFERENCE_CONFIG_IMAGE_JSON, and FDE_REFERENCE_TEXT_BITSTREAM"
+        );
+        return;
+    };
+
+    let arch = load_arch(&arch_path).expect("load reference arch");
+    let cil = load_cil(&cil_path).expect("load reference cil");
+    let config_image: ConfigImage = serde_json::from_str(
+        &fs::read_to_string(&config_image_path).expect("read reference config image"),
+    )
+    .expect("parse reference config image");
+    let rendered = serialize_text_bitstream("reference", &arch, &arch_path, &cil, &config_image)
+        .expect("serialize reference text bitstream")
+        .expect("text bitstream should be available");
+
+    let temp_dir = TempDir::new().expect("tempdir");
+    let rendered_path = temp_dir.path().join("rendered.bit");
+    fs::write(&rendered_path, rendered.text).expect("write rendered text bitstream");
+
+    let expected = normalized_bitstream_lines(&reference_bitstream_path);
+    let actual = normalized_bitstream_lines(&rendered_path);
+    let (word_diffs, bit_diffs, first) = diff_bitstream_lines(&expected, &actual);
+
+    assert_eq!(
+        word_diffs,
+        0,
+        "reference text bitstream mismatch: word_diffs={word_diffs}, bit_diffs={bit_diffs}, {}",
+        first.unwrap_or_else(|| "no differing word located".to_string())
+    );
 }
 
 #[test]
@@ -275,6 +410,7 @@ fn rust_impl_emits_device_and_tile_config_when_external_resources_are_available(
     assert!(!sidecar_text.contains("Unresolved config "));
     assert!(!sidecar_text.contains("Missing site SRAM mapping "));
     assert!(!sidecar_text.contains("routing PIPs are not emitted yet"));
+    assert!(!sidecar_text.contains("Net clk could not find a Rust route"));
 }
 
 #[test]
@@ -480,4 +616,47 @@ fn complex_external_resource_sidecar_contains_nontrivial_config_and_route_sectio
             "unexpected sidecar warning: {unwanted}"
         );
     }
+}
+
+#[test]
+#[ignore = "benchmark-style end-to-end implementation timing"]
+fn end_to_end_impl_benchmark() {
+    let (_temp, out_dir) = temp_out("impl-benchmark");
+    let options = ImplementationOptions {
+        input: fixture("tests/fixtures/blinky-yosys.edf"),
+        out_dir: out_dir.clone(),
+        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        constraints: Some(fixture("tests/fixtures/fdp3p7-constraints.xml")),
+        ..ImplementationOptions::default()
+    };
+
+    let start = Instant::now();
+    let report = run_implementation(&options).expect("benchmark implementation run");
+    let elapsed = start.elapsed();
+    let bitstream = PathBuf::from(
+        report
+            .artifacts
+            .get("bitstream")
+            .expect("bitstream artifact"),
+    );
+    let sidecar = PathBuf::from(
+        report
+            .artifacts
+            .get("bitstream_sidecar")
+            .expect("bitstream sidecar"),
+    );
+    let bitstream_len = fs::metadata(&bitstream).expect("bitstream metadata").len();
+    let sidecar_len = fs::metadata(&sidecar).expect("sidecar metadata").len();
+
+    eprintln!(
+        "end-to-end impl: total_ms={} bitstream_bytes={} sidecar_bytes={} stages={}",
+        elapsed.as_millis(),
+        bitstream_len,
+        sidecar_len,
+        report.stages.len()
+    );
+
+    assert!(bitstream_len > 0);
+    assert!(sidecar_len > 0);
+    assert!(report.stages.len() >= 6);
 }

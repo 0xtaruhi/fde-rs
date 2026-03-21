@@ -1,12 +1,13 @@
 use crate::{
-    ir::{Cluster, Design, Net},
+    ir::{CellId, Cluster, Design, DesignIndex},
     report::{StageOutput, StageReport},
 };
 use anyhow::Result;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
-};
+use std::{cmp::Ordering, collections::BTreeMap, path::PathBuf};
+
+pub const DEFAULT_PACK_CAPACITY: usize = 4;
+const MAX_LUTS_PER_CLUSTER: usize = 2;
+const MAX_FFS_PER_CLUSTER: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct PackOptions {
@@ -21,7 +22,7 @@ impl Default for PackOptions {
     fn default() -> Self {
         Self {
             family: None,
-            capacity: 4,
+            capacity: DEFAULT_PACK_CAPACITY,
             cell_library: None,
             dcp_library: None,
             config: None,
@@ -51,76 +52,44 @@ pub fn run(mut design: Design, options: &PackOptions) -> Result<StageOutput<Desi
         design.note(format!("Pack referenced config {}", config.display()));
     }
 
-    let mut used = BTreeSet::new();
-    let mut clusters = Vec::<Cluster>::new();
-    let net_drivers = net_driver_cells(&design);
-    let net_to_sinks = net_sink_cells(&design);
+    let index = design.index();
+    let net_drivers = net_driver_cells(&design, &index);
+    let connection_graph = build_connection_graph(&design, &index);
 
-    for cell in design.cells.iter().filter(|cell| cell.is_sequential()) {
-        if used.contains(&cell.name) {
-            continue;
-        }
-        let d_net = cell
-            .inputs
-            .iter()
-            .find(|pin| pin.port.eq_ignore_ascii_case("D"))
-            .map(|pin| pin.net.clone());
-        let mut members = Vec::new();
-        if let Some(d_net) = d_net.as_ref()
-            && let Some(driver) = net_drivers.get(d_net)
-            && !used.contains(driver)
-        {
-            members.push(driver.clone());
-            used.insert(driver.clone());
-        }
-        members.push(cell.name.clone());
-        used.insert(cell.name.clone());
-        extend_cluster_with_neighbors(&design, &mut members, &mut used, capacity);
-        clusters.push(Cluster {
-            name: next_cluster_name(clusters.len()),
-            kind: "logic".to_string(),
-            members,
-            capacity,
-            ..Cluster::default()
-        });
-    }
+    let lanes = build_pack_lanes(&design, &index, &net_drivers, &connection_graph);
+    let mut cluster_members = Vec::<Vec<CellId>>::new();
+    cluster_members.extend(pair_lane_group(
+        &connection_graph,
+        &lanes,
+        capacity,
+        LaneKind::Sequential,
+    ));
+    cluster_members.extend(pair_lane_group(
+        &connection_graph,
+        &lanes,
+        capacity,
+        LaneKind::Lut,
+    ));
+    cluster_members.extend(pair_lane_group(
+        &connection_graph,
+        &lanes,
+        capacity,
+        LaneKind::Other,
+    ));
 
-    let mut degree = design
-        .cells
+    let clusters = cluster_members
         .iter()
-        .filter(|cell| !cell.is_constant_source())
-        .map(|cell| {
-            let fanout = cell
-                .outputs
-                .iter()
-                .map(|pin| net_to_sinks.get(&pin.net).map(Vec::len).unwrap_or(0))
-                .sum::<usize>();
-            (cell.name.clone(), fanout + cell.inputs.len())
+        .enumerate()
+        .map(|(cluster_index, members)| {
+            Cluster::logic(next_cluster_name(cluster_index))
+                .with_members(cell_names(&design, members))
+                .with_capacity(capacity)
         })
         .collect::<Vec<_>>();
-    degree.sort_by(|lhs, rhs| rhs.1.cmp(&lhs.1).then_with(|| lhs.0.cmp(&rhs.0)));
 
-    for (cell_name, _) in degree {
-        if used.contains(&cell_name) {
-            continue;
-        }
-        let mut members = vec![cell_name.clone()];
-        used.insert(cell_name.clone());
-        extend_cluster_with_neighbors(&design, &mut members, &mut used, capacity);
-        clusters.push(Cluster {
-            name: next_cluster_name(clusters.len()),
-            kind: "logic".to_string(),
-            members,
-            capacity,
-            ..Cluster::default()
-        });
-    }
-
-    for cluster in &clusters {
-        for member in &cluster.members {
-            if let Some(cell) = design.cells.iter_mut().find(|cell| &cell.name == member) {
-                cell.cluster = Some(cluster.name.clone());
-            }
+    for (cluster_index, members) in cluster_members.iter().enumerate() {
+        for cell_id in members {
+            design.cells[cell_id.index()].cluster = Some(clusters[cluster_index].name.clone());
         }
     }
 
@@ -143,509 +112,414 @@ fn next_cluster_name(index: usize) -> String {
     format!("clb_{index:04}")
 }
 
-fn extend_cluster_with_neighbors(
-    design: &Design,
-    members: &mut Vec<String>,
-    used: &mut BTreeSet<String>,
-    capacity: usize,
-) {
-    while members.len() < capacity {
-        let mut candidates = BTreeSet::new();
-        for member in members.iter() {
-            candidates.extend(neighbors_of_cell(design, member));
-        }
-        let remaining = capacity - members.len();
-        let mut added_any = false;
-        for candidate in candidates {
-            if used.contains(&candidate) {
-                continue;
-            }
-            let mut additions = vec![candidate.clone()];
-            if remaining > 1
-                && let Some(companion) = paired_pack_neighbor(design, &candidate)
-                && !used.contains(&companion)
-                && !members.iter().any(|member| member == &companion)
-            {
-                additions.push(companion);
-            }
-            for addition in additions.into_iter().take(remaining) {
-                if used.insert(addition.clone()) {
-                    members.push(addition);
-                    added_any = true;
-                }
-            }
-            break;
-        }
-        if !added_any {
-            break;
-        }
-    }
-}
-
-fn paired_pack_neighbor(design: &Design, cell_name: &str) -> Option<String> {
-    let cell = design.cells.iter().find(|cell| cell.name == cell_name)?;
-    if cell.is_sequential() {
-        let d_net = cell
-            .inputs
-            .iter()
-            .find(|pin| pin.port.eq_ignore_ascii_case("D"))?
-            .net
-            .clone();
-        return design
-            .nets
-            .iter()
-            .find(|net| net.name == d_net)
-            .and_then(|net| net.driver.as_ref())
-            .filter(|driver| driver.kind == "cell")
-            .map(|driver| driver.name.clone());
-    }
-
-    let mut sequential_sinks = cell
-        .outputs
-        .iter()
-        .flat_map(|pin| {
-            design
-                .nets
-                .iter()
-                .find(|net| net.name == pin.net)
-                .into_iter()
-                .flat_map(|net| net.sinks.iter())
-        })
-        .filter(|sink| sink.kind == "cell")
-        .filter_map(|sink| {
-            design
-                .cells
-                .iter()
-                .find(|cell| cell.name == sink.name)
-                .filter(|cell| cell.is_sequential())
-                .map(|_| sink.name.clone())
-        })
-        .collect::<Vec<_>>();
-    sequential_sinks.sort();
-    sequential_sinks.dedup();
-    sequential_sinks.into_iter().next()
-}
-
-fn net_driver_cells(design: &Design) -> BTreeMap<String, String> {
+fn net_driver_cells(design: &Design, index: &DesignIndex<'_>) -> Vec<Option<CellId>> {
     design
         .nets
         .iter()
-        .filter_map(|net| {
-            let driver = net.driver.as_ref()?;
-            (driver.kind == "cell").then(|| (net.name.clone(), driver.name.clone()))
+        .map(|net| {
+            net.driver
+                .as_ref()
+                .and_then(|driver| index.cell_for_endpoint(driver))
         })
         .collect()
 }
 
-fn net_sink_cells(design: &Design) -> BTreeMap<String, Vec<String>> {
-    let mut map = BTreeMap::<String, Vec<String>>::new();
-    for net in &design.nets {
-        let sinks = net
-            .sinks
-            .iter()
-            .filter(|sink| sink.kind == "cell")
-            .map(|sink| sink.name.clone())
-            .collect::<Vec<_>>();
-        map.insert(net.name.clone(), sinks);
-    }
-    map
+type ConnectionGraph = Vec<BTreeMap<CellId, usize>>;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LaneKind {
+    Sequential,
+    Lut,
+    Other,
 }
 
-fn neighbors_of_cell(design: &Design, cell_name: &str) -> BTreeSet<String> {
-    let mut neighbors = BTreeSet::new();
+#[derive(Debug, Clone)]
+struct PackLane {
+    kind: LaneKind,
+    members: Vec<CellId>,
+    shape: ClusterShape,
+    degree: usize,
+    anchor_name: String,
+}
+
+impl PackLane {
+    fn new(
+        design: &Design,
+        index: &DesignIndex<'_>,
+        graph: &ConnectionGraph,
+        kind: LaneKind,
+        mut members: Vec<CellId>,
+    ) -> Self {
+        members.sort();
+        let shape = cluster_shape(design, index, &members);
+        let degree = members
+            .iter()
+            .map(|member| graph[member.index()].values().copied().sum::<usize>())
+            .sum::<usize>();
+        let anchor_name = members
+            .iter()
+            .map(|member| index.cell(design, *member).name.as_str())
+            .min()
+            .unwrap_or_default()
+            .to_string();
+        Self {
+            kind,
+            members,
+            shape,
+            degree,
+            anchor_name,
+        }
+    }
+}
+
+fn build_connection_graph(design: &Design, index: &DesignIndex<'_>) -> ConnectionGraph {
+    let mut graph = vec![BTreeMap::<CellId, usize>::new(); design.cells.len()];
     for net in &design.nets {
-        if !net_forms_pack_adjacency(design, net) {
+        let mut incident = Vec::<CellId>::new();
+        if let Some(driver) = &net.driver
+            && let Some(driver_id) = index.cell_for_endpoint(driver)
+        {
+            incident.push(driver_id);
+        }
+        incident.extend(
+            net.sinks
+                .iter()
+                .filter_map(|sink| index.cell_for_endpoint(sink)),
+        );
+        incident.sort();
+        incident.dedup();
+        for (position, lhs) in incident.iter().enumerate() {
+            for rhs in incident.iter().skip(position + 1) {
+                *graph[lhs.index()].entry(*rhs).or_insert(0) += 1;
+                *graph[rhs.index()].entry(*lhs).or_insert(0) += 1;
+            }
+        }
+    }
+    graph
+}
+
+fn build_pack_lanes(
+    design: &Design,
+    index: &DesignIndex<'_>,
+    net_drivers: &[Option<CellId>],
+    graph: &ConnectionGraph,
+) -> Vec<PackLane> {
+    let mut used = vec![false; design.cells.len()];
+    let mut lanes = Vec::new();
+
+    for (cell_index, cell) in design
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.is_sequential())
+    {
+        let cell_id = CellId::new(cell_index);
+        if used[cell_id.index()] {
             continue;
         }
-        let touches_driver = net
-            .driver
-            .as_ref()
-            .is_some_and(|driver| driver.kind == "cell" && driver.name == cell_name);
-        let touches_sink = net
-            .sinks
+        let mut members = Vec::new();
+        let d_net = cell
+            .inputs
             .iter()
-            .any(|sink| sink.kind == "cell" && sink.name == cell_name);
-        if touches_driver || touches_sink {
-            if let Some(driver) = &net.driver
-                && driver.kind == "cell"
-                && driver.name != cell_name
-            {
-                neighbors.insert(driver.name.clone());
+            .find(|pin| pin.port.eq_ignore_ascii_case("D"))
+            .and_then(|pin| index.net_id(&pin.net));
+        if let Some(d_net) = d_net
+            && let Some(driver_id) = net_drivers[d_net.index()]
+            && is_lut_ff_pair(design, index, driver_id, cell_id)
+            && !used[driver_id.index()]
+        {
+            members.push(driver_id);
+            used[driver_id.index()] = true;
+        }
+        members.push(cell_id);
+        used[cell_id.index()] = true;
+        lanes.push(PackLane::new(
+            design,
+            index,
+            graph,
+            LaneKind::Sequential,
+            members,
+        ));
+    }
+
+    for (cell_index, cell) in design.cells.iter().enumerate() {
+        let cell_id = CellId::new(cell_index);
+        if used[cell_id.index()] || cell.is_constant_source() {
+            continue;
+        }
+        let lane_kind = if cell.is_lut() {
+            LaneKind::Lut
+        } else {
+            LaneKind::Other
+        };
+        used[cell_id.index()] = true;
+        lanes.push(PackLane::new(
+            design,
+            index,
+            graph,
+            lane_kind,
+            vec![cell_id],
+        ));
+    }
+
+    lanes
+}
+
+fn pair_lane_group(
+    graph: &ConnectionGraph,
+    lanes: &[PackLane],
+    capacity: usize,
+    target_kind: LaneKind,
+) -> Vec<Vec<CellId>> {
+    let mut unused = lanes
+        .iter()
+        .enumerate()
+        .filter_map(|(lane_index, lane)| (lane.kind == target_kind).then_some(lane_index))
+        .collect::<Vec<_>>();
+    let mut cluster_members = Vec::new();
+
+    if target_kind == LaneKind::Other {
+        unused.sort_by(|lhs, rhs| compare_lane_priority(&lanes[*lhs], &lanes[*rhs]));
+        cluster_members.extend(
+            unused
+                .into_iter()
+                .map(|lane_id| lanes[lane_id].members.clone()),
+        );
+        return cluster_members;
+    }
+
+    while unused.len() >= 2 {
+        let Some((lhs_position, rhs_position)) = best_lane_pair(graph, lanes, &unused, capacity)
+        else {
+            break;
+        };
+        let rhs_lane = unused.remove(rhs_position);
+        let lhs_lane = unused.remove(lhs_position);
+        let mut members = lanes[lhs_lane].members.clone();
+        members.extend(lanes[rhs_lane].members.iter().copied());
+        members.sort();
+        cluster_members.push(members);
+    }
+
+    unused.sort_by(|lhs, rhs| compare_lane_priority(&lanes[*lhs], &lanes[*rhs]));
+    cluster_members.extend(
+        unused
+            .into_iter()
+            .map(|lane_id| lanes[lane_id].members.clone()),
+    );
+    cluster_members
+}
+
+fn best_lane_pair(
+    graph: &ConnectionGraph,
+    lanes: &[PackLane],
+    unused: &[usize],
+    capacity: usize,
+) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for lhs_position in 0..unused.len() {
+        for rhs_position in (lhs_position + 1)..unused.len() {
+            let lhs_lane = &lanes[unused[lhs_position]];
+            let rhs_lane = &lanes[unused[rhs_position]];
+            if !lhs_lane.shape.can_merge(rhs_lane.shape, capacity) {
+                continue;
             }
-            for sink in &net.sinks {
-                if sink.kind == "cell" && sink.name != cell_name {
-                    neighbors.insert(sink.name.clone());
-                }
+            let candidate = (lhs_position, rhs_position);
+            if best
+                .map(|current| {
+                    compare_lane_pair(
+                        graph,
+                        lanes,
+                        unused[candidate.0],
+                        unused[candidate.1],
+                        unused[current.0],
+                        unused[current.1],
+                    ) == Ordering::Greater
+                })
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
             }
         }
     }
-    neighbors
+    best
 }
 
-fn net_forms_pack_adjacency(design: &Design, net: &Net) -> bool {
-    let Some(driver) = net.driver.as_ref() else {
+fn compare_lane_priority(lhs: &PackLane, rhs: &PackLane) -> Ordering {
+    lhs.shape
+        .total()
+        .cmp(&rhs.shape.total())
+        .reverse()
+        .then_with(|| lhs.degree.cmp(&rhs.degree).reverse())
+        .then_with(|| lhs.anchor_name.cmp(&rhs.anchor_name))
+}
+
+fn compare_lane_pair(
+    graph: &ConnectionGraph,
+    lanes: &[PackLane],
+    lhs_a: usize,
+    lhs_b: usize,
+    rhs_a: usize,
+    rhs_b: usize,
+) -> Ordering {
+    let lhs_score = lane_pair_score(graph, lanes, lhs_a, lhs_b);
+    let rhs_score = lane_pair_score(graph, lanes, rhs_a, rhs_b);
+    lhs_score
+        .cmp(&rhs_score)
+        .then_with(|| compare_lane_priority(&lanes[lhs_a], &lanes[rhs_a]).reverse())
+        .then_with(|| compare_lane_priority(&lanes[lhs_b], &lanes[rhs_b]).reverse())
+        .then_with(|| {
+            lane_pair_anchor(lanes, lhs_a, lhs_b)
+                .cmp(&lane_pair_anchor(lanes, rhs_a, rhs_b))
+                .reverse()
+        })
+}
+
+fn lane_pair_score(
+    graph: &ConnectionGraph,
+    lanes: &[PackLane],
+    lhs_lane: usize,
+    rhs_lane: usize,
+) -> (usize, usize, usize) {
+    let lhs = &lanes[lhs_lane];
+    let rhs = &lanes[rhs_lane];
+    let shared_weight = lhs
+        .members
+        .iter()
+        .map(|member| {
+            rhs.members
+                .iter()
+                .map(|candidate| {
+                    graph[member.index()]
+                        .get(candidate)
+                        .copied()
+                        .unwrap_or_default()
+                })
+                .sum::<usize>()
+        })
+        .sum::<usize>();
+    (
+        shared_weight,
+        lhs.shape.total() + rhs.shape.total(),
+        lhs.degree + rhs.degree,
+    )
+}
+
+fn lane_pair_anchor(lanes: &[PackLane], lhs_lane: usize, rhs_lane: usize) -> String {
+    let mut names = [
+        lanes[lhs_lane].anchor_name.as_str(),
+        lanes[rhs_lane].anchor_name.as_str(),
+    ];
+    names.sort();
+    format!("{}|{}", names[0], names[1])
+}
+
+fn is_lut_ff_pair(design: &Design, index: &DesignIndex<'_>, lhs: CellId, rhs: CellId) -> bool {
+    let (lut_id, ff_id) = match (
+        index.cell(design, lhs).is_lut(),
+        index.cell(design, lhs).is_sequential(),
+        index.cell(design, rhs).is_lut(),
+        index.cell(design, rhs).is_sequential(),
+    ) {
+        (true, false, false, true) => (lhs, rhs),
+        (false, true, true, false) => (rhs, lhs),
+        _ => return false,
+    };
+    let lut = index.cell(design, lut_id);
+    let ff = index.cell(design, ff_id);
+    let Some(d_net) = ff
+        .inputs
+        .iter()
+        .find(|pin| pin.port.eq_ignore_ascii_case("D"))
+        .map(|pin| pin.net.as_str())
+    else {
         return false;
     };
-    if driver.kind != "cell" {
-        return false;
+    lut.outputs.iter().any(|pin| pin.net == d_net)
+}
+
+fn cell_names(design: &Design, members: &[CellId]) -> Vec<String> {
+    members
+        .iter()
+        .map(|member| design.cells[member.index()].name.clone())
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ClusterShape {
+    luts: usize,
+    ffs: usize,
+    others: usize,
+}
+
+impl ClusterShape {
+    fn include(&mut self, cell: &crate::ir::Cell) {
+        if cell.is_lut() {
+            self.luts += 1;
+        } else if cell.is_sequential() {
+            self.ffs += 1;
+        } else if !cell.is_constant_source() {
+            self.others += 1;
+        }
     }
-    if design
-        .cell_lookup(&driver.name)
-        .is_some_and(|cell| cell.is_constant_source())
-    {
-        return false;
+
+    fn can_merge(self, other: Self, capacity: usize) -> bool {
+        let merged = Self {
+            luts: self.luts + other.luts,
+            ffs: self.ffs + other.ffs,
+            others: self.others + other.others,
+        };
+        merged.total() <= capacity
+            && merged.luts <= MAX_LUTS_PER_CLUSTER
+            && merged.ffs <= MAX_FFS_PER_CLUSTER
+            && merged.others <= 1
     }
-    net.sinks.iter().any(|sink| sink.kind == "cell")
+
+    fn total(self) -> usize {
+        self.luts + self.ffs + self.others
+    }
+}
+
+fn cluster_shape(design: &Design, index: &DesignIndex<'_>, members: &[CellId]) -> ClusterShape {
+    let mut shape = ClusterShape::default();
+    for member in members {
+        shape.include(index.cell(design, *member));
+    }
+    shape
 }
 
 #[cfg(test)]
 mod tests {
     use super::{PackOptions, run};
-    use crate::ir::{Cell, CellPin, Design, Endpoint, Net};
+    use crate::ir::{Cell, Design, Endpoint, Net};
     use anyhow::Result;
-    use std::collections::BTreeSet;
 
     fn pack_design() -> Design {
         Design {
             name: "pack-mini".to_string(),
             cells: vec![
-                Cell {
-                    name: "lut_ff_driver".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "d_net".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "reg0".to_string(),
-                    kind: "ff".to_string(),
-                    type_name: "DFFHQ".to_string(),
-                    inputs: vec![CellPin {
-                        port: "D".to_string(),
-                        net: "d_net".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "Q".to_string(),
-                        net: "q_net".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "lut_a".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![CellPin {
-                        port: "A".to_string(),
-                        net: "q_net".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "fanout".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "lut_b".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![CellPin {
-                        port: "A".to_string(),
-                        net: "fanout".to_string(),
-                    }],
-                    ..Cell::default()
-                },
+                Cell::lut("lut_ff_driver", "LUT4").with_output("O", "d_net"),
+                Cell::ff("reg0", "DFFHQ")
+                    .with_input("D", "d_net")
+                    .with_output("Q", "q_net"),
+                Cell::lut("lut_a", "LUT4")
+                    .with_input("A", "q_net")
+                    .with_output("O", "fanout"),
+                Cell::lut("lut_b", "LUT4").with_input("A", "fanout"),
             ],
             nets: vec![
-                Net {
-                    name: "d_net".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut_ff_driver".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "reg0".to_string(),
-                        pin: "D".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "q_net".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "reg0".to_string(),
-                        pin: "Q".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut_a".to_string(),
-                        pin: "A".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "fanout".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut_a".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut_b".to_string(),
-                        pin: "A".to_string(),
-                    }],
-                    ..Net::default()
-                },
+                Net::new("d_net")
+                    .with_driver(Endpoint::cell("lut_ff_driver", "O"))
+                    .with_sink(Endpoint::cell("reg0", "D")),
+                Net::new("q_net")
+                    .with_driver(Endpoint::cell("reg0", "Q"))
+                    .with_sink(Endpoint::cell("lut_a", "A")),
+                Net::new("fanout")
+                    .with_driver(Endpoint::cell("lut_a", "O"))
+                    .with_sink(Endpoint::cell("lut_b", "A")),
             ],
             ..Design::default()
         }
-    }
-
-    fn pack_chain_design() -> Design {
-        Design {
-            name: "pack-chain".to_string(),
-            cells: vec![
-                Cell {
-                    name: "lut0".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "d0".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "ff0".to_string(),
-                    kind: "ff".to_string(),
-                    type_name: "DFFHQ".to_string(),
-                    inputs: vec![CellPin {
-                        port: "D".to_string(),
-                        net: "d0".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "Q".to_string(),
-                        net: "q0".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "lut1".to_string(),
-                    kind: "lut".to_string(),
-                    type_name: "LUT4".to_string(),
-                    inputs: vec![CellPin {
-                        port: "A".to_string(),
-                        net: "q0".to_string(),
-                    }],
-                    outputs: vec![CellPin {
-                        port: "O".to_string(),
-                        net: "d1".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-                Cell {
-                    name: "ff1".to_string(),
-                    kind: "ff".to_string(),
-                    type_name: "DFFHQ".to_string(),
-                    inputs: vec![CellPin {
-                        port: "D".to_string(),
-                        net: "d1".to_string(),
-                    }],
-                    ..Cell::default()
-                },
-            ],
-            nets: vec![
-                Net {
-                    name: "d0".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut0".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "ff0".to_string(),
-                        pin: "D".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "q0".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "ff0".to_string(),
-                        pin: "Q".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut1".to_string(),
-                        pin: "A".to_string(),
-                    }],
-                    ..Net::default()
-                },
-                Net {
-                    name: "d1".to_string(),
-                    driver: Some(Endpoint {
-                        kind: "cell".to_string(),
-                        name: "lut1".to_string(),
-                        pin: "O".to_string(),
-                    }),
-                    sinks: vec![Endpoint {
-                        kind: "cell".to_string(),
-                        name: "ff1".to_string(),
-                        pin: "D".to_string(),
-                    }],
-                    ..Net::default()
-                },
-            ],
-            ..Design::default()
-        }
-    }
-
-    fn pack_shared_clock_shift_design() -> Design {
-        let mut design = Design {
-            name: "pack-shared-clock-shift".to_string(),
-            ..Design::default()
-        };
-
-        for index in 0..4 {
-            design.cells.push(Cell {
-                name: format!("ff{index}"),
-                kind: "ff".to_string(),
-                type_name: "DFFHQ".to_string(),
-                inputs: vec![
-                    CellPin {
-                        port: "CK".to_string(),
-                        net: "clk".to_string(),
-                    },
-                    CellPin {
-                        port: "D".to_string(),
-                        net: format!("d{index}"),
-                    },
-                ],
-                outputs: vec![CellPin {
-                    port: "Q".to_string(),
-                    net: format!("q{index}"),
-                }],
-                ..Cell::default()
-            });
-            design.cells.push(Cell {
-                name: format!("lut{index}"),
-                kind: "lut".to_string(),
-                type_name: "LUT2".to_string(),
-                inputs: vec![
-                    CellPin {
-                        port: "ADR1".to_string(),
-                        net: "clk".to_string(),
-                    },
-                    CellPin {
-                        port: "ADR0".to_string(),
-                        net: if index == 0 {
-                            "din".to_string()
-                        } else {
-                            format!("q{}", index - 1)
-                        },
-                    },
-                ],
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: format!("d{index}"),
-                }],
-                ..Cell::default()
-            });
-        }
-
-        design.nets.push(Net {
-            name: "clk".to_string(),
-            driver: Some(Endpoint {
-                kind: "port".to_string(),
-                name: "clk".to_string(),
-                pin: "clk".to_string(),
-            }),
-            sinks: (0..4)
-                .flat_map(|index| {
-                    [
-                        Endpoint {
-                            kind: "cell".to_string(),
-                            name: format!("lut{index}"),
-                            pin: "ADR1".to_string(),
-                        },
-                        Endpoint {
-                            kind: "cell".to_string(),
-                            name: format!("ff{index}"),
-                            pin: "CK".to_string(),
-                        },
-                    ]
-                })
-                .collect(),
-            ..Net::default()
-        });
-        design.nets.push(Net {
-            name: "din".to_string(),
-            driver: Some(Endpoint {
-                kind: "port".to_string(),
-                name: "din".to_string(),
-                pin: "din".to_string(),
-            }),
-            sinks: vec![Endpoint {
-                kind: "cell".to_string(),
-                name: "lut0".to_string(),
-                pin: "ADR0".to_string(),
-            }],
-            ..Net::default()
-        });
-
-        for index in 0..4 {
-            design.nets.push(Net {
-                name: format!("d{index}"),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: format!("lut{index}"),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: format!("ff{index}"),
-                    pin: "D".to_string(),
-                }],
-                ..Net::default()
-            });
-        }
-
-        for index in 0..4 {
-            let mut sinks = Vec::new();
-            if index < 3 {
-                sinks.push(Endpoint {
-                    kind: "cell".to_string(),
-                    name: format!("lut{}", index + 1),
-                    pin: "ADR0".to_string(),
-                });
-            }
-            if index > 0 {
-                sinks.push(Endpoint {
-                    kind: "port".to_string(),
-                    name: format!("q{index}"),
-                    pin: format!("q{index}"),
-                });
-            }
-            design.nets.push(Net {
-                name: format!("q{index}"),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: format!("ff{index}"),
-                    pin: "Q".to_string(),
-                }),
-                sinks,
-                ..Net::default()
-            });
-        }
-
-        design
     }
 
     #[test]
@@ -713,40 +587,17 @@ mod tests {
             let lut_name = format!("lut_{index}");
             let ff_name = format!("ff_{index}");
             let net_name = format!("d_net_{index}");
-            design.cells.push(Cell {
-                name: lut_name.clone(),
-                kind: "lut".to_string(),
-                type_name: "LUT4".to_string(),
-                outputs: vec![CellPin {
-                    port: "O".to_string(),
-                    net: net_name.clone(),
-                }],
-                ..Cell::default()
-            });
-            design.cells.push(Cell {
-                name: ff_name.clone(),
-                kind: "ff".to_string(),
-                type_name: "DFFHQ".to_string(),
-                inputs: vec![CellPin {
-                    port: "D".to_string(),
-                    net: net_name.clone(),
-                }],
-                ..Cell::default()
-            });
-            design.nets.push(Net {
-                name: net_name,
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: lut_name,
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: ff_name,
-                    pin: "D".to_string(),
-                }],
-                ..Net::default()
-            });
+            design
+                .cells
+                .push(Cell::lut(lut_name.clone(), "LUT4").with_output("O", net_name.clone()));
+            design
+                .cells
+                .push(Cell::ff(ff_name.clone(), "DFFHQ").with_input("D", net_name.clone()));
+            design.nets.push(
+                Net::new(net_name)
+                    .with_driver(Endpoint::cell(lut_name, "O"))
+                    .with_sink(Endpoint::cell(ff_name, "D")),
+            );
         }
 
         let packed = run(
@@ -775,10 +626,37 @@ mod tests {
     }
 
     #[test]
-    fn pack_fills_larger_clusters_with_connected_lut_ff_neighbors() -> Result<()> {
+    fn pack_can_fill_four_slot_cluster_along_connected_chain() -> Result<()> {
+        let design = Design {
+            name: "pack-chain".to_string(),
+            cells: vec![
+                Cell::lut("lut0", "LUT4").with_output("O", "net0"),
+                Cell::ff("ff0", "DFFHQ")
+                    .with_input("D", "net0")
+                    .with_output("Q", "net1"),
+                Cell::lut("lut1", "LUT4")
+                    .with_input("A", "net1")
+                    .with_output("O", "net2"),
+                Cell::ff("ff1", "DFFHQ").with_input("D", "net2"),
+            ],
+            nets: vec![
+                Net::new("net0")
+                    .with_driver(Endpoint::cell("lut0", "O"))
+                    .with_sink(Endpoint::cell("ff0", "D")),
+                Net::new("net1")
+                    .with_driver(Endpoint::cell("ff0", "Q"))
+                    .with_sink(Endpoint::cell("lut1", "A")),
+                Net::new("net2")
+                    .with_driver(Endpoint::cell("lut1", "O"))
+                    .with_sink(Endpoint::cell("ff1", "D")),
+            ],
+            ..Design::default()
+        };
+
         let packed = run(
-            pack_chain_design(),
+            design,
             &PackOptions {
+                family: Some("fdp3".to_string()),
                 capacity: 4,
                 ..PackOptions::default()
             },
@@ -786,28 +664,126 @@ mod tests {
         .value;
 
         assert_eq!(packed.clusters.len(), 1);
-        let members = packed.clusters[0]
-            .members
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        assert_eq!(packed.clusters[0].members.len(), 4);
         assert_eq!(
-            members,
-            BTreeSet::from([
+            packed.clusters[0].members,
+            vec![
                 "lut0".to_string(),
                 "ff0".to_string(),
                 "lut1".to_string(),
                 "ff1".to_string(),
-            ])
+            ]
         );
 
         Ok(())
     }
 
     #[test]
-    fn pack_ignores_shared_clock_nets_when_grouping_shift_stages() -> Result<()> {
+    fn pack_respects_slice_shape_limits_when_greedy_fill_expands() -> Result<()> {
+        let design = Design {
+            name: "pack-shape".to_string(),
+            cells: vec![
+                Cell::lut("lut0", "LUT4").with_output("O", "net0"),
+                Cell::ff("ff0", "DFFHQ")
+                    .with_input("D", "net0")
+                    .with_output("Q", "net1"),
+                Cell::lut("lut1", "LUT4")
+                    .with_input("A", "net1")
+                    .with_output("O", "net2"),
+                Cell::lut("lut2", "LUT4").with_input("A", "net2"),
+                Cell::lut("lut3", "LUT4").with_input("A", "net2"),
+            ],
+            nets: vec![
+                Net::new("net0")
+                    .with_driver(Endpoint::cell("lut0", "O"))
+                    .with_sink(Endpoint::cell("ff0", "D")),
+                Net::new("net1")
+                    .with_driver(Endpoint::cell("ff0", "Q"))
+                    .with_sink(Endpoint::cell("lut1", "A")),
+                Net::new("net2")
+                    .with_driver(Endpoint::cell("lut1", "O"))
+                    .with_sink(Endpoint::cell("lut2", "A"))
+                    .with_sink(Endpoint::cell("lut3", "A")),
+            ],
+            ..Design::default()
+        };
+
         let packed = run(
-            pack_shared_clock_shift_design(),
+            design,
+            &PackOptions {
+                family: Some("fdp3".to_string()),
+                capacity: 4,
+                ..PackOptions::default()
+            },
+        )?
+        .value;
+
+        assert_eq!(packed.clusters.len(), 3);
+        assert!(packed.clusters.iter().all(|cluster| {
+            let mut lut_count = 0usize;
+            let mut ff_count = 0usize;
+            for member in &cluster.members {
+                let cell = packed
+                    .cells
+                    .iter()
+                    .find(|cell| cell.name == *member)
+                    .expect("cluster member exists");
+                if cell.is_lut() {
+                    lut_count += 1;
+                } else if cell.is_sequential() {
+                    ff_count += 1;
+                }
+            }
+            lut_count <= 2 && ff_count <= 2
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn pack_prefers_pairing_ff_lanes_together_before_absorbing_extra_luts() -> Result<()> {
+        let design = Design {
+            name: "pack-shape-normalization".to_string(),
+            cells: vec![
+                Cell::lut("lut_ff0", "LUT4").with_output("O", "d0"),
+                Cell::ff("ff0", "DFFHQ")
+                    .with_input("D", "d0")
+                    .with_output("Q", "q0"),
+                Cell::lut("lut_ff1", "LUT4").with_output("O", "d1"),
+                Cell::ff("ff1", "DFFHQ")
+                    .with_input("D", "d1")
+                    .with_output("Q", "q1"),
+                Cell::lut("lut_ff2", "LUT4").with_output("O", "d2"),
+                Cell::ff("ff2", "DFFHQ")
+                    .with_input("D", "d2")
+                    .with_output("Q", "q2"),
+                Cell::lut("lut_a", "LUT4")
+                    .with_input("A", "q2")
+                    .with_output("O", "a_out"),
+                Cell::lut("lut_b", "LUT4").with_input("A", "a_out"),
+            ],
+            nets: vec![
+                Net::new("d0")
+                    .with_driver(Endpoint::cell("lut_ff0", "O"))
+                    .with_sink(Endpoint::cell("ff0", "D")),
+                Net::new("d1")
+                    .with_driver(Endpoint::cell("lut_ff1", "O"))
+                    .with_sink(Endpoint::cell("ff1", "D")),
+                Net::new("d2")
+                    .with_driver(Endpoint::cell("lut_ff2", "O"))
+                    .with_sink(Endpoint::cell("ff2", "D")),
+                Net::new("q2")
+                    .with_driver(Endpoint::cell("ff2", "Q"))
+                    .with_sink(Endpoint::cell("lut_a", "A")),
+                Net::new("a_out")
+                    .with_driver(Endpoint::cell("lut_a", "O"))
+                    .with_sink(Endpoint::cell("lut_b", "A")),
+            ],
+            ..Design::default()
+        };
+
+        let packed = run(
+            design,
             &PackOptions {
                 capacity: 4,
                 ..PackOptions::default()
@@ -815,29 +791,35 @@ mod tests {
         )?
         .value;
 
-        let member_sets = packed
+        let mut shapes = packed
             .clusters
             .iter()
-            .map(|cluster| cluster.members.iter().cloned().collect::<BTreeSet<_>>())
-            .collect::<BTreeSet<_>>();
+            .map(|cluster| {
+                let mut kinds = cluster
+                    .members
+                    .iter()
+                    .filter_map(|member| packed.cells.iter().find(|cell| &cell.name == member))
+                    .map(|cell| cell.kind.as_str().to_ascii_uppercase())
+                    .collect::<Vec<_>>();
+                kinds.sort();
+                kinds
+            })
+            .collect::<Vec<_>>();
+        shapes.sort();
 
-        assert_eq!(
-            member_sets,
-            BTreeSet::from([
-                BTreeSet::from([
-                    "lut0".to_string(),
-                    "ff0".to_string(),
-                    "lut1".to_string(),
-                    "ff1".to_string(),
-                ]),
-                BTreeSet::from([
-                    "lut2".to_string(),
-                    "ff2".to_string(),
-                    "lut3".to_string(),
-                    "ff3".to_string(),
-                ]),
-            ])
-        );
+        let mut expected = vec![
+            vec![
+                "FF".to_string(),
+                "FF".to_string(),
+                "LUT".to_string(),
+                "LUT".to_string(),
+            ],
+            vec!["FF".to_string(), "LUT".to_string()],
+            vec!["LUT".to_string(), "LUT".to_string()],
+        ];
+        expected.sort();
+
+        assert_eq!(shapes, expected);
 
         Ok(())
     }

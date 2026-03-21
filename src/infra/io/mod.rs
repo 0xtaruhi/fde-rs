@@ -1,8 +1,8 @@
 use crate::ir::{
-    Cell, CellPin, Cluster, Design, Endpoint, Net, Port, PortDirection, Property, RoutePip,
-    RouteSegment, TimingPath, TimingSummary,
+    Cell, CellKind, CellPin, Cluster, ClusterKind, Design, Endpoint, EndpointKind, Net, Port,
+    PortDirection, Property, RouteSegment, TimingPath, TimingPathCategory, TimingSummary,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use roxmltree::{Document, Node};
 use std::{fmt::Write, fs, path::Path};
 
@@ -78,7 +78,7 @@ fn save_design_xml(design: &Design) -> String {
             xml,
             "    <cell name=\"{}\" kind=\"{}\" type_name=\"{}\" cluster=\"{}\">",
             escape(&cell.name),
-            escape(&cell.kind),
+            cell.kind.as_str(),
             escape(&cell.type_name),
             escape(cell.cluster.as_deref().unwrap_or(""))
         );
@@ -140,16 +140,6 @@ fn save_design_xml(design: &Design) -> String {
                 segment.x0, segment.y0, segment.x1, segment.y1
             );
         }
-        for pip in &net.route_pips {
-            let _ = writeln!(
-                xml,
-                "      <pip from=\"{}\" to=\"{}\" position=\"{}\" dir=\"{}\" />",
-                escape(&pip.from_net),
-                escape(&pip.to_net),
-                format_point_position(pip.x, pip.y),
-                escape(route_pip_dir(pip))
-            );
-        }
         let _ = writeln!(xml, "    </net>");
     }
     let _ = writeln!(xml, "  </nets>");
@@ -158,12 +148,13 @@ fn save_design_xml(design: &Design) -> String {
     for cluster in &design.clusters {
         let _ = writeln!(
             xml,
-            "    <cluster name=\"{}\" kind=\"{}\" capacity=\"{}\" x=\"{}\" y=\"{}\" fixed=\"{}\">",
+            "    <cluster name=\"{}\" kind=\"{}\" capacity=\"{}\" x=\"{}\" y=\"{}\" z=\"{}\" fixed=\"{}\">",
             escape(&cluster.name),
-            escape(&cluster.kind),
+            cluster.kind.as_str(),
             cluster.capacity,
             cluster.x.map(|value| value.to_string()).unwrap_or_default(),
             cluster.y.map(|value| value.to_string()).unwrap_or_default(),
+            cluster.z.map(|value| value.to_string()).unwrap_or_default(),
             cluster.fixed
         );
         for member in &cluster.members {
@@ -183,7 +174,7 @@ fn save_design_xml(design: &Design) -> String {
             let _ = writeln!(
                 xml,
                 "    <path category=\"{}\" endpoint=\"{}\" delay_ns=\"{:.6}\">",
-                escape(&path.category),
+                path.category.as_str(),
                 escape(&path.endpoint),
                 path.delay_ns
             );
@@ -203,7 +194,7 @@ fn write_endpoint(xml: &mut String, tag: &str, endpoint: &Endpoint, indent: usiz
     let _ = writeln!(
         xml,
         "{space}<{tag} kind=\"{}\" name=\"{}\" pin=\"{}\" />",
-        escape(&endpoint.kind),
+        endpoint.kind.as_str(),
         escape(&endpoint.name),
         escape(&endpoint.pin),
         space = " ".repeat(indent),
@@ -218,35 +209,35 @@ fn load_design_xml(xml: &str) -> Result<Design> {
         bail!("root element is not <design>");
     }
 
-    let metadata_node = root.children().find(|node| node.has_tag_name("metadata"));
-    let mut notes = metadata_node
-        .into_iter()
-        .flat_map(|node| node.children().filter(|child| child.has_tag_name("note")))
+    let metadata_node = root
+        .children()
+        .find(|node| node.has_tag_name("metadata"))
+        .ok_or_else(|| anyhow!("missing <metadata> section"))?;
+    let notes = metadata_node
+        .children()
+        .filter(|node| node.has_tag_name("note"))
         .filter_map(|node| node.text())
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    if metadata_node.is_none() {
-        notes.push("Loaded legacy design XML without a <metadata> section.".to_string());
-    }
 
     let mut design = Design {
         name: root.attribute("name").unwrap_or("design").to_string(),
         stage: root.attribute("stage").unwrap_or("unknown").to_string(),
         metadata: crate::ir::Metadata {
             source_format: metadata_node
-                .and_then(|node| node.attribute("source_format"))
+                .attribute("source_format")
                 .unwrap_or_default()
                 .to_string(),
             family: metadata_node
-                .and_then(|node| node.attribute("family"))
+                .attribute("family")
                 .unwrap_or_default()
                 .to_string(),
             arch_name: metadata_node
-                .and_then(|node| node.attribute("arch_name"))
+                .attribute("arch_name")
                 .unwrap_or_default()
                 .to_string(),
             lut_size: metadata_node
-                .and_then(|node| node.attribute("lut_size"))
+                .attribute("lut_size")
                 .unwrap_or("0")
                 .parse()
                 .unwrap_or(0),
@@ -260,16 +251,17 @@ fn load_design_xml(xml: &str) -> Result<Design> {
             .children()
             .filter(|node| node.has_tag_name("port"))
         {
-            design.ports.push(Port {
-                name: attr(&port, "name"),
-                direction: attr(&port, "direction")
+            let mut design_port = Port::new(
+                attr(&port, "name"),
+                attr(&port, "direction")
                     .parse()
                     .unwrap_or(PortDirection::Input),
-                width: attr(&port, "width").parse().unwrap_or(1),
-                pin: non_empty_attr(&port, "pin"),
-                x: non_empty_attr(&port, "x").and_then(|value| value.parse().ok()),
-                y: non_empty_attr(&port, "y").and_then(|value| value.parse().ok()),
-            });
+            );
+            design_port.width = attr(&port, "width").parse().unwrap_or(1);
+            design_port.pin = non_empty_attr(&port, "pin");
+            design_port.x = non_empty_attr(&port, "x").and_then(|value| value.parse().ok());
+            design_port.y = non_empty_attr(&port, "y").and_then(|value| value.parse().ok());
+            design.ports.push(design_port);
         }
     }
 
@@ -280,25 +272,24 @@ fn load_design_xml(xml: &str) -> Result<Design> {
         {
             let mut cell = Cell {
                 name: attr(&cell_node, "name"),
-                kind: attr(&cell_node, "kind"),
+                kind: attr(&cell_node, "kind")
+                    .parse()
+                    .unwrap_or(CellKind::Unknown),
                 type_name: attr(&cell_node, "type_name"),
                 cluster: non_empty_attr(&cell_node, "cluster"),
                 ..Cell::default()
             };
             for child in cell_node.children().filter(|node| node.is_element()) {
                 match child.tag_name().name() {
-                    "property" => cell.properties.push(Property {
-                        key: attr(&child, "key"),
-                        value: attr(&child, "value"),
-                    }),
-                    "input" => cell.inputs.push(CellPin {
-                        port: attr(&child, "port"),
-                        net: attr(&child, "net"),
-                    }),
-                    "output" => cell.outputs.push(CellPin {
-                        port: attr(&child, "port"),
-                        net: attr(&child, "net"),
-                    }),
+                    "property" => cell
+                        .properties
+                        .push(Property::new(attr(&child, "key"), attr(&child, "value"))),
+                    "input" => cell
+                        .inputs
+                        .push(CellPin::new(attr(&child, "port"), attr(&child, "net"))),
+                    "output" => cell
+                        .outputs
+                        .push(CellPin::new(attr(&child, "port"), attr(&child, "net"))),
                     _ => {}
                 }
             }
@@ -318,26 +309,19 @@ fn load_design_xml(xml: &str) -> Result<Design> {
                 match child.tag_name().name() {
                     "driver" => net.driver = Some(read_endpoint(&child)),
                     "sink" => net.sinks.push(read_endpoint(&child)),
-                    "property" => net.properties.push(Property {
-                        key: attr(&child, "key"),
-                        value: attr(&child, "value"),
-                    }),
-                    "segment" => net.route.push(RouteSegment {
-                        x0: attr(&child, "x0").parse().unwrap_or(0),
-                        y0: attr(&child, "y0").parse().unwrap_or(0),
-                        x1: attr(&child, "x1").parse().unwrap_or(0),
-                        y1: attr(&child, "y1").parse().unwrap_or(0),
-                    }),
-                    "pip" => {
-                        let (x, y) = parse_route_pip_position(&child).unwrap_or((0, 0));
-                        net.route_pips.push(RoutePip {
-                            x,
-                            y,
-                            from_net: attr(&child, "from"),
-                            to_net: attr(&child, "to"),
-                            dir: attr(&child, "dir"),
-                        });
-                    }
+                    "property" => net
+                        .properties
+                        .push(Property::new(attr(&child, "key"), attr(&child, "value"))),
+                    "segment" => net.route.push(RouteSegment::new(
+                        (
+                            attr(&child, "x0").parse().unwrap_or(0),
+                            attr(&child, "y0").parse().unwrap_or(0),
+                        ),
+                        (
+                            attr(&child, "x1").parse().unwrap_or(0),
+                            attr(&child, "y1").parse().unwrap_or(0),
+                        ),
+                    )),
                     _ => {}
                 }
             }
@@ -350,15 +334,17 @@ fn load_design_xml(xml: &str) -> Result<Design> {
             .children()
             .filter(|node| node.has_tag_name("cluster"))
         {
-            let mut cluster = Cluster {
-                name: attr(&cluster_node, "name"),
-                kind: attr(&cluster_node, "kind"),
-                capacity: attr(&cluster_node, "capacity").parse().unwrap_or(0),
-                x: non_empty_attr(&cluster_node, "x").and_then(|value| value.parse().ok()),
-                y: non_empty_attr(&cluster_node, "y").and_then(|value| value.parse().ok()),
-                fixed: attr(&cluster_node, "fixed").parse().unwrap_or(false),
-                ..Cluster::default()
-            };
+            let mut cluster = Cluster::new(
+                attr(&cluster_node, "name"),
+                attr(&cluster_node, "kind")
+                    .parse()
+                    .unwrap_or(ClusterKind::Unknown),
+            )
+            .with_capacity(attr(&cluster_node, "capacity").parse().unwrap_or(0));
+            cluster.x = non_empty_attr(&cluster_node, "x").and_then(|value| value.parse().ok());
+            cluster.y = non_empty_attr(&cluster_node, "y").and_then(|value| value.parse().ok());
+            cluster.z = non_empty_attr(&cluster_node, "z").and_then(|value| value.parse().ok());
+            cluster.fixed = attr(&cluster_node, "fixed").parse().unwrap_or(false);
             for member in cluster_node
                 .children()
                 .filter(|node| node.has_tag_name("member"))
@@ -382,7 +368,9 @@ fn load_design_xml(xml: &str) -> Result<Design> {
             .filter(|node| node.has_tag_name("path"))
         {
             let mut path = TimingPath {
-                category: attr(&path_node, "category"),
+                category: attr(&path_node, "category")
+                    .parse()
+                    .unwrap_or(TimingPathCategory::Unknown),
                 endpoint: attr(&path_node, "endpoint"),
                 delay_ns: attr(&path_node, "delay_ns").parse().unwrap_or(0.0),
                 ..TimingPath::default()
@@ -400,7 +388,7 @@ fn load_design_xml(xml: &str) -> Result<Design> {
 
 fn read_endpoint(node: &Node<'_, '_>) -> Endpoint {
     Endpoint {
-        kind: attr(node, "kind"),
+        kind: attr(node, "kind").parse().unwrap_or(EndpointKind::Unknown),
         name: attr(node, "name"),
         pin: attr(node, "pin"),
     }
@@ -423,121 +411,55 @@ fn escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn format_point_position(x: usize, y: usize) -> String {
-    format!("{x},{y}")
-}
-
-fn parse_route_pip_position(node: &Node<'_, '_>) -> Option<(usize, usize)> {
-    if let Some(position) = node.attribute("position") {
-        if let Some(raw) = position.strip_prefix('R') {
-            let (row, col) = raw.split_once('C')?;
-            return Some((col.parse().ok()?, row.parse().ok()?));
-        }
-        if let Some((x, y)) = position.split_once(',') {
-            return Some((x.trim().parse().ok()?, y.trim().parse().ok()?));
-        }
-    }
-    Some((
-        node.attribute("x")?.parse().ok()?,
-        node.attribute("y")?.parse().ok()?,
-    ))
-}
-
-fn route_pip_dir(pip: &RoutePip) -> &str {
-    match pip.dir.as_str() {
-        "" | "unidir" => "->",
-        value => value,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{load_design_xml, save_design_xml};
-    use crate::ir::{Design, Endpoint, Net, RoutePip};
+    use crate::ir::{Cell, CellKind, Design, Endpoint, EndpointKind, Net};
 
     #[test]
-    fn design_xml_roundtrip_preserves_exact_route_pips() {
+    fn xml_roundtrip_preserves_typed_kinds() {
         let design = Design {
-            name: "exact-pip-roundtrip".to_string(),
-            stage: "routed".to_string(),
-            nets: vec![Net {
-                name: "link".to_string(),
-                driver: Some(Endpoint {
-                    kind: "cell".to_string(),
-                    name: "src".to_string(),
-                    pin: "O".to_string(),
-                }),
-                sinks: vec![Endpoint {
-                    kind: "cell".to_string(),
-                    name: "dst".to_string(),
-                    pin: "A".to_string(),
-                }],
-                route_pips: vec![RoutePip {
-                    x: 3,
-                    y: 4,
-                    from_net: "SRC".to_string(),
-                    to_net: "DST".to_string(),
-                    dir: String::new(),
-                }],
-                ..Net::default()
-            }],
+            name: "typed-kinds".to_string(),
+            cells: vec![
+                Cell::new("u0", CellKind::Lut, "LUT4")
+                    .with_input("ADR0", "n0")
+                    .with_output("O", "n1"),
+            ],
+            nets: vec![
+                Net::new("n1")
+                    .with_driver(Endpoint::cell("u0", "O"))
+                    .with_sink(Endpoint::port("y", "OUT")),
+            ],
             ..Design::default()
         };
 
         let xml = save_design_xml(&design);
-        assert!(xml.contains("<pip from=\"SRC\" to=\"DST\" position=\"3,4\" dir=\"-&gt;\" />"));
+        let loaded = load_design_xml(&xml).expect("xml roundtrip");
 
-        let loaded = load_design_xml(&xml).expect("reload exact-pip xml");
-        assert_eq!(loaded.nets[0].route_pips.len(), 1);
-        assert_eq!(loaded.nets[0].route_pips[0].x, 3);
-        assert_eq!(loaded.nets[0].route_pips[0].y, 4);
-        assert_eq!(loaded.nets[0].route_pips[0].from_net, "SRC");
-        assert_eq!(loaded.nets[0].route_pips[0].to_net, "DST");
-        assert_eq!(loaded.nets[0].route_pips[0].dir, "->");
-    }
-
-    #[test]
-    fn design_xml_loads_cpp_style_pip_positions() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<design name="cpp-route" stage="routed">
-  <metadata source_format="" family="" arch_name="" lut_size="0">
-  </metadata>
-  <ports>
-  </ports>
-  <cells>
-  </cells>
-  <nets>
-    <net name="n" estimated_delay_ns="0.000000" criticality="0.000000">
-      <pip from="A" to="B" position="2,5" dir="->" />
-    </net>
-  </nets>
-  <clusters>
-  </clusters>
-</design>"#;
-        let loaded = load_design_xml(xml).expect("load cpp style routed xml");
-        assert_eq!(loaded.nets[0].route_pips.len(), 1);
-        assert_eq!(loaded.nets[0].route_pips[0].x, 2);
-        assert_eq!(loaded.nets[0].route_pips[0].y, 5);
-        assert_eq!(loaded.nets[0].route_pips[0].dir, "->");
-    }
-
-    #[test]
-    fn design_xml_loads_legacy_files_without_metadata() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<design name="legacy" stage="routed">
-  <nets>
-    <net name="n" estimated_delay_ns="0.000000" criticality="0.000000">
-      <pip from="A" to="B" position="2,5" dir="->" />
-    </net>
-  </nets>
-</design>"#;
-        let loaded = load_design_xml(xml).expect("load legacy routed xml");
-        assert_eq!(loaded.name, "legacy");
-        assert_eq!(loaded.stage, "routed");
-        assert_eq!(loaded.nets[0].route_pips.len(), 1);
+        assert_eq!(loaded.cells[0].kind, CellKind::Lut);
         assert_eq!(
-            loaded.metadata.notes,
-            vec!["Loaded legacy design XML without a <metadata> section.".to_string()]
+            loaded.nets[0].driver.as_ref().map(|ep| ep.kind),
+            Some(EndpointKind::Cell)
         );
+        assert_eq!(loaded.nets[0].sinks[0].kind, EndpointKind::Port);
+    }
+
+    #[test]
+    fn json_serde_keeps_string_shape_for_kinds() {
+        let design = Design {
+            name: "json-kinds".to_string(),
+            cells: vec![Cell::new("u0", CellKind::Ff, "DFFHQ")],
+            nets: vec![
+                Net::new("n0")
+                    .with_driver(Endpoint::cell("u0", "Q"))
+                    .with_sink(Endpoint::port("y", "OUT")),
+            ],
+            ..Design::default()
+        };
+
+        let json = serde_json::to_string(&design).expect("json serialize");
+        assert!(json.contains("\"kind\":\"ff\""));
+        assert!(json.contains("\"kind\":\"cell\""));
+        assert!(json.contains("\"kind\":\"port\""));
     }
 }

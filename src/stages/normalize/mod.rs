@@ -1,9 +1,9 @@
 use crate::{
-    ir::Design,
+    ir::{CellKind, Design},
     report::{StageOutput, StageReport},
 };
 use anyhow::Result;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
 pub struct NormalizeOptions {
@@ -25,7 +25,7 @@ pub fn run(mut design: Design, options: &NormalizeOptions) -> Result<StageOutput
     }
 
     design.cells.retain(|cell| {
-        !(cell.kind.eq_ignore_ascii_case("buffer")
+        !(cell.kind == CellKind::Buffer
             && cell.inputs.len() == 1
             && cell.outputs.len() == 1
             && cell.inputs[0].net == cell.outputs[0].net)
@@ -57,23 +57,54 @@ pub(crate) fn canonicalize_names(design: &mut Design) {
     if design.clusters.is_empty() {
         return;
     }
+    let cluster_members = {
+        let index = design.index();
+        (0..design.clusters.len())
+            .map(|cluster_index| {
+                let cluster_id = crate::ir::ClusterId::new(cluster_index);
+                index.cluster_members(cluster_id).to_vec()
+            })
+            .collect::<Vec<_>>()
+    };
     for (index, cluster) in design.clusters.iter_mut().enumerate() {
         cluster.name = format!("clb_{index:04}");
     }
-    let cluster_name_map = design
-        .clusters
-        .iter()
-        .flat_map(|cluster| {
-            cluster
-                .members
-                .iter()
-                .cloned()
-                .map(move |member| (member, cluster.name.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    for cell in &mut design.cells {
-        if let Some(cluster) = cluster_name_map.get(&cell.name) {
-            cell.cluster = Some(cluster.clone());
+    for (cluster_index, members) in cluster_members.into_iter().enumerate() {
+        let cluster_name = design.clusters[cluster_index].name.clone();
+        for cell_id in members {
+            if let Some(cell) = design.cells.get_mut(cell_id.index()) {
+                cell.cluster = Some(cluster_name.clone());
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonicalize_names;
+    use crate::ir::{Cell, Cluster, Design};
+
+    #[test]
+    fn canonicalize_names_renames_clusters_and_syncs_cell_membership() {
+        let mut design = Design {
+            cells: vec![
+                Cell::lut("u0", "LUT4").in_cluster("old_a"),
+                Cell::lut("u1", "LUT4").in_cluster("old_b"),
+                Cell::lut("u2", "LUT4"),
+            ],
+            clusters: vec![
+                Cluster::logic("old_a").with_member("u0").with_capacity(1),
+                Cluster::logic("old_b").with_member("u1").with_capacity(1),
+            ],
+            ..Design::default()
+        };
+
+        canonicalize_names(&mut design);
+
+        assert_eq!(design.clusters[0].name, "clb_0000");
+        assert_eq!(design.clusters[1].name, "clb_0001");
+        assert_eq!(design.cells[0].cluster.as_deref(), Some("clb_0000"));
+        assert_eq!(design.cells[1].cluster.as_deref(), Some("clb_0001"));
+        assert!(design.cells[2].cluster.is_none());
     }
 }

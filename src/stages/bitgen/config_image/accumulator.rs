@@ -1,6 +1,4 @@
-use crate::config_image::types::{
-    AppliedSiteConfig, SiteInstance, TileBitAssignment, TileConfigImage,
-};
+use super::types::{AppliedSiteConfig, SiteInstance, TileBitAssignment, TileConfigImage};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct TileAccumulator {

@@ -1,20 +1,31 @@
-use crate::place::{PlaceMode, PlaceOptions, manhattan};
+use crate::{
+    ir::ClusterId,
+    place::{PlaceMode, PlaceOptions, manhattan},
+};
 use anyhow::{Result, anyhow, bail};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::collections::{BTreeMap, BTreeSet};
+use smallvec::SmallVec;
 
 use super::{
-    cost::{PlacementCandidate, PlacementEvaluator, PlacementMetrics, evaluate},
-    graph::{ClusterGraph, build_cluster_graph, cluster_incident_criticality, weighted_centroid},
-    model::PlacementModel,
+    cost::{PlacementCandidate, PlacementEvaluator, PlacementMetrics, evaluate_positions},
+    graph::{ClusterGraph, build_cluster_graph, cluster_incident_criticality},
+    model::{PlacementModel, Point},
 };
 
 const INCREMENTAL_EVALUATOR_NET_THRESHOLD: usize = 128;
 
+type ClusterUpdates = SmallVec<[(ClusterId, Point); 2]>;
+type PlacementBackups = SmallVec<[(ClusterId, Option<Point>); 2]>;
+type CandidateTargets = SmallVec<[Point; 16]>;
+type RankedSites = SmallVec<[(Point, usize); 8]>;
+type RankedNeighbors = SmallVec<[(ClusterId, f64); 3]>;
+type SiteOccupancy = SmallVec<[ClusterId; 2]>;
+type OccupancyMap = Vec<SiteOccupancy>;
+
 #[derive(Debug, Clone)]
 pub(crate) struct PlacementSolution {
-    pub(crate) placements: BTreeMap<String, (usize, usize)>,
+    pub(crate) placements: Vec<Option<Point>>,
     pub(crate) metrics: PlacementMetrics,
 }
 
@@ -23,14 +34,12 @@ struct SolveContext<'a> {
     options: &'a PlaceOptions,
     graph: &'a ClusterGraph,
     model: &'a PlacementModel,
-    criticality: &'a BTreeMap<String, f64>,
-    sites: &'a [(usize, usize)],
-    site_set: &'a BTreeSet<(usize, usize)>,
-    movable: &'a [String],
-    movable_set: &'a BTreeSet<String>,
+    criticality: &'a [f64],
+    sites: &'a [Point],
+    site_mask: &'a [bool],
+    movable: &'a [ClusterId],
+    movable_mask: &'a [bool],
 }
-
-type FullPlacementCandidate = (BTreeMap<String, (usize, usize)>, PlacementMetrics);
 
 pub(crate) fn solve(
     design: &crate::ir::Design,
@@ -53,26 +62,46 @@ fn solve_internal(
     options: &PlaceOptions,
     incremental_override: Option<bool>,
 ) -> Result<PlacementSolution> {
-    let sites = options.arch.logic_sites();
-    let site_set = sites.iter().copied().collect::<BTreeSet<_>>();
+    let sites = options
+        .arch
+        .logic_sites()
+        .into_iter()
+        .map(Point::from)
+        .collect::<Vec<_>>();
+    let site_mask = site_mask(&sites, options.arch.width, options.arch.height);
     let graph = build_cluster_graph(design);
     let model = PlacementModel::from_design(design);
     let criticality = cluster_incident_criticality(design);
     let movable = design
         .clusters
         .iter()
-        .filter(|cluster| !cluster.fixed)
-        .map(|cluster| cluster.name.clone())
+        .enumerate()
+        .filter(|(_, cluster)| !cluster.fixed)
+        .map(|(index, _)| ClusterId::new(index))
         .collect::<Vec<_>>();
+    let mut movable_mask = vec![false; design.clusters.len()];
+    for cluster_id in &movable {
+        movable_mask[cluster_id.index()] = true;
+    }
 
     if movable.len() <= 1 {
-        let current = initial_placement(design, &graph, &model, &criticality, &sites, &site_set)?;
-        let metrics = evaluate(
+        let current = initial_placement(
+            design,
+            &graph,
+            &model,
+            &criticality,
+            &sites,
+            &site_mask,
+            options.arch.width,
+            options.arch.height,
+            options.arch.slices_per_tile.max(1),
+        )?;
+        let metrics = evaluate_positions(
             &model,
             &graph,
             &current,
             &options.arch,
-            options.delay.as_ref(),
+            options.delay.as_deref(),
             options.mode,
         );
         return Ok(PlacementSolution {
@@ -81,7 +110,6 @@ fn solve_internal(
         });
     }
 
-    let movable_set = movable.iter().cloned().collect::<BTreeSet<_>>();
     let context = SolveContext {
         design,
         options,
@@ -89,9 +117,9 @@ fn solve_internal(
         model: &model,
         criticality: &criticality,
         sites: &sites,
-        site_set: &site_set,
+        site_mask: &site_mask,
         movable: &movable,
-        movable_set: &movable_set,
+        movable_mask: &movable_mask,
     };
 
     let use_incremental =
@@ -111,19 +139,26 @@ fn solve_incremental(context: &SolveContext<'_>) -> Result<PlacementSolution> {
         context.model,
         context.criticality,
         context.sites,
-        context.site_set,
+        context.site_mask,
+        context.options.arch.width,
+        context.options.arch.height,
+        context.options.arch.slices_per_tile.max(1),
     )?;
-    let mut evaluator = PlacementEvaluator::new(
+    let mut evaluator = PlacementEvaluator::new_from_positions(
         context.model,
         context.graph,
         current,
         &context.options.arch,
-        context.options.delay.as_ref(),
+        context.options.delay.as_deref(),
         context.options.mode,
     );
-    let mut current_occupancy = occupancy_map(evaluator.placements());
+    let mut current_occupancy = occupancy_map(
+        evaluator.placements(),
+        context.options.arch.width,
+        context.options.arch.height,
+    );
     let mut current_metrics = evaluator.metrics().clone();
-    let mut best = evaluator.placements().clone();
+    let mut best = evaluator.placements().to_vec();
     let mut best_metrics = evaluator.metrics().clone();
     let focus_weights = focus_weights(context);
 
@@ -140,7 +175,9 @@ fn solve_incremental(context: &SolveContext<'_>) -> Result<PlacementSolution> {
             context.graph,
             evaluator.placements(),
             context.sites,
-            context.site_set,
+            context.site_mask,
+            context.options.arch.width,
+            context.options.arch.height,
             &mut rng,
         );
 
@@ -149,9 +186,11 @@ fn solve_incremental(context: &SolveContext<'_>) -> Result<PlacementSolution> {
             let Some(changes) = plan_target_updates(
                 evaluator.placements(),
                 &current_occupancy,
-                context.movable_set,
+                context.movable_mask,
                 focus,
                 target,
+                context.options.arch.width,
+                context.options.arch.slices_per_tile.max(1),
             ) else {
                 continue;
             };
@@ -180,10 +219,14 @@ fn solve_incremental(context: &SolveContext<'_>) -> Result<PlacementSolution> {
 
         if accept {
             evaluator.apply_candidate(trial);
-            current_occupancy = occupancy_map(evaluator.placements());
+            current_occupancy = occupancy_map(
+                evaluator.placements(),
+                context.options.arch.width,
+                context.options.arch.height,
+            );
             current_metrics = trial_metrics;
             if current_metrics.total + 1e-9 < best_metrics.total {
-                best = evaluator.placements().clone();
+                best.as_mut_slice().clone_from_slice(evaluator.placements());
                 best_metrics = current_metrics.clone();
                 stall = 0;
             } else {
@@ -201,10 +244,14 @@ fn solve_incremental(context: &SolveContext<'_>) -> Result<PlacementSolution> {
                 let swap_metrics = swap_candidate.metrics().clone();
                 if swap_metrics.total < current_metrics.total {
                     evaluator.apply_candidate(swap_candidate);
-                    current_occupancy = occupancy_map(evaluator.placements());
+                    current_occupancy = occupancy_map(
+                        evaluator.placements(),
+                        context.options.arch.width,
+                        context.options.arch.height,
+                    );
                     current_metrics = swap_metrics;
                     if current_metrics.total < best_metrics.total {
-                        best = evaluator.placements().clone();
+                        best.as_mut_slice().clone_from_slice(evaluator.placements());
                         best_metrics = current_metrics.clone();
                     }
                 }
@@ -216,10 +263,7 @@ fn solve_incremental(context: &SolveContext<'_>) -> Result<PlacementSolution> {
         temperature = temperature.max(0.02);
     }
 
-    Ok(PlacementSolution {
-        placements: best,
-        metrics: best_metrics,
-    })
+    Ok(refine_solution(context, best, best_metrics))
 }
 
 fn solve_full(context: &SolveContext<'_>) -> Result<PlacementSolution> {
@@ -230,15 +274,23 @@ fn solve_full(context: &SolveContext<'_>) -> Result<PlacementSolution> {
         context.model,
         context.criticality,
         context.sites,
-        context.site_set,
+        context.site_mask,
+        context.options.arch.width,
+        context.options.arch.height,
+        context.options.arch.slices_per_tile.max(1),
     )?;
-    let mut current_occupancy = occupancy_map(&current);
-    let mut current_metrics = evaluate(
+    let mut current_occupancy = occupancy_map(
+        &current,
+        context.options.arch.width,
+        context.options.arch.height,
+    );
+    let mut trial = current.clone();
+    let mut current_metrics = evaluate_positions(
         context.model,
         context.graph,
         &current,
         &context.options.arch,
-        context.options.delay.as_ref(),
+        context.options.delay.as_deref(),
         context.options.mode,
     );
     let mut best = current.clone();
@@ -258,39 +310,44 @@ fn solve_full(context: &SolveContext<'_>) -> Result<PlacementSolution> {
             context.graph,
             &current,
             context.sites,
-            context.site_set,
+            context.site_mask,
+            context.options.arch.width,
+            context.options.arch.height,
             &mut rng,
         );
 
-        let mut best_trial: Option<FullPlacementCandidate> = None;
+        let mut best_trial: Option<(ClusterUpdates, PlacementMetrics)> = None;
         for target in candidates {
             let Some(changes) = plan_target_updates(
                 &current,
                 &current_occupancy,
-                context.movable_set,
+                context.movable_mask,
                 focus,
                 target,
+                context.options.arch.width,
+                context.options.arch.slices_per_tile.max(1),
             ) else {
                 continue;
             };
-            let trial = apply_updates(&current, &changes);
-            let metrics = evaluate(
+            let backups = apply_updates_in_place(&mut trial, &changes);
+            let metrics = evaluate_positions(
                 context.model,
                 context.graph,
                 &trial,
                 &context.options.arch,
-                context.options.delay.as_ref(),
+                context.options.delay.as_deref(),
                 context.options.mode,
             );
+            restore_updates(&mut trial, &backups);
             if best_trial
                 .as_ref()
                 .is_none_or(|(_, best_metrics)| metrics.total < best_metrics.total)
             {
-                best_trial = Some((trial, metrics));
+                best_trial = Some((changes, metrics));
             }
         }
 
-        let Some((trial, trial_metrics)) = best_trial else {
+        let Some((trial_updates, trial_metrics)) = best_trial else {
             continue;
         };
         let improved = trial_metrics.total + 1e-9 < current_metrics.total;
@@ -303,11 +360,16 @@ fn solve_full(context: &SolveContext<'_>) -> Result<PlacementSolution> {
         };
 
         if accept {
-            current = trial;
-            current_occupancy = occupancy_map(&current);
+            apply_updates_in_place(&mut current, &trial_updates);
+            apply_updates_in_place(&mut trial, &trial_updates);
+            current_occupancy = occupancy_map(
+                &current,
+                context.options.arch.width,
+                context.options.arch.height,
+            );
             current_metrics = trial_metrics;
             if current_metrics.total + 1e-9 < best_metrics.total {
-                best = current.clone();
+                best.clone_from(&current);
                 best_metrics = current_metrics.clone();
                 stall = 0;
             } else {
@@ -319,21 +381,27 @@ fn solve_full(context: &SolveContext<'_>) -> Result<PlacementSolution> {
 
         if stall > context.movable.len() * 3 {
             if let Some(swapped) = random_swap_updates(&current, context.movable, &mut rng) {
-                let trial = apply_updates(&current, &swapped);
-                let swap_metrics = evaluate(
+                let backups = apply_updates_in_place(&mut trial, &swapped);
+                let swap_metrics = evaluate_positions(
                     context.model,
                     context.graph,
                     &trial,
                     &context.options.arch,
-                    context.options.delay.as_ref(),
+                    context.options.delay.as_deref(),
                     context.options.mode,
                 );
+                restore_updates(&mut trial, &backups);
                 if swap_metrics.total < current_metrics.total {
-                    current = trial;
-                    current_occupancy = occupancy_map(&current);
+                    apply_updates_in_place(&mut current, &swapped);
+                    apply_updates_in_place(&mut trial, &swapped);
+                    current_occupancy = occupancy_map(
+                        &current,
+                        context.options.arch.width,
+                        context.options.arch.height,
+                    );
                     current_metrics = swap_metrics;
                     if current_metrics.total < best_metrics.total {
-                        best = current.clone();
+                        best.clone_from(&current);
                         best_metrics = current_metrics.clone();
                     }
                 }
@@ -345,44 +413,188 @@ fn solve_full(context: &SolveContext<'_>) -> Result<PlacementSolution> {
         temperature = temperature.max(0.02);
     }
 
-    Ok(PlacementSolution {
-        placements: best,
-        metrics: best_metrics,
-    })
+    Ok(refine_solution(context, best, best_metrics))
 }
 
-fn focus_weights(context: &SolveContext<'_>) -> Vec<(String, f64)> {
+fn refine_solution(
+    context: &SolveContext<'_>,
+    placements: Vec<Option<Point>>,
+    metrics: PlacementMetrics,
+) -> PlacementSolution {
+    let mut evaluator = PlacementEvaluator::new_from_positions(
+        context.model,
+        context.graph,
+        placements,
+        &context.options.arch,
+        context.options.delay.as_deref(),
+        context.options.mode,
+    );
+    if evaluator.metrics().total > metrics.total + 1e-9 {
+        return PlacementSolution {
+            placements: evaluator.placements().to_vec(),
+            metrics: evaluator.metrics().clone(),
+        };
+    }
+
+    let mut occupancy = occupancy_map(
+        evaluator.placements(),
+        context.options.arch.width,
+        context.options.arch.height,
+    );
+    let focus_order = refinement_focus_order(context);
+    let pass_limit = refinement_pass_limit(context.movable.len());
+
+    for _ in 0..pass_limit {
+        let mut improved = false;
+        for &focus in &focus_order {
+            let candidates = refinement_targets(context, focus, evaluator.placements());
+            let mut best_trial: Option<PlacementCandidate> = None;
+            for target in candidates {
+                let Some(changes) = plan_target_updates(
+                    evaluator.placements(),
+                    &occupancy,
+                    context.movable_mask,
+                    focus,
+                    target,
+                    context.options.arch.width,
+                    context.options.arch.slices_per_tile.max(1),
+                ) else {
+                    continue;
+                };
+                if changes.is_empty() {
+                    continue;
+                }
+                let trial = evaluator.evaluate_candidate(&changes);
+                if trial.metrics().total + 1e-9 >= evaluator.metrics().total {
+                    continue;
+                }
+                if best_trial
+                    .as_ref()
+                    .is_none_or(|best| trial.metrics().total + 1e-9 < best.metrics().total)
+                {
+                    best_trial = Some(trial);
+                }
+            }
+
+            if let Some(trial) = best_trial {
+                evaluator.apply_candidate(trial);
+                occupancy = occupancy_map(
+                    evaluator.placements(),
+                    context.options.arch.width,
+                    context.options.arch.height,
+                );
+                improved = true;
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+
+    PlacementSolution {
+        placements: evaluator.placements().to_vec(),
+        metrics: evaluator.metrics().clone(),
+    }
+}
+
+fn refinement_focus_order(context: &SolveContext<'_>) -> Vec<ClusterId> {
+    let mut order = focus_weights(context);
+    order.sort_by(|lhs, rhs| rhs.1.total_cmp(&lhs.1).then_with(|| lhs.0.cmp(&rhs.0)));
+    order
+        .into_iter()
+        .map(|(cluster_id, _)| cluster_id)
+        .collect()
+}
+
+fn refinement_pass_limit(movable_count: usize) -> usize {
+    if movable_count <= 16 {
+        3
+    } else if movable_count <= 96 {
+        2
+    } else {
+        1
+    }
+}
+
+fn refinement_targets(
+    context: &SolveContext<'_>,
+    focus: ClusterId,
+    placements: &[Option<Point>],
+) -> CandidateTargets {
+    let mut targets = CandidateTargets::new();
+    let Some(current) = placements.get(focus.index()).copied().flatten() else {
+        return targets;
+    };
+    push_unique(&mut targets, current);
+    for (nearby, _) in nearby_sites(
+        current,
+        context.site_mask,
+        context.options.arch.width,
+        context.options.arch.height,
+        2,
+    ) {
+        push_unique(&mut targets, nearby);
+    }
+
+    if let Some(centroid) = context.graph.weighted_centroid(focus, placements) {
+        extend_best_sites(centroid, context.sites, 4, &mut targets);
+    }
+    if let Some(signal_center) = context.model.signal_centroid(focus, placements) {
+        extend_best_sites(signal_center, context.sites, 4, &mut targets);
+    }
+    for (neighbor, _) in best_neighbors(context.graph.neighbors(focus), 4) {
+        if let Some(point) = placements.get(neighbor.index()).copied().flatten() {
+            push_unique(&mut targets, point);
+            for (nearby, _) in nearby_sites(
+                point,
+                context.site_mask,
+                context.options.arch.width,
+                context.options.arch.height,
+                1,
+            ) {
+                push_unique(&mut targets, nearby);
+            }
+        }
+    }
+    targets
+}
+
+fn focus_weights(context: &SolveContext<'_>) -> Vec<(ClusterId, f64)> {
     context
         .movable
         .iter()
-        .map(|cluster| {
-            let graph_weight = context
-                .graph
-                .get(cluster)
-                .map(|edges| edges.values().sum::<f64>())
+        .map(|cluster_id| {
+            let graph_weight = context.graph.total_weight(*cluster_id);
+            let crit_weight = context
+                .criticality
+                .get(cluster_id.index())
+                .copied()
                 .unwrap_or(0.0);
-            let crit_weight = context.criticality.get(cluster).copied().unwrap_or(0.0);
             let weight = match context.options.mode {
                 PlaceMode::BoundingBox => 1.0 + graph_weight,
                 PlaceMode::TimingDriven => 1.0 + graph_weight + 1.5 * crit_weight,
             };
-            (cluster.clone(), weight.max(0.1))
+            (*cluster_id, weight.max(0.1))
         })
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn initial_placement(
     design: &crate::ir::Design,
     graph: &ClusterGraph,
     model: &PlacementModel,
-    criticality: &BTreeMap<String, f64>,
-    sites: &[(usize, usize)],
-    site_set: &BTreeSet<(usize, usize)>,
-) -> Result<BTreeMap<String, (usize, usize)>> {
-    let mut placements = BTreeMap::<String, (usize, usize)>::new();
-    let mut occupied = BTreeSet::<(usize, usize)>::new();
+    criticality: &[f64],
+    sites: &[Point],
+    site_mask: &[bool],
+    width: usize,
+    height: usize,
+    site_capacity: usize,
+) -> Result<Vec<Option<Point>>> {
+    let mut placements = model.fixed_placements();
+    let mut occupied = vec![SiteOccupancy::new(); width.saturating_mul(height).max(1)];
 
-    for cluster in &design.clusters {
+    for (index, cluster) in design.clusters.iter().enumerate() {
         if !cluster.fixed {
             continue;
         }
@@ -392,7 +604,8 @@ fn initial_placement(
         let y = cluster
             .y
             .ok_or_else(|| anyhow!("fixed cluster {} is missing y", cluster.name))?;
-        if !site_set.contains(&(x, y)) {
+        let point = Point::new(x, y);
+        if !site_contains(site_mask, point, width, height) {
             bail!(
                 "fixed cluster {} is assigned to non-logic site ({}, {})",
                 cluster.name,
@@ -400,215 +613,261 @@ fn initial_placement(
                 y
             );
         }
-        if !occupied.insert((x, y)) {
+        let site_index = grid_index(point, width);
+        if occupied
+            .get(site_index)
+            .is_some_and(|clusters| clusters.len() >= site_capacity)
+        {
             bail!(
-                "multiple fixed clusters requested logic site ({}, {})",
+                "too many fixed clusters requested logic site ({}, {})",
                 x,
                 y
             );
         }
-        placements.insert(cluster.name.clone(), (x, y));
+        occupied[site_index].push(ClusterId::new(index));
+        placements[index] = Some(point);
     }
 
     let mut cluster_order = design
         .clusters
         .iter()
-        .filter(|cluster| !cluster.fixed)
-        .map(|cluster| {
-            let graph_weight = graph
-                .get(&cluster.name)
-                .map(|edges| edges.values().sum::<f64>())
-                .unwrap_or(0.0);
-            let crit_weight = criticality.get(&cluster.name).copied().unwrap_or(0.0);
-            (cluster.name.clone(), graph_weight + crit_weight)
+        .enumerate()
+        .filter(|(_, cluster)| !cluster.fixed)
+        .map(|(index, _)| {
+            let cluster_id = ClusterId::new(index);
+            let graph_weight = graph.total_weight(cluster_id);
+            let crit_weight = criticality.get(index).copied().unwrap_or(0.0);
+            (cluster_id, graph_weight + crit_weight)
         })
         .collect::<Vec<_>>();
     cluster_order.sort_by(|lhs, rhs| rhs.1.total_cmp(&lhs.1).then_with(|| lhs.0.cmp(&rhs.0)));
 
-    for (cluster_name, _) in cluster_order {
-        let target = weighted_centroid(&cluster_name, graph, &placements)
-            .or_else(|| model.signal_centroid(&cluster_name, &placements))
-            .unwrap_or_else(|| {
-                let center = sites[sites.len() / 2];
-                (center.0, center.1)
-            });
-        let site = nearest_free_site(target, sites, &occupied)
+    for (cluster_id, _) in cluster_order {
+        let target = graph
+            .weighted_centroid(cluster_id, &placements)
+            .or_else(|| model.signal_centroid(cluster_id, &placements))
+            .unwrap_or_else(|| sites[sites.len() / 2]);
+        let site = nearest_available_site(target, sites, &occupied, width, site_capacity)
             .ok_or_else(|| anyhow!("ran out of logic sites during initial placement"))?;
-        occupied.insert(site);
-        placements.insert(cluster_name, site);
+        occupied[grid_index(site, width)].push(cluster_id);
+        placements[cluster_id.index()] = Some(site);
     }
 
     Ok(placements)
 }
 
-fn choose_focus<'a>(focus_weights: &'a [(String, f64)], rng: &mut ChaCha8Rng) -> Option<&'a str> {
+fn choose_focus(focus_weights: &[(ClusterId, f64)], rng: &mut ChaCha8Rng) -> Option<ClusterId> {
     let total = focus_weights.iter().map(|(_, weight)| *weight).sum::<f64>();
     if total <= 0.0 {
-        return focus_weights.first().map(|(name, _)| name.as_str());
+        return focus_weights.first().map(|(cluster_id, _)| *cluster_id);
     }
     let mut needle = rng.random::<f64>() * total;
-    for (name, weight) in focus_weights {
+    for (cluster_id, weight) in focus_weights {
         needle -= *weight;
         if needle <= 0.0 {
-            return Some(name.as_str());
+            return Some(*cluster_id);
         }
     }
-    focus_weights.last().map(|(name, _)| name.as_str())
+    focus_weights.last().map(|(cluster_id, _)| *cluster_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn candidate_targets(
-    focus: &str,
+    focus: ClusterId,
     model: &PlacementModel,
     graph: &ClusterGraph,
-    placements: &BTreeMap<String, (usize, usize)>,
-    sites: &[(usize, usize)],
-    site_set: &BTreeSet<(usize, usize)>,
+    placements: &[Option<Point>],
+    sites: &[Point],
+    site_mask: &[bool],
+    width: usize,
+    height: usize,
     rng: &mut ChaCha8Rng,
-) -> Vec<(usize, usize)> {
-    let mut targets = BTreeSet::<(usize, usize)>::new();
-    if let Some(current) = placements.get(focus) {
-        targets.insert(*current);
-        extend_best_sites(*current, sites, 3, &mut targets);
+) -> CandidateTargets {
+    let mut targets = CandidateTargets::new();
+    if let Some(current) = placements.get(focus.index()).copied().flatten() {
+        push_unique(&mut targets, current);
+        extend_best_sites(current, sites, 3, &mut targets);
     }
 
-    if let Some(centroid) = weighted_centroid(focus, graph, placements) {
+    if let Some(centroid) = graph.weighted_centroid(focus, placements) {
         extend_best_sites(centroid, sites, 5, &mut targets);
     }
     if let Some(signal_center) = model.signal_centroid(focus, placements) {
         extend_best_sites(signal_center, sites, 4, &mut targets);
     }
-    if let Some(neighbors) = graph.get(focus) {
-        let mut ranked_neighbors = neighbors.iter().collect::<Vec<_>>();
-        ranked_neighbors.sort_by(|lhs, rhs| rhs.1.total_cmp(lhs.1).then_with(|| lhs.0.cmp(rhs.0)));
-        for (neighbor, _) in ranked_neighbors.into_iter().take(3) {
-            if let Some(point) = placements.get(neighbor) {
-                targets.insert(*point);
-                for nearby in nearby_sites(*point, site_set, 1) {
-                    targets.insert(nearby);
-                }
+
+    for (neighbor, _) in best_neighbors(graph.neighbors(focus), 3) {
+        if let Some(point) = placements.get(neighbor.index()).copied().flatten() {
+            push_unique(&mut targets, point);
+            for (nearby, _) in nearby_sites(point, site_mask, width, height, 1) {
+                push_unique(&mut targets, nearby);
             }
         }
     }
 
     for _ in 0..3 {
         let site = sites[rng.random_range(0..sites.len())];
-        targets.insert(site);
+        push_unique(&mut targets, site);
     }
 
-    targets.into_iter().collect()
+    targets
 }
 
-fn extend_best_sites(
-    target: (usize, usize),
-    sites: &[(usize, usize)],
-    limit: usize,
-    out: &mut BTreeSet<(usize, usize)>,
-) {
+fn extend_best_sites(target: Point, sites: &[Point], limit: usize, out: &mut CandidateTargets) {
     if limit == 0 {
         return;
     }
 
-    let mut ranked = Vec::<((usize, usize), usize)>::new();
+    let mut ranked = RankedSites::new();
     for site in sites {
         let distance = manhattan(*site, target);
-        let insert_at = ranked
-            .iter()
-            .position(|(candidate, candidate_distance)| {
-                (*candidate_distance, *candidate) > (distance, *site)
-            })
-            .unwrap_or(ranked.len());
-        if insert_at < limit {
-            ranked.insert(insert_at, (*site, distance));
-            if ranked.len() > limit {
-                ranked.pop();
-            }
-        } else if ranked.len() < limit {
-            ranked.push((*site, distance));
-        }
+        insert_ranked_site(&mut ranked, *site, distance, limit);
     }
 
     for (site, _) in ranked {
-        out.insert(site);
+        push_unique(out, site);
     }
 }
 
 fn nearby_sites(
-    center: (usize, usize),
-    site_set: &BTreeSet<(usize, usize)>,
+    center: Point,
+    site_mask: &[bool],
+    width: usize,
+    height: usize,
     radius: usize,
-) -> Vec<(usize, usize)> {
-    let min_x = center.0.saturating_sub(radius);
-    let min_y = center.1.saturating_sub(radius);
-    let max_x = center.0 + radius;
-    let max_y = center.1 + radius;
-    let mut result = Vec::new();
+) -> RankedSites {
+    let min_x = center.x.saturating_sub(radius);
+    let min_y = center.y.saturating_sub(radius);
+    let max_x = center.x.saturating_add(radius).min(width.saturating_sub(1));
+    let max_y = center
+        .y
+        .saturating_add(radius)
+        .min(height.saturating_sub(1));
+    let mut result = RankedSites::new();
     for x in min_x..=max_x {
         for y in min_y..=max_y {
-            if site_set.contains(&(x, y)) {
-                result.push((x, y));
+            let point = Point::new(x, y);
+            if site_contains(site_mask, point, width, height) {
+                insert_ranked_site(&mut result, point, manhattan(point, center), usize::MAX);
             }
         }
     }
-    result.sort_unstable_by(|lhs, rhs| {
-        manhattan(*lhs, center)
-            .cmp(&manhattan(*rhs, center))
-            .then_with(|| lhs.cmp(rhs))
-    });
     result
 }
 
-fn plan_target_updates(
-    placements: &BTreeMap<String, (usize, usize)>,
-    occupancy: &BTreeMap<(usize, usize), String>,
-    movable_set: &BTreeSet<String>,
-    focus: &str,
-    target: (usize, usize),
-) -> Option<Vec<(String, (usize, usize))>> {
-    let current = *placements.get(focus)?;
-    if current == target {
-        return Some(Vec::new());
-    }
-
-    let occupant = occupancy
-        .get(&target)
-        .filter(|cluster| cluster.as_str() != focus)
-        .cloned();
-
-    if let Some(occupant) = occupant {
-        if !movable_set.contains(&occupant) {
-            return None;
+fn best_neighbors(neighbors: &[(ClusterId, f64)], limit: usize) -> RankedNeighbors {
+    let mut ranked = RankedNeighbors::new();
+    for &(cluster_id, weight) in neighbors {
+        let insert_at = ranked
+            .iter()
+            .position(|(candidate, candidate_weight)| {
+                (*candidate_weight, std::cmp::Reverse(*candidate))
+                    < (weight, std::cmp::Reverse(cluster_id))
+            })
+            .unwrap_or(ranked.len());
+        if insert_at < limit {
+            ranked.insert(insert_at, (cluster_id, weight));
+            if ranked.len() > limit {
+                ranked.pop();
+            }
+        } else if ranked.len() < limit {
+            ranked.push((cluster_id, weight));
         }
-        Some(vec![(focus.to_string(), target), (occupant, current)])
-    } else {
-        Some(vec![(focus.to_string(), target)])
     }
+    ranked
 }
 
-fn occupancy_map(
-    placements: &BTreeMap<String, (usize, usize)>,
-) -> BTreeMap<(usize, usize), String> {
-    placements
+fn insert_ranked_site(ranked: &mut RankedSites, site: Point, distance: usize, limit: usize) {
+    let insert_at = ranked
         .iter()
-        .map(|(cluster, position)| (*position, cluster.clone()))
-        .collect()
+        .position(|(candidate, candidate_distance)| {
+            (*candidate_distance, *candidate) > (distance, site)
+        })
+        .unwrap_or(ranked.len());
+    if insert_at < limit {
+        ranked.insert(insert_at, (site, distance));
+        if ranked.len() > limit {
+            ranked.pop();
+        }
+    } else if ranked.len() < limit {
+        ranked.push((site, distance));
+    }
 }
 
-fn apply_updates(
-    placements: &BTreeMap<String, (usize, usize)>,
-    updates: &[(String, (usize, usize))],
-) -> BTreeMap<String, (usize, usize)> {
-    let mut trial = placements.clone();
-    for (cluster, position) in updates {
-        trial.insert(cluster.clone(), *position);
+fn plan_target_updates(
+    placements: &[Option<Point>],
+    occupancy: &[SiteOccupancy],
+    movable_mask: &[bool],
+    focus: ClusterId,
+    target: Point,
+    width: usize,
+    site_capacity: usize,
+) -> Option<ClusterUpdates> {
+    let current = placements.get(focus.index()).copied().flatten()?;
+    if current == target {
+        return Some(SmallVec::new());
     }
-    trial
+
+    let occupants = occupancy.get(grid_index(target, width))?;
+
+    let mut updates = SmallVec::<[(ClusterId, Point); 2]>::new();
+    if occupants.len() < site_capacity {
+        updates.push((focus, target));
+    } else {
+        let occupant = occupants.iter().copied().find(|cluster_id| {
+            *cluster_id != focus
+                && movable_mask
+                    .get(cluster_id.index())
+                    .copied()
+                    .unwrap_or(false)
+        })?;
+        updates.push((focus, target));
+        updates.push((occupant, current));
+    }
+    Some(updates)
+}
+
+fn occupancy_map(placements: &[Option<Point>], width: usize, height: usize) -> OccupancyMap {
+    let mut occupancy = vec![SiteOccupancy::new(); width.saturating_mul(height).max(1)];
+    for (index, point) in placements.iter().enumerate() {
+        let Some(point) = point else {
+            continue;
+        };
+        let cell_index = grid_index(*point, width);
+        if let Some(slot) = occupancy.get_mut(cell_index) {
+            slot.push(ClusterId::new(index));
+        }
+    }
+    occupancy
+}
+
+fn apply_updates_in_place(
+    placements: &mut [Option<Point>],
+    updates: &[(ClusterId, Point)],
+) -> PlacementBackups {
+    let mut backups = PlacementBackups::new();
+    for (cluster_id, position) in updates {
+        if let Some(slot) = placements.get_mut(cluster_id.index()) {
+            backups.push((*cluster_id, *slot));
+            *slot = Some(*position);
+        }
+    }
+    backups
+}
+
+fn restore_updates(placements: &mut [Option<Point>], backups: &[(ClusterId, Option<Point>)]) {
+    for (cluster_id, position) in backups.iter().rev() {
+        if let Some(slot) = placements.get_mut(cluster_id.index()) {
+            *slot = *position;
+        }
+    }
 }
 
 fn random_swap_updates(
-    placements: &BTreeMap<String, (usize, usize)>,
-    movable: &[String],
+    placements: &[Option<Point>],
+    movable: &[ClusterId],
     rng: &mut ChaCha8Rng,
-) -> Option<Vec<(String, (usize, usize))>> {
+) -> Option<ClusterUpdates> {
     if movable.len() < 2 {
         return None;
     }
@@ -617,25 +876,65 @@ fn random_swap_updates(
     while rhs_index == lhs_index {
         rhs_index = rng.random_range(0..movable.len());
     }
-    let lhs = &movable[lhs_index];
-    let rhs = &movable[rhs_index];
-    let lhs_pos = *placements.get(lhs)?;
-    let rhs_pos = *placements.get(rhs)?;
-    Some(vec![(lhs.clone(), rhs_pos), (rhs.clone(), lhs_pos)])
+    let lhs = movable[lhs_index];
+    let rhs = movable[rhs_index];
+    let lhs_pos = placements.get(lhs.index()).copied().flatten()?;
+    let rhs_pos = placements.get(rhs.index()).copied().flatten()?;
+    let mut updates = SmallVec::<[(ClusterId, Point); 2]>::new();
+    updates.push((lhs, rhs_pos));
+    updates.push((rhs, lhs_pos));
+    Some(updates)
 }
 
-fn nearest_free_site(
-    target: (usize, usize),
-    sites: &[(usize, usize)],
-    occupied: &BTreeSet<(usize, usize)>,
-) -> Option<(usize, usize)> {
+fn nearest_available_site(
+    target: Point,
+    sites: &[Point],
+    occupied: &[SiteOccupancy],
+    width: usize,
+    site_capacity: usize,
+) -> Option<Point> {
     sites
         .iter()
-        .filter(|site| !occupied.contains(site))
+        .filter(|site| {
+            occupied
+                .get(grid_index(**site, width))
+                .is_some_and(|clusters| clusters.len() < site_capacity)
+        })
         .min_by(|lhs, rhs| {
             manhattan(**lhs, target)
                 .cmp(&manhattan(**rhs, target))
                 .then_with(|| lhs.cmp(rhs))
         })
         .copied()
+}
+
+fn site_mask(sites: &[Point], width: usize, height: usize) -> Vec<bool> {
+    let mut mask = vec![false; width.saturating_mul(height).max(1)];
+    for site in sites {
+        let index = grid_index(*site, width);
+        if let Some(slot) = mask.get_mut(index) {
+            *slot = true;
+        }
+    }
+    mask
+}
+
+fn site_contains(site_mask: &[bool], point: Point, width: usize, height: usize) -> bool {
+    if point.x >= width || point.y >= height {
+        return false;
+    }
+    site_mask
+        .get(grid_index(point, width))
+        .copied()
+        .unwrap_or(false)
+}
+
+fn push_unique(points: &mut CandidateTargets, point: Point) {
+    if !points.contains(&point) {
+        points.push(point);
+    }
+}
+
+fn grid_index(point: Point, width: usize) -> usize {
+    point.y.saturating_mul(width).saturating_add(point.x)
 }

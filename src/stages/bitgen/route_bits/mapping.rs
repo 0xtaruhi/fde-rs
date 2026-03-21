@@ -2,6 +2,11 @@ use crate::{
     device::{DeviceCell, DeviceEndpoint, DeviceNet},
     domain::{PinRole, SiteKind},
 };
+use smallvec::SmallVec;
+
+use super::types::{WireId, WireInterner};
+
+type WireSet = SmallVec<[WireId; 1]>;
 
 pub(crate) fn should_route_device_net(net: &DeviceNet) -> bool {
     if net.origin_kind().is_synthetic_pad() {
@@ -11,96 +16,162 @@ pub(crate) fn should_route_device_net(net: &DeviceNet) -> bool {
         && net.sinks.iter().any(DeviceEndpoint::is_cell)
 }
 
-pub(crate) fn endpoint_source_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+pub(crate) fn endpoint_source_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     match cell.site_kind_class() {
-        SiteKind::LogicSlice => slice_source_nets(cell, endpoint),
-        SiteKind::Iob => iob_source_nets(cell, endpoint),
-        SiteKind::GclkIob => gclkiob_source_nets(cell, endpoint),
-        SiteKind::Gclk => gclk_source_nets(cell, endpoint),
-        SiteKind::Unknown => Vec::new(),
+        SiteKind::LogicSlice => slice_source_nets(cell, endpoint, wires),
+        SiteKind::Iob => iob_source_nets(cell, endpoint, wires),
+        SiteKind::GclkIob => gclkiob_source_nets(cell, endpoint, wires),
+        SiteKind::Gclk => gclk_source_nets(cell, endpoint, wires),
+        SiteKind::Const | SiteKind::Unplaced | SiteKind::Unknown => WireSet::new(),
     }
 }
 
-pub(crate) fn endpoint_sink_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+pub(crate) fn endpoint_sink_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     match cell.site_kind_class() {
-        SiteKind::LogicSlice => slice_sink_nets(cell, endpoint),
-        SiteKind::Iob => iob_sink_nets(cell, endpoint),
-        SiteKind::Gclk => gclk_sink_nets(cell, endpoint),
-        SiteKind::GclkIob | SiteKind::Unknown => Vec::new(),
+        SiteKind::LogicSlice => slice_sink_nets(cell, endpoint, wires),
+        SiteKind::Iob => iob_sink_nets(cell, endpoint, wires),
+        SiteKind::Gclk => gclk_sink_nets(cell, endpoint, wires),
+        SiteKind::GclkIob | SiteKind::Const | SiteKind::Unplaced | SiteKind::Unknown => {
+            WireSet::new()
+        }
     }
 }
 
-fn slice_source_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+fn slice_source_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     let slot = bel_slot(&cell.bel).unwrap_or(0);
+    let prefix = slice_site_prefix(cell);
     let pin_role = PinRole::classify_for_primitive(cell.primitive_kind(), &endpoint.pin);
     if pin_role == PinRole::RegisterOutput {
-        return vec![if slot == 0 { "S0_XQ" } else { "S0_YQ" }.to_string()];
+        let wire = if slot == 0 {
+            format!("{prefix}_XQ")
+        } else {
+            format!("{prefix}_YQ")
+        };
+        return SmallVec::from_vec(vec![wires.intern(&wire)]);
     }
     if pin_role == PinRole::LutOutput {
-        return vec![if slot == 0 { "S0_X" } else { "S0_Y" }.to_string()];
+        let wire = if slot == 0 {
+            format!("{prefix}_X")
+        } else {
+            format!("{prefix}_Y")
+        };
+        return SmallVec::from_vec(vec![wires.intern(&wire)]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
-fn slice_sink_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+fn slice_sink_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     let slot = bel_slot(&cell.bel).unwrap_or(0);
+    let prefix = slice_site_prefix(cell);
     let pin_role = PinRole::classify_for_primitive(cell.primitive_kind(), &endpoint.pin);
     if let Some(index) = pin_role.lut_input_index() {
-        return vec![format!(
-            "S0_{}_B{}",
-            if slot == 0 { "F" } else { "G" },
-            index + 1
-        )];
+        let lut_prefix = if slot == 0 {
+            format!("{prefix}_F_B")
+        } else {
+            format!("{prefix}_G_B")
+        };
+        return SmallVec::from_vec(vec![wires.intern_indexed(&lut_prefix, index + 1)]);
     }
     if pin_role == PinRole::RegisterClock {
-        return vec!["S0_CLK_B".to_string()];
+        return SmallVec::from_vec(vec![wires.intern(&format!("{prefix}_CLK_B"))]);
     }
     if pin_role == PinRole::RegisterClockEnable {
-        return vec!["S0_CE_B".to_string()];
+        return SmallVec::from_vec(vec![wires.intern(&format!("{prefix}_CE_B"))]);
     }
     if pin_role == PinRole::RegisterSetReset {
-        return vec!["S0_SR_B".to_string()];
+        return SmallVec::from_vec(vec![wires.intern(&format!("{prefix}_SR_B"))]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
-fn iob_source_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
-    let side = cell.tile_type.as_str();
-    let index = iob_index(cell);
+fn iob_source_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
+    let side = cell.tile_wire_prefix();
+    let index = cell.site_slot();
     if PinRole::classify_for_site(cell.site_kind_class(), &endpoint.pin).is_site_input() {
-        return vec![format!("{side}_I{index}")];
+        return SmallVec::from_buf([wires.intern_composite_indexed(side, "_I", index, "")]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
-fn iob_sink_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
-    let side = cell.tile_type.as_str();
-    let index = iob_index(cell);
+fn iob_sink_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
+    let side = cell.tile_wire_prefix();
+    let index = cell.site_slot();
     if PinRole::classify_for_site(cell.site_kind_class(), &endpoint.pin).is_site_output() {
-        return vec![format!("{side}_O{index}")];
+        return SmallVec::from_buf([wires.intern_composite_indexed(side, "_O", index, "")]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
-fn gclkiob_source_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+fn gclkiob_source_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     if PinRole::classify_for_site(cell.site_kind_class(), &endpoint.pin).is_global_clock_output() {
-        return vec![format!("{}_GCLK{}_PW", cell.tile_type, cell.z)];
+        return SmallVec::from_buf([wires.intern_composite_indexed(
+            cell.tile_wire_prefix(),
+            "_GCLK",
+            cell.z,
+            "_PW",
+        )]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
-fn gclk_source_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+fn gclk_source_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     if PinRole::classify_for_site(cell.site_kind_class(), &endpoint.pin).is_global_clock_output() {
-        return vec![format!("{}_GCLK{}_PW", cell.tile_type, cell.z)];
+        return SmallVec::from_buf([wires.intern_composite_indexed(
+            cell.tile_wire_prefix(),
+            "_GCLK",
+            cell.z,
+            "_PW",
+        )]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
-fn gclk_sink_nets(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> Vec<String> {
+fn gclk_sink_nets(
+    cell: &DeviceCell,
+    endpoint: &DeviceEndpoint,
+    wires: &mut WireInterner,
+) -> WireSet {
     if PinRole::classify_for_site(cell.site_kind_class(), &endpoint.pin).is_global_clock_input() {
-        return vec![format!("{}_GCLK{}", cell.tile_type, cell.z)];
+        return SmallVec::from_buf([wires.intern_composite_indexed(
+            cell.tile_wire_prefix(),
+            "_GCLK",
+            cell.z,
+            "",
+        )]);
     }
-    Vec::new()
+    WireSet::new()
 }
 
 pub(crate) fn should_skip_unmapped_sink(cell: &DeviceCell, endpoint: &DeviceEndpoint) -> bool {
@@ -109,20 +180,19 @@ pub(crate) fn should_skip_unmapped_sink(cell: &DeviceCell, endpoint: &DeviceEndp
             == PinRole::RegisterData
 }
 
-fn iob_index(cell: &DeviceCell) -> usize {
-    cell.site_name
-        .chars()
-        .rev()
-        .find(|ch| ch.is_ascii_digit())
-        .and_then(|ch| ch.to_digit(10))
-        .map(|digit| digit as usize)
-        .unwrap_or(cell.z)
-}
-
 fn bel_slot(bel: &str) -> Option<usize> {
     bel.chars()
         .rev()
         .find(|ch| ch.is_ascii_digit())
         .and_then(|ch| ch.to_digit(10))
         .map(|digit| digit as usize)
+}
+
+fn slice_site_prefix(cell: &DeviceCell) -> &str {
+    if cell.site_name.starts_with('S') && cell.site_name[1..].chars().all(|ch| ch.is_ascii_digit())
+    {
+        cell.site_name.as_str()
+    } else {
+        "S0"
+    }
 }

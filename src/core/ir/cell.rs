@@ -1,4 +1,4 @@
-use crate::domain::{ConstantKind, PrimitiveKind};
+use crate::domain::{CellKind, ConstantKind, PrimitiveKind};
 use serde::{Deserialize, Serialize};
 
 use super::{CellPin, Property};
@@ -6,7 +6,7 @@ use super::{CellPin, Property};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cell {
     pub name: String,
-    pub kind: String,
+    pub kind: CellKind,
     pub type_name: String,
     #[serde(default)]
     pub inputs: Vec<CellPin>,
@@ -19,8 +19,40 @@ pub struct Cell {
 }
 
 impl Cell {
+    pub fn new(name: impl Into<String>, kind: CellKind, type_name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            type_name: type_name.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn lut(name: impl Into<String>, type_name: impl Into<String>) -> Self {
+        Self::new(name, CellKind::Lut, type_name)
+    }
+
+    pub fn ff(name: impl Into<String>, type_name: impl Into<String>) -> Self {
+        Self::new(name, CellKind::Ff, type_name)
+    }
+
+    pub fn with_input(mut self, port: impl Into<String>, net: impl Into<String>) -> Self {
+        self.inputs.push(CellPin::new(port, net));
+        self
+    }
+
+    pub fn with_output(mut self, port: impl Into<String>, net: impl Into<String>) -> Self {
+        self.outputs.push(CellPin::new(port, net));
+        self
+    }
+
+    pub fn in_cluster(mut self, cluster: impl Into<String>) -> Self {
+        self.cluster = Some(cluster.into());
+        self
+    }
+
     pub fn primitive_kind(&self) -> PrimitiveKind {
-        PrimitiveKind::classify(&self.kind, &self.type_name)
+        PrimitiveKind::from_cell_kind(self.kind, &self.type_name)
     }
 
     pub fn constant_kind(&self) -> Option<ConstantKind> {
@@ -45,7 +77,7 @@ impl Cell {
             existing.key = key;
             existing.value = value;
         } else {
-            self.properties.push(Property { key, value });
+            self.properties.push(Property::new(key, value));
         }
     }
 

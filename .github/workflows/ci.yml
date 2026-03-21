@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust CI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked --all-targets
+
+      - name: Cargo clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --locked --quiet
+
+      - name: End-to-end smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          out_dir="${RUNNER_TEMP}/blinky-run"
+          cargo run --locked --quiet --bin fde -- impl \
+            --input examples/blinky/blinky.edf \
+            --constraints examples/blinky/constraints.xml \
+            --resource-root resources/hw_lib \
+            --out-dir "${out_dir}"
+          test -f "${out_dir}/04-routed.xml"
+          test -f "${out_dir}/05-timing.rpt"
+          test -f "${out_dir}/06-output.bit"
+          test -f "${out_dir}/report.json"
+
+      - name: Board EDF dry run
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find examples/board-e2e -mindepth 2 -maxdepth 2 -name '*.edf' | sort | while read -r edf; do
+            case_dir=$(dirname "${edf}")
+            name=$(basename "${case_dir}")
+            out_dir="${RUNNER_TEMP}/board-e2e/${name}"
+            cargo run --locked --quiet --bin fde -- impl \
+              --input "${edf}" \
+              --constraints "${case_dir}/constraints.xml" \
+              --resource-root resources/hw_lib \
+              --out-dir "${out_dir}"
+            test -f "${out_dir}/06-output.bit"
+            test -f "${out_dir}/report.json"
+          done
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blinky-run-${{ matrix.os }}
+          path: ${{ runner.temp }}/blinky-run
+          if-no-files-found: ignore

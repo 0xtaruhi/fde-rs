@@ -1,10 +1,15 @@
 use crate::resource::Arch;
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, VecDeque},
+    collections::{BinaryHeap, VecDeque},
 };
 
-use super::{EdgeKey, canonical_edge};
+#[cfg(test)]
+use std::collections::BTreeMap;
+
+#[cfg(test)]
+use super::EdgeKey;
+use super::{EdgeArray, GridPoint, canonical_edge};
 use crate::route::cost::SearchProfile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -16,20 +21,12 @@ enum Axis {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct SearchKey {
-    point: (usize, usize),
+    point: GridPoint,
     axis: Axis,
 }
 
 impl Axis {
     const COUNT: usize = 3;
-
-    fn as_index(self) -> usize {
-        match self {
-            Self::Start => 0,
-            Self::Horizontal => 1,
-            Self::Vertical => 2,
-        }
-    }
 
     fn from_index(index: usize) -> Self {
         match index {
@@ -75,10 +72,10 @@ impl PartialOrd for QueueState {
 }
 
 pub(crate) fn bfs_to_tree(
-    start: (usize, usize),
+    start: GridPoint,
     tree_mask: &[bool],
     arch: &Arch,
-) -> Option<Vec<(usize, usize)>> {
+) -> Option<Vec<GridPoint>> {
     let grid_len = arch.width.saturating_mul(arch.height);
     if grid_len == 0 {
         return None;
@@ -117,15 +114,38 @@ pub(crate) fn bfs_to_tree(
     None
 }
 
+#[cfg(test)]
 pub(crate) fn astar_to_tree(
-    start: (usize, usize),
+    start: GridPoint,
     tree_mask: &[bool],
     tree_distance: &[usize],
     arch: &Arch,
     usage: &BTreeMap<EdgeKey, usize>,
     history: &BTreeMap<EdgeKey, f64>,
     profile: SearchProfile,
-) -> Option<Vec<(usize, usize)>> {
+) -> Option<Vec<GridPoint>> {
+    let usage_dense = EdgeArray::<usize>::from_sparse(arch, usage);
+    let history_dense = EdgeArray::<f64>::from_sparse(arch, history);
+    astar_to_tree_dense(
+        start,
+        tree_mask,
+        tree_distance,
+        arch,
+        &usage_dense,
+        &history_dense,
+        profile,
+    )
+}
+
+pub(super) fn astar_to_tree_dense(
+    start: GridPoint,
+    tree_mask: &[bool],
+    tree_distance: &[usize],
+    arch: &Arch,
+    usage: &EdgeArray<usize>,
+    history: &EdgeArray<f64>,
+    profile: SearchProfile,
+) -> Option<Vec<GridPoint>> {
     let grid_len = arch.width.saturating_mul(arch.height);
     if grid_len == 0 {
         return None;
@@ -170,7 +190,7 @@ pub(crate) fn astar_to_tree(
         let current_cost = state.cost;
         for_each_neighbor(key.point, arch, |neighbor| {
             let edge = canonical_edge(key.point, neighbor);
-            let next_axis = if neighbor.0 != key.point.0 {
+            let next_axis = if neighbor.x != key.point.x {
                 Axis::Horizontal
             } else {
                 Axis::Vertical
@@ -180,14 +200,14 @@ pub(crate) fn astar_to_tree(
             } else {
                 profile.bend_penalty
             };
-            let present = usage.get(&edge).copied().unwrap_or(0) as f64;
-            let capacity = arch.edge_capacity(key.point, neighbor).max(1) as f64;
+            let present = usage.get(edge.0, edge.1).copied().unwrap_or(0) as f64;
+            let capacity = arch.edge_capacity(key.point.into(), neighbor.into()).max(1) as f64;
             let next_load = present + 1.0;
             let utilization = next_load / capacity;
             let overflow = (next_load - capacity).max(0.0);
             let present_cost =
                 utilization * utilization * 0.35 + overflow * (1.0 + overflow / capacity);
-            let history_cost = history.get(&edge).copied().unwrap_or(0.0);
+            let history_cost = history.get(edge.0, edge.1).copied().unwrap_or(0.0);
             let step_cost = 1.0
                 + present_cost * profile.present_factor
                 + history_cost * profile.history_factor
@@ -223,7 +243,7 @@ pub(crate) fn astar_to_tree(
     None
 }
 
-pub(crate) fn tree_distance_field(tree_points: &[(usize, usize)], arch: &Arch) -> Vec<usize> {
+pub(crate) fn tree_distance_field(tree_points: &[GridPoint], arch: &Arch) -> Vec<usize> {
     let grid_len = arch.width.saturating_mul(arch.height);
     if grid_len == 0 {
         return Vec::new();
@@ -263,43 +283,51 @@ pub(crate) fn tree_distance_field(tree_points: &[(usize, usize)], arch: &Arch) -
     distance
 }
 
-fn reconstruct_search_path(
-    mut state_index: usize,
+fn reconstruct_point_path(
+    mut current_index: usize,
     parent: &[Option<usize>],
     arch: &Arch,
-) -> Vec<(usize, usize)> {
-    let mut path = vec![search_key_from_index(state_index, arch).point];
-    while let Some(prev) = parent.get(state_index).copied().flatten() {
-        state_index = prev;
-        path.push(search_key_from_index(state_index, arch).point);
+) -> Vec<GridPoint> {
+    let mut path = Vec::new();
+    loop {
+        path.push(point_from_index(current_index, arch));
+        match parent.get(current_index).copied().flatten() {
+            Some(next) => current_index = next,
+            None => break,
+        }
     }
+    path.reverse();
     path
 }
 
-fn reconstruct_point_path(
-    mut point_index: usize,
+fn reconstruct_search_path(
+    mut current_index: usize,
     parent: &[Option<usize>],
     arch: &Arch,
-) -> Vec<(usize, usize)> {
-    let mut path = vec![point_from_index(point_index, arch)];
-    while let Some(prev) = parent.get(point_index).copied().flatten() {
-        point_index = prev;
-        path.push(point_from_index(point_index, arch));
+) -> Vec<GridPoint> {
+    let mut path = Vec::new();
+    let mut last_point = None;
+    loop {
+        let key = search_key_from_index(current_index, arch);
+        if last_point != Some(key.point) {
+            path.push(key.point);
+            last_point = Some(key.point);
+        }
+        match parent.get(current_index).copied().flatten() {
+            Some(next) => current_index = next,
+            None => break,
+        }
     }
+    path.reverse();
     path
 }
 
 fn search_index(key: SearchKey, arch: &Arch) -> usize {
-    point_index(key.point, arch) * Axis::COUNT + key.axis.as_index()
+    point_index(key.point, arch) * Axis::COUNT + key.axis as usize
 }
 
 fn search_order_index(key: SearchKey, arch: &Arch) -> usize {
-    key.point
-        .0
-        .saturating_mul(arch.height)
-        .saturating_add(key.point.1)
-        .saturating_mul(Axis::COUNT)
-        .saturating_add(key.axis.as_index())
+    point_index(key.point, arch)
 }
 
 fn search_key_from_index(index: usize, arch: &Arch) -> SearchKey {
@@ -311,29 +339,25 @@ fn search_key_from_index(index: usize, arch: &Arch) -> SearchKey {
     }
 }
 
-fn point_index(point: (usize, usize), arch: &Arch) -> usize {
-    point.1.saturating_mul(arch.width).saturating_add(point.0)
+fn point_index(point: GridPoint, arch: &Arch) -> usize {
+    point.y * arch.width + point.x
 }
 
-fn point_from_index(index: usize, arch: &Arch) -> (usize, usize) {
-    if arch.width == 0 {
-        (0, 0)
-    } else {
-        (index % arch.width, index / arch.width)
-    }
+fn point_from_index(index: usize, arch: &Arch) -> GridPoint {
+    GridPoint::new(index % arch.width, index / arch.width)
 }
 
-fn for_each_neighbor(point: (usize, usize), arch: &Arch, mut visit: impl FnMut((usize, usize))) {
-    if point.0 > 0 {
-        visit((point.0 - 1, point.1));
+fn for_each_neighbor(point: GridPoint, arch: &Arch, mut visit: impl FnMut(GridPoint)) {
+    if point.x > 0 {
+        visit(GridPoint::new(point.x - 1, point.y));
     }
-    if point.1 > 0 {
-        visit((point.0, point.1 - 1));
+    if point.x + 1 < arch.width {
+        visit(GridPoint::new(point.x + 1, point.y));
     }
-    if point.0 + 1 < arch.width {
-        visit((point.0 + 1, point.1));
+    if point.y > 0 {
+        visit(GridPoint::new(point.x, point.y - 1));
     }
-    if point.1 + 1 < arch.height {
-        visit((point.0, point.1 + 1));
+    if point.y + 1 < arch.height {
+        visit(GridPoint::new(point.x, point.y + 1));
     }
 }

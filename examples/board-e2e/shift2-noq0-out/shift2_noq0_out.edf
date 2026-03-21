@@ -1,0 +1,118 @@
+(edif shift2_noq0_out
+  (edifVersion 2 0 0)
+  (edifLevel 0)
+  (keywordMap (keywordLevel 0))
+  (external LIB
+    (edifLevel 0)
+    (technology (numberDefinition))
+    (cell GND
+      (cellType GENERIC)
+      (view VIEW_NETLIST
+        (viewType NETLIST)
+        (interface (port G (direction OUTPUT)))
+      )
+    )
+    (cell LUT2
+      (cellType GENERIC)
+      (view VIEW_NETLIST
+        (viewType NETLIST)
+        (interface
+          (port O (direction OUTPUT))
+          (port ADR0 (direction INPUT))
+          (port ADR1 (direction INPUT))
+        )
+      )
+    )
+    (cell DFFHQ
+      (cellType GENERIC)
+      (view VIEW_NETLIST
+        (viewType NETLIST)
+        (interface
+          (port D (direction INPUT))
+          (port Q (direction OUTPUT))
+          (port CK (direction INPUT))
+        )
+      )
+    )
+    (cell shift2_noq0_out
+      (cellType GENERIC)
+      (view VIEW_NETLIST
+        (viewType NETLIST)
+        (interface
+          (port clk (direction INPUT))
+          (port din (direction INPUT))
+          (port q1 (direction OUTPUT))
+          (port mark (direction OUTPUT))
+        )
+      )
+    )
+  )
+  (library DESIGN
+    (edifLevel 0)
+    (technology (numberDefinition))
+    (cell shift2_noq0_out
+      (cellType GENERIC)
+      (view VIEW_NETLIST
+        (viewType NETLIST)
+        (interface
+          (port mark (direction OUTPUT))
+          (port q1 (direction OUTPUT))
+          (port din (direction INPUT))
+          (port clk (direction INPUT))
+        )
+        (contents
+          (instance GND (viewRef VIEW_NETLIST (cellRef GND (libraryRef LIB))))
+          (instance ff1 (viewRef VIEW_NETLIST (cellRef DFFHQ (libraryRef LIB))))
+          (instance ff0 (viewRef VIEW_NETLIST (cellRef DFFHQ (libraryRef LIB))))
+          (instance lut1
+            (viewRef VIEW_NETLIST (cellRef LUT2 (libraryRef LIB)))
+            (property INIT (integer 10)))
+          (instance lut0
+            (viewRef VIEW_NETLIST (cellRef LUT2 (libraryRef LIB)))
+            (property INIT (integer 10)))
+          (net GND_NET (joined
+              (portRef mark)
+              (portRef G (instanceRef GND))
+            )
+          )
+          (net clk (joined
+              (portRef ADR1 (instanceRef lut0))
+              (portRef ADR1 (instanceRef lut1))
+              (portRef CK (instanceRef ff0))
+              (portRef CK (instanceRef ff1))
+              (portRef clk)
+            )
+          )
+          (net din (joined
+              (portRef ADR0 (instanceRef lut0))
+              (portRef din)
+            )
+          )
+          (net q1 (joined
+              (portRef Q (instanceRef ff1))
+              (portRef q1)
+            )
+          )
+          (net q0 (joined
+              (portRef ADR0 (instanceRef lut1))
+              (portRef Q (instanceRef ff0))
+            )
+          )
+          (net d0 (joined
+              (portRef D (instanceRef ff0))
+              (portRef O (instanceRef lut0))
+            )
+          )
+          (net d1 (joined
+              (portRef D (instanceRef ff1))
+              (portRef O (instanceRef lut1))
+            )
+          )
+        )
+      )
+    )
+  )
+  (design shift2_noq0_out
+    (cellRef shift2_noq0_out (libraryRef DESIGN))
+  )
+)

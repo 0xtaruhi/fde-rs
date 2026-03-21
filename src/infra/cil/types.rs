@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::domain::SiteKind;
+
 #[derive(Debug, Clone, Default)]
 pub struct Cil {
     pub device_name: String,
@@ -132,6 +134,19 @@ pub struct BitstreamCommand {
 }
 
 impl Cil {
+    pub fn site_def(&self, site_kind: SiteKind) -> Option<&SiteDef> {
+        self.sites.get(site_kind.as_str())
+    }
+
+    pub fn site_name_for_kind(
+        &self,
+        tile_type: &str,
+        site_kind: SiteKind,
+        slot: usize,
+    ) -> Option<&str> {
+        self.site_name_for_slot(tile_type, site_kind.as_str(), slot)
+    }
+
     pub fn site_name_for_slot(
         &self,
         tile_type: &str,

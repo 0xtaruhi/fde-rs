@@ -1,0 +1,42 @@
+(edif bus_demo
+  (edifVersion 2 0 0)
+  (edifLevel 0)
+  (keywordMap (keywordLevel 0))
+  (library LIB
+    (cell LUT2
+      (view NETLIST
+        (interface
+          (port ADR0)
+          (port ADR1)
+          (port O)))))
+  (library DESIGN
+    (cell bus_demo
+      (view NETLIST
+        (interface
+          (port (array a 2) (direction INPUT))
+          (port (array y 2) (direction OUTPUT)))
+        (contents
+          (instance u0
+            (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
+            (property LUT_INIT (integer 8)))
+          (instance u1
+            (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
+            (property LUT_INIT (integer 8)))
+          (net net_a0
+            (joined
+              (portRef (member a 0))
+              (portRef ADR0 (instanceRef u0))
+              (portRef ADR1 (instanceRef u0))))
+          (net net_a1
+            (joined
+              (portRef (member a 1))
+              (portRef ADR0 (instanceRef u1))
+              (portRef ADR1 (instanceRef u1))))
+          (net net_y0
+            (joined
+              (portRef O (instanceRef u0))
+              (portRef (member y 0))))
+          (net net_y1
+            (joined
+              (portRef O (instanceRef u1))
+              (portRef (member y 1)))))))))

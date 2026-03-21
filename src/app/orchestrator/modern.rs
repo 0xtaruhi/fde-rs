@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
-use std::fs;
+use std::{fs, sync::Arc};
 
 use crate::{
     bitgen::{self, BitgenOptions},
     cil::load_cil,
     constraints::load_constraints,
+    device::lower_design,
     io::save_design,
     map::{self, MapOptions},
     pack::{self, PackOptions},
@@ -28,11 +29,11 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
     let resources = resolve_resources(options)?;
 
     let constraints = match options.constraints.as_deref() {
-        Some(path) => load_constraints(path)?,
-        None => Vec::new(),
+        Some(path) => Arc::<[_]>::from(load_constraints(path)?),
+        None => Arc::from([]),
     };
-    let arch = load_arch(&resources.arch)?;
-    let delay_model = load_delay_model(resources.delay.as_deref())?;
+    let arch = Arc::new(load_arch(&resources.arch)?);
+    let delay_model = load_delay_model(resources.delay.as_deref())?.map(Arc::new);
     let artifacts = FlowArtifacts::modern(&options.out_dir);
 
     let input_design = map::load_input(&options.input)?;
@@ -61,9 +62,9 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
     let place_result = place::run(
         pack_result.value,
         &PlaceOptions {
-            arch: arch.clone(),
+            arch: Arc::clone(&arch),
             delay: delay_model.clone(),
-            constraints: constraints.clone(),
+            constraints: Arc::clone(&constraints),
             mode: options.place_mode,
             seed: options.seed,
         },
@@ -73,38 +74,34 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
     let route_result = route::run(
         place_result.value,
         &RouteOptions {
-            arch: arch.clone(),
-            constraints: constraints.clone(),
+            arch: Arc::clone(&arch),
+            constraints: Arc::clone(&constraints),
             mode: options.route_mode,
         },
     )?;
-    let mut routed_design = route_result.value;
+    save_design(&route_result.value, &artifacts.route)?;
 
     let mut loaded_cil = None;
     let mut device_design = None;
     if let (Some(cil_path), Some(device_path)) = (resources.cil.as_ref(), artifacts.device.as_ref())
     {
         let cil = load_cil(cil_path)?;
-        let exact = crate::device::annotate_exact_route_pips(
-            routed_design,
-            &arch,
-            &resources.arch,
-            &cil,
-            &constraints,
+        let device = lower_design(
+            route_result.value.clone(),
+            arch.as_ref(),
+            Some(&cil),
+            constraints.as_ref(),
         )?;
-        routed_design = exact.design;
-        let device = exact.device;
         fs::write(device_path, serde_json::to_string_pretty(&device)?)
             .with_context(|| format!("failed to write {}", device_path.display()))?;
         loaded_cil = Some(cil);
         device_design = Some(device);
     }
-    save_design(&routed_design, &artifacts.route)?;
 
     let mut sta_result = sta::run(
-        routed_design,
+        route_result.value,
         &StaOptions {
-            arch: Some(arch.clone()),
+            arch: Some(Arc::clone(&arch)),
             delay: delay_model.clone(),
         },
     )?;
