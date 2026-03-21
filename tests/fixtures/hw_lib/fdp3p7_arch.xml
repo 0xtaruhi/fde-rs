@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="toyfpga">
+  <device_info scale="8,8" wire_timming="0.04,0.03" slice_per_tile="2" LUT_Inputs="4"/>
+  <pads>
+    <pad name="P1" pos="0,1"/>
+    <pad name="P2" pos="0,2"/>
+    <pad name="P3" pos="0,3"/>
+    <pad name="P4" pos="7,4"/>
+    <pad name="P5" pos="7,5"/>
+    <pad name="P6" pos="7,6"/>
+  </pads>
+</design>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="const_gnd">
+  <port name="a" position="P1"/>
+  <port name="clk" position="P2"/>
+  <port name="y" position="P3"/>
+</design>

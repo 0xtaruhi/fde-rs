@@ -1,0 +1,5 @@
+build
+.cache
+.vscode
+.DS_Store
+target

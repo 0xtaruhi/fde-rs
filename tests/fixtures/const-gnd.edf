@@ -1,0 +1,63 @@
+(edif const_gnd
+  (edifVersion 2 0 0)
+  (edifLevel 0)
+  (keywordMap (keywordLevel 0))
+  (library LIB
+    (cell GND
+      (view NETLIST
+        (interface
+          (port G (direction OUTPUT)))))
+    (cell LUT2
+      (view NETLIST
+        (interface
+          (port ADR0)
+          (port ADR1)
+          (port O))))
+    (cell DFFHQ
+      (view NETLIST
+        (interface
+          (port D)
+          (port CK)
+          (port Q))))
+    (cell const_gnd
+      (view NETLIST
+        (interface
+          (port a (direction INPUT))
+          (port clk (direction INPUT))
+          (port y (direction OUTPUT))))))
+  (library DESIGN
+    (cell const_gnd
+      (cellType GENERIC)
+      (view NETLIST
+        (interface
+          (port a (direction INPUT))
+          (port clk (direction INPUT))
+          (port y (direction OUTPUT)))
+        (contents
+          (instance u_gnd
+            (viewRef NETLIST (cellRef GND (libraryRef LIB))))
+          (instance u_lut
+            (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
+            (property LUT_INIT (integer 8)))
+          (instance u_ff
+            (viewRef NETLIST (cellRef DFFHQ (libraryRef LIB))))
+          (net net_a
+            (joined
+              (portRef a)
+              (portRef ADR0 (instanceRef u_lut))))
+          (net net_gnd
+            (joined
+              (portRef G (instanceRef u_gnd))
+              (portRef ADR1 (instanceRef u_lut))))
+          (net net_clk
+            (joined
+              (portRef clk)
+              (portRef CK (instanceRef u_ff))))
+          (net net_comb
+            (joined
+              (portRef O (instanceRef u_lut))
+              (portRef D (instanceRef u_ff))))
+          (net net_y
+            (joined
+              (portRef Q (instanceRef u_ff))
+              (portRef y))))))))

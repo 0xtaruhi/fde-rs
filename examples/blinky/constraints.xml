@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="blinky">
+  <port name="a" position="P1"/>
+  <port name="b" position="P2"/>
+  <port name="clk" position="P3"/>
+  <port name="y" position="P4"/>
+</design>

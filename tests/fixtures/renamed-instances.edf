@@ -1,0 +1,51 @@
+(edif blinky
+  (edifVersion 2 0 0)
+  (edifLevel 0)
+  (keywordMap (keywordLevel 0))
+  (library LIB
+    (cell LUT2
+      (view NETLIST
+        (interface
+          (port ADR0)
+          (port ADR1)
+          (port O))))
+    (cell DFFHQ
+      (view NETLIST
+        (interface
+          (port D)
+          (port CK)
+          (port Q)))))
+  (library DESIGN
+    (cell blinky
+      (view NETLIST
+        (interface
+          (port a (direction INPUT))
+          (port b (direction INPUT))
+          (port clk (direction INPUT))
+          (port y (direction OUTPUT)))
+        (contents
+          (instance (rename id00001 u_lut)
+            (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
+            (property LUT_INIT (integer 8)))
+          (instance (rename id00002 u_ff)
+            (viewRef NETLIST (cellRef DFFHQ (libraryRef LIB))))
+          (net net_a
+            (joined
+              (portRef a)
+              (portRef ADR0 (instanceRef id00001))))
+          (net net_b
+            (joined
+              (portRef b)
+              (portRef ADR1 (instanceRef id00001))))
+          (net net_clk
+            (joined
+              (portRef clk)
+              (portRef CK (instanceRef id00002))))
+          (net net_comb
+            (joined
+              (portRef O (instanceRef id00001))
+              (portRef D (instanceRef id00002))))
+          (net net_y
+            (joined
+              (portRef Q (instanceRef id00002))
+              (portRef y))))))))
