@@ -326,6 +326,25 @@ scripts/      synthesis, board, and debug helpers
 - **Readable artifacts for debugging**
 - **Compatibility at the file boundary**
 
+## Running on linux
+To allow userspace access to the usb device, kindly run the following command:
+```bash
+sudo cp 99-FDE.rules /etc/udev/rules.d/99-FDE.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger 
+```
+At this point, the usb device should be discoverable when running programmer. Otherwise, you make debug udev events to check whether the permissions are set correctly:
+```bash
+udevadm monitor --property --udev
+```
+
+Lastly, if everything fails, you can confirm that the program can be uploaded by running as root user in the folder: (change debug to release if you compiled it in release mode)
+```bash
+sudo tools/wave_probe/target/debug/wave_probe /build/blinky-run/06-output.bit
+```
+
+## Repository Scope
+
 The public contract is the emitted XML and bitstream shape. Internally, Rust stays
 free to use stronger typed models as long as those external artifacts remain stable,
 inspectable, and useful.
