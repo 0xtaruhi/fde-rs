@@ -45,17 +45,7 @@ const LUT_EXPR_TERMS: &[&[&str]] = &[
 pub(super) fn encode_lut_expression_literal(bits: &[u8], input_count: usize) -> String {
     let hex_digits = format_truth_table_literal(bits);
     let hex_digits = hex_digits.trim_start_matches("0x");
-    let term_index = if input_count <= 1 {
-        0
-    } else {
-        let mut index = 1usize;
-        let mut length = 1usize;
-        while length < hex_digits.len() {
-            index += 1;
-            length *= 2;
-        }
-        index
-    };
+    let term_index = input_count.saturating_sub(1);
     let Some(terms) = LUT_EXPR_TERMS.get(term_index) else {
         return "#OFF".to_string();
     };
@@ -219,5 +209,13 @@ mod tests {
             decode_lut_function("#LUT:D=((A3*~A2)*~A1)+((~A3*A2)*~A1)"),
             Some(("0x14".to_string(), 3))
         );
+    }
+
+    #[test]
+    fn preserves_declared_lut_input_count_for_leading_zero_truth_tables() {
+        let bits = vec![1, 0, 0, 0, 0, 0, 0, 0];
+        let encoded = encode_lut_expression_literal(&bits, 3);
+        assert_eq!(encoded, "#LUT:D=((A3*~A2)*~A1)");
+        assert_eq!(decode_lut_function(&encoded), Some(("0x10".to_string(), 3)));
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    bitgen::literal::parse_bit_literal,
+    bitgen::literal::{parse_bit_literal, parse_compact_hex_digit_literal},
     domain::{CellKind, PrimitiveKind, pin_map_property_name},
     ir::{Cell, Design, Endpoint, Net, Port, PortDirection, RoutePip, RouteSegment},
 };
@@ -482,8 +482,14 @@ pub(super) fn is_clock_input_port(design: &Design, port_name: &str) -> bool {
 
 fn logical_lut_truth_table_bits(cell: &Cell) -> Option<Vec<u8>> {
     let logical_bits = logical_truth_table_bits(cell.primitive_kind())?;
+    if let Some(bits) = cell
+        .property("init")
+        .and_then(|init| parse_compact_hex_digit_literal(init, logical_bits))
+    {
+        return Some(bits);
+    }
+
     cell.property("lut_init")
-        .or_else(|| cell.property("init"))
         .and_then(|init| parse_bit_literal(init, logical_bits))
 }
 
@@ -560,4 +566,31 @@ pub(super) fn pin_map_indices(cell: &Cell, logical_index: usize) -> Vec<usize> {
     indices.sort_unstable();
     indices.dedup();
     indices
+}
+
+#[cfg(test)]
+mod tests {
+    use super::packed_lut_function_name;
+    use crate::ir::{Cell, Property};
+
+    #[test]
+    fn packed_lut_function_preserves_raw_init_width_for_lut3() {
+        let mut cell = Cell::lut("u0", "LUT3");
+        cell.properties.push(Property::new("INIT", "01"));
+        assert_eq!(
+            packed_lut_function_name(&cell).as_deref(),
+            Some("#LUT:D=((A3*~A2)*~A1)")
+        );
+    }
+
+    #[test]
+    fn packed_lut_function_prefers_raw_init_compact_hex_semantics() {
+        let mut cell = Cell::lut("u0", "LUT3");
+        cell.properties.push(Property::new("init", "78"));
+        cell.properties.push(Property::new("lut_init", "0x4E"));
+        assert_eq!(
+            packed_lut_function_name(&cell).as_deref(),
+            Some("#LUT:D=((A3*A2)*~A1)+((A3*~A2)*A1)+((A3*~A2)*~A1)+((~A3*A2)*A1)")
+        );
+    }
 }
