@@ -356,6 +356,17 @@ fn mapped_external_modules(design: &Design) -> Vec<ExternalModule> {
             ],
         ),
         (
+            "EDFFHQ",
+            "FFLATCH",
+            vec![("edge", "rise")],
+            vec![
+                ("D", "input", None),
+                ("E", "input", None),
+                ("CK", "input", Some("clock")),
+                ("Q", "output", None),
+            ],
+        ),
+        (
             "IBUF",
             "COMB",
             vec![("truthtable", "1")],
@@ -440,7 +451,7 @@ fn module_type_name(cell: &Cell) -> String {
 
 fn external_module_properties(type_name: &str) -> Vec<(String, String)> {
     match type_name {
-        "DFFHQ" => vec![("edge".to_string(), "rise".to_string())],
+        "DFFHQ" | "EDFFHQ" => vec![("edge".to_string(), "rise".to_string())],
         "IBUF" | "CLKBUF" | "OBUF" => vec![("truthtable".to_string(), "1".to_string())],
         "LOGIC_1" | "VCC" => vec![("truthtable".to_string(), "|1".to_string())],
         "LOGIC_0" | "GND" => vec![("truthtable".to_string(), "|0".to_string())],
@@ -576,8 +587,8 @@ pub(super) fn pin_map_indices(cell: &Cell, logical_index: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::packed_lut_function_name;
-    use crate::ir::{Cell, Property};
+    use super::{mapped_external_modules, packed_lut_function_name};
+    use crate::ir::{Cell, Design, Property};
 
     #[test]
     fn packed_lut_function_preserves_raw_init_width_for_lut3() {
@@ -598,5 +609,35 @@ mod tests {
             packed_lut_function_name(&cell).as_deref(),
             Some("#LUT:D=((A3*A2)*~A1)+((A3*~A2)*A1)+((A3*~A2)*~A1)+((~A3*A2)*A1)")
         );
+    }
+
+    #[test]
+    fn mapped_external_modules_define_edffhq_when_used() {
+        let design = Design {
+            stage: "mapped".to_string(),
+            cells: vec![Cell::ff("ff0", "EDFFHQ")
+                .with_input("D", "d")
+                .with_input("E", "ce")
+                .with_input("CK", "clk")
+                .with_output("Q", "q")],
+            ..Design::default()
+        };
+
+        let modules = mapped_external_modules(&design);
+        let edff = modules
+            .iter()
+            .find(|module| module.name == "EDFFHQ")
+            .expect("EDFFHQ module definition");
+
+        assert_eq!(edff.module_type, "FFLATCH");
+        assert!(edff
+            .properties
+            .iter()
+            .any(|(key, value)| key == "edge" && value == "rise"));
+        assert!(edff.ports.iter().any(|port| port.name == "E"));
+        assert!(edff
+            .ports
+            .iter()
+            .any(|port| port.name == "CK" && port.port_type.as_deref() == Some("clock")));
     }
 }
