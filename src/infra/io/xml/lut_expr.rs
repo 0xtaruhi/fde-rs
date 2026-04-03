@@ -43,8 +43,6 @@ const LUT_EXPR_TERMS: &[&[&str]] = &[
 ];
 
 pub(super) fn encode_lut_expression_literal(bits: &[u8], input_count: usize) -> String {
-    let hex_digits = format_truth_table_literal(bits);
-    let hex_digits = hex_digits.trim_start_matches("0x");
     let term_index = input_count.saturating_sub(1);
     let Some(terms) = LUT_EXPR_TERMS.get(term_index) else {
         return "#OFF".to_string();
@@ -53,11 +51,12 @@ pub(super) fn encode_lut_expression_literal(bits: &[u8], input_count: usize) -> 
     let mut expr = String::new();
     let mut term_number = 1usize;
     let start_mask = if term_index == 0 { 0b0010 } else { 0b1000 };
-    for digit in hex_digits.bytes() {
-        let mut value = digit & 0x0f;
-        if digit > b'9' {
-            value += 9;
-        }
+    let digit_count = (1usize << input_count.max(1)).div_ceil(4);
+    for digit_index in (0..digit_count).rev() {
+        let value = (0..4).fold(0u8, |nibble, bit_index| {
+            let bit = bits.get(digit_index * 4 + bit_index).copied().unwrap_or(0) & 1;
+            nibble | (bit << bit_index)
+        });
         let mut mask = start_mask;
         while mask != 0 {
             if (value & mask) != 0 {
@@ -215,7 +214,7 @@ mod tests {
     fn preserves_declared_lut_input_count_for_leading_zero_truth_tables() {
         let bits = vec![1, 0, 0, 0, 0, 0, 0, 0];
         let encoded = encode_lut_expression_literal(&bits, 3);
-        assert_eq!(encoded, "#LUT:D=((A3*~A2)*~A1)");
-        assert_eq!(decode_lut_function(&encoded), Some(("0x10".to_string(), 3)));
+        assert_eq!(encoded, "#LUT:D=((~A3*~A2)*~A1)");
+        assert_eq!(decode_lut_function(&encoded), Some(("0x1".to_string(), 3)));
     }
 }

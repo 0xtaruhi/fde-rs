@@ -153,11 +153,15 @@ pub(super) fn build_fde_mapped_design(design: &Design) -> Option<Design> {
             let buffer_name = format!("Buf-pad-{}", port_sink.name);
             let pad_name = format!("{}_opad", port_sink.name);
             if let Some(driver) = mapped_driver.clone() {
-                output_helper_nets.push(
-                    Net::new(format!("net_Buf-pad-{}", port_sink.name))
-                        .with_driver(driver)
-                        .with_sink(Endpoint::cell(&buffer_name, "I")),
-                );
+                let mut emitted_net = Net::new(format!("net_Buf-pad-{}", port_sink.name))
+                    .with_driver(driver)
+                    .with_sink(Endpoint::cell(&buffer_name, "I"));
+                for sink in &mapped_sinks {
+                    if !sink.is_port() {
+                        emitted_net = emitted_net.with_sink(sink.clone());
+                    }
+                }
+                output_helper_nets.push(emitted_net);
             }
             output_helper_nets.push(
                 Net::new(&port_sink.name)
@@ -229,4 +233,66 @@ fn fde_mapped_endpoint(
         }
     }
     mapped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_fde_mapped_design;
+    use crate::{
+        domain::CellKind,
+        ir::{Cell, Design, Endpoint, Net, Port},
+    };
+
+    #[test]
+    fn output_port_feedback_preserves_internal_sinks_on_buffered_net() {
+        let design = Design {
+            name: "blinky".to_string(),
+            stage: "mapped".to_string(),
+            ports: vec![Port::output("led")],
+            cells: vec![
+                Cell::ff("ff0", "EDFFHQ")
+                    .with_input("D", "next_led")
+                    .with_output("Q", "led"),
+                Cell::new("lut0", CellKind::Lut, "LUT2")
+                    .with_input("ADR0", "led")
+                    .with_input("ADR1", "led")
+                    .with_output("O", "next_led"),
+            ],
+            nets: vec![
+                Net::new("led")
+                    .with_driver(Endpoint::cell("ff0", "Q"))
+                    .with_sink(Endpoint::cell("lut0", "ADR0"))
+                    .with_sink(Endpoint::cell("lut0", "ADR1"))
+                    .with_sink(Endpoint::port("led", "led")),
+                Net::new("next_led")
+                    .with_driver(Endpoint::cell("lut0", "O"))
+                    .with_sink(Endpoint::cell("ff0", "D")),
+            ],
+            ..Design::default()
+        };
+
+        let mapped = build_fde_mapped_design(&design).expect("mapped design");
+        let feedback = mapped
+            .nets
+            .iter()
+            .find(|net| net.name == "net_Buf-pad-led")
+            .expect("buffered output net");
+
+        assert_eq!(
+            feedback.driver.as_ref().map(|driver| driver.name.as_str()),
+            Some("id00001")
+        );
+        assert!(feedback
+            .sinks
+            .iter()
+            .any(|sink| sink.name == "Buf-pad-led" && sink.pin == "I"));
+        assert!(feedback
+            .sinks
+            .iter()
+            .any(|sink| sink.name == "id00002" && sink.pin == "ADR0"));
+        assert!(feedback
+            .sinks
+            .iter()
+            .any(|sink| sink.name == "id00002" && sink.pin == "ADR1"));
+    }
 }

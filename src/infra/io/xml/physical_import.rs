@@ -46,14 +46,7 @@ pub(super) fn load_fde_physical_design_xml(root: Node<'_, '_>) -> Result<Design>
     let mut ports = module_node
         .children()
         .filter(|node| node.has_tag_name("port"))
-        .map(|port| {
-            Port::new(
-                attr(&port, "name"),
-                attr(&port, "direction")
-                    .parse()
-                    .unwrap_or(PortDirection::Input),
-            )
-        })
+        .map(physical_port)
         .collect::<Vec<_>>();
     let port_names = ports
         .iter()
@@ -178,6 +171,31 @@ pub(super) fn load_fde_physical_design_xml(root: Node<'_, '_>) -> Result<Design>
         clusters,
         ..Design::default()
     })
+}
+
+fn physical_port(node: Node<'_, '_>) -> Port {
+    let mut port = Port::new(
+        attr(&node, "name"),
+        attr(&node, "direction")
+            .parse()
+            .unwrap_or(PortDirection::Input),
+    );
+    for property in node.children().filter(|child| child.has_tag_name("property")) {
+        let Some(value) = property.attribute("value") else {
+            continue;
+        };
+        match property.attribute("name") {
+            Some("fde_pin") => port.pin = Some(value.to_string()),
+            Some("fde_position") => {
+                if let Some((x, y, _)) = parse_point(value) {
+                    port.x = Some(x);
+                    port.y = Some(y);
+                }
+            }
+            _ => {}
+        }
+    }
+    port
 }
 
 fn top_module_node<'a, 'input>(root: Node<'a, 'input>) -> Result<Node<'a, 'input>> {
@@ -812,5 +830,86 @@ mod tests {
             ]
         );
         assert_eq!(clock_net.route, vec![RouteSegment::new((34, 27), (34, 27))]);
+    }
+
+    #[test]
+    fn physical_import_preserves_port_pin_and_site_slot() {
+        let xml = r##"
+<design name="port_import">
+  <external name="template_work_lib">
+    <module name="iob" type="IOB">
+      <port name="OUT" direction="input" capacitance="0.00000"/>
+      <port name="PAD" direction="inout" capacitance="0.00000"/>
+    </module>
+    <module name="gclk" type="GCLK">
+      <port name="IN" direction="input" capacitance="0.00000"/>
+      <port name="OUT" direction="output" capacitance="0.00000"/>
+    </module>
+    <module name="gclkiob" type="GCLKIOB">
+      <port name="GCLKOUT" direction="output" capacitance="0.00000"/>
+      <port name="PAD" direction="inout" capacitance="0.00000"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="port_import" type="GENERIC">
+      <port name="led" direction="output" capacitance="0.00000">
+        <property name="fde_pin" value="P7"/>
+        <property name="fde_position" type="point" value="5,1"/>
+      </port>
+      <port name="clk" direction="input" capacitance="0.00000">
+        <property name="fde_pin" value="P77"/>
+        <property name="fde_position" type="point" value="34,27"/>
+      </port>
+      <contents>
+        <instance name="led" moduleRef="iob" libraryRef="template_work_lib">
+          <property name="position" type="point" value="5,1,2"/>
+        </instance>
+        <instance name="iGclk_buf__0__" moduleRef="gclk" libraryRef="template_work_lib">
+          <property name="position" type="point" value="34,27,1"/>
+        </instance>
+        <instance name="clk" moduleRef="gclkiob" libraryRef="template_work_lib">
+          <property name="position" type="point" value="34,27,1"/>
+        </instance>
+        <net name="net_Buf-pad-led">
+          <portRef name="OUT" instanceRef="led"/>
+          <portRef name="led"/>
+        </net>
+        <net name="led">
+          <portRef name="PAD" instanceRef="led"/>
+        </net>
+        <net name="net_Buf-pad-clk" type="clock">
+          <portRef name="GCLKOUT" instanceRef="clk"/>
+          <portRef name="IN" instanceRef="iGclk_buf__0__"/>
+          <pip from="CLKB_CLKPAD1" to="CLKB_GCLKBUF1_IN" position="34,27" dir="-&gt;"/>
+        </net>
+        <net name="clk" type="clock">
+          <portRef name="OUT" instanceRef="iGclk_buf__0__"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule libraryRef="work_lib" name="port_import"/>
+</design>
+"##;
+
+        let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
+        let design = load_fde_physical_design_xml(document.root_element())
+            .expect("physical import should succeed");
+
+        let led = design
+            .ports
+            .iter()
+            .find(|port| port.name == "led")
+            .expect("led port");
+        assert_eq!(led.pin.as_deref(), Some("P7"));
+        assert_eq!((led.x, led.y, led.z), (Some(5), Some(1), Some(2)));
+
+        let clk = design
+            .ports
+            .iter()
+            .find(|port| port.name == "clk")
+            .expect("clk port");
+        assert_eq!(clk.pin.as_deref(), Some("P77"));
+        assert_eq!((clk.x, clk.y, clk.z), (Some(34), Some(27), Some(1)));
     }
 }

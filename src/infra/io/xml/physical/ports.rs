@@ -34,9 +34,13 @@ pub(super) fn build_port_bindings(
                 None if clock_input => "gclkiob",
                 None => "iob",
             };
+            let fallback_position = port
+                .x
+                .zip(port.y)
+                .map(|(x, y)| (x, y, port.z.unwrap_or(0)));
             let pad_position = pad
                 .map(|pad| (pad.x, pad.y, pad.z))
-                .or_else(|| port.x.zip(port.y).map(|(x, y)| (x, y, 0)));
+                .or(fallback_position);
             let gclk_instance_name = if clock_input && pad_module_ref == "gclkiob" {
                 let name = format!("iGclk_buf__{clock_port_index}__");
                 clock_port_index += 1;
@@ -50,7 +54,7 @@ pub(super) fn build_port_bindings(
                     .unwrap_or(pad.tile_type.as_str())
                     .to_string()
             });
-            let tile_position = pad.map(|pad| (pad.x, pad.y, pad.z));
+            let tile_position = pad.map(|pad| (pad.x, pad.y, pad.z)).or(fallback_position);
             PortInstanceBinding {
                 port_name: port.name.clone(),
                 direction: port.direction.clone(),
@@ -120,4 +124,25 @@ pub(super) fn split_clock_route_pips(
         }
     }
     (logical_pips, helper_pips)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_port_bindings;
+    use crate::ir::{Design, Port};
+
+    #[test]
+    fn fallback_port_binding_preserves_existing_site_slot() {
+        let design = Design {
+            stage: "routed".to_string(),
+            ports: vec![Port::output("led").at_site(5, 1, 2)],
+            ..Design::default()
+        };
+
+        let bindings = build_port_bindings(&design, &Default::default());
+        let binding = bindings.first().expect("binding");
+
+        assert_eq!(binding.pad_position, Some((5, 1, 2)));
+        assert_eq!(binding.tile_position, Some((5, 1, 2)));
+    }
 }
