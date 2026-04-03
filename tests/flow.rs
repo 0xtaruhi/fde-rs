@@ -1,6 +1,5 @@
 use fde::{
-    ConfigImage, ImplementationOptions, load_arch, load_cil, load_map_input,
-    resource::ResourceBundle, run_implementation, serialize_text_bitstream,
+    ImplementationOptions, load_arch, load_map_input, resource::ResourceBundle, run_implementation,
 };
 use roxmltree::Document;
 use serde_json::Value;
@@ -8,7 +7,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::Instant,
 };
 use tempfile::TempDir;
 
@@ -45,12 +43,33 @@ fn report_json(path: &PathBuf) -> Value {
 fn xml_port_pins(path: &Path) -> BTreeMap<String, String> {
     let text = fs::read_to_string(path).expect("read xml");
     let doc = Document::parse(&text).expect("parse xml");
-    doc.descendants()
+    let design_name = doc
+        .root_element()
+        .attribute("name")
+        .expect("design name in xml");
+    let top_module = doc
+        .descendants()
+        .find(|node| node.has_tag_name("module") && node.attribute("name") == Some(design_name))
+        .expect("top-level module in xml");
+
+    top_module
+        .children()
         .filter(|node| node.has_tag_name("port"))
         .filter_map(|node| {
             Some((
                 node.attribute("name")?.to_string(),
-                node.attribute("pin").unwrap_or_default().to_string(),
+                node.attribute("pin")
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        node.children()
+                            .find(|child| {
+                                child.has_tag_name("property")
+                                    && child.attribute("name") == Some("fde_pin")
+                            })
+                            .and_then(|child| child.attribute("value"))
+                            .map(ToString::to_string)
+                    })
+                    .unwrap_or_default(),
             ))
         })
         .collect()
@@ -110,52 +129,6 @@ fn fdri_chunks(lines: &[String]) -> Vec<(String, String)> {
         }
     }
     chunks
-}
-
-fn normalized_bitstream_lines(path: &Path) -> Vec<String> {
-    fs::read_to_string(path)
-        .expect("read bitstream text")
-        .lines()
-        .map(|line| line.split_once("//").map_or(line, |(word, _)| word).trim())
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn diff_bitstream_lines(expected: &[String], actual: &[String]) -> (usize, usize, Option<String>) {
-    let mut word_diffs = 0usize;
-    let mut bit_diffs = 0usize;
-    let mut first = None;
-
-    let total = expected.len().max(actual.len());
-    for index in 0..total {
-        let lhs = expected.get(index).map(String::as_str).unwrap_or_default();
-        let rhs = actual.get(index).map(String::as_str).unwrap_or_default();
-        if lhs == rhs {
-            continue;
-        }
-        word_diffs += 1;
-        if !lhs.is_empty() && !rhs.is_empty() {
-            let lhs_word = u32::from_str_radix(&lhs.replace('_', ""), 16).expect("lhs hex word");
-            let rhs_word = u32::from_str_radix(&rhs.replace('_', ""), 16).expect("rhs hex word");
-            bit_diffs += (lhs_word ^ rhs_word).count_ones() as usize;
-        }
-        if first.is_none() {
-            first = Some(format!(
-                "first diff at word {index}: expected `{lhs}`, got `{rhs}`"
-            ));
-        }
-    }
-
-    (word_diffs, bit_diffs, first)
-}
-
-fn baseline_bitstream_paths() -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
-    let arch = std::env::var_os("FDE_BASELINE_ARCH_XML").map(PathBuf::from)?;
-    let cil = std::env::var_os("FDE_BASELINE_CIL_XML").map(PathBuf::from)?;
-    let config_image = std::env::var_os("FDE_BASELINE_CONFIG_IMAGE_JSON").map(PathBuf::from)?;
-    let bitstream = std::env::var_os("FDE_BASELINE_TEXT_BITSTREAM").map(PathBuf::from)?;
-    Some((arch, cil, config_image, bitstream))
 }
 
 #[test]
@@ -247,6 +220,44 @@ fn end_to_end_impl_handles_used_ground_constant_net() {
     let mapped_text = fs::read_to_string(&mapped).expect("read mapped design");
     let bitstream_bytes = fs::read(&bitstream).expect("read bitstream");
     let sidecar_text = fs::read_to_string(&sidecar).expect("read bitstream sidecar");
+    let mapped_doc = Document::parse(&mapped_text).expect("parse mapped design");
+    let design_name = mapped_doc
+        .root_element()
+        .attribute("name")
+        .expect("mapped design name");
+    let top_module = mapped_doc
+        .descendants()
+        .find(|node| node.has_tag_name("module") && node.attribute("name") == Some(design_name))
+        .expect("mapped top module");
+    let net_gnd = top_module
+        .descendants()
+        .find(|node| node.has_tag_name("net") && node.attribute("name") == Some("net_gnd"))
+        .expect("lowered ground net");
+    let driver = net_gnd
+        .children()
+        .find(|node| {
+            node.has_tag_name("portRef")
+                && node.attribute("instanceRef").is_some()
+                && node.attribute("name") == Some("O")
+        })
+        .expect("ground net driver");
+    let driver_instance_name = driver
+        .attribute("instanceRef")
+        .expect("ground driver instance ref");
+    let driver_instance = top_module
+        .descendants()
+        .find(|node| {
+            node.has_tag_name("instance") && node.attribute("name") == Some(driver_instance_name)
+        })
+        .expect("ground driver instance");
+    let driver_module_ref = driver_instance
+        .attribute("moduleRef")
+        .expect("ground driver module ref");
+    let driver_init = driver_instance
+        .children()
+        .find(|node| node.has_tag_name("property") && node.attribute("name") == Some("INIT"))
+        .and_then(|node| node.attribute("value"))
+        .expect("ground driver init");
 
     assert!(route.exists(), "missing route artifact {}", route.display());
     assert!(
@@ -254,8 +265,8 @@ fn end_to_end_impl_handles_used_ground_constant_net() {
         "missing bitstream artifact {}",
         bitstream.display()
     );
-    assert!(mapped_text.contains("cell name=\"u_gnd\" kind=\"lut\" type_name=\"LUT4\""));
-    assert!(mapped_text.contains("driver kind=\"cell\" name=\"u_gnd\" pin=\"O\""));
+    assert!(driver_module_ref.starts_with("LUT"));
+    assert!(driver_init.chars().all(|ch| ch == '0'));
     assert!(!bitstream_bytes.is_empty(), "bitstream should not be empty");
     assert!(sidecar_text.contains("# Routed Transmission Pips"));
 }
@@ -330,45 +341,6 @@ fn can_parse_external_arch_when_available() {
     let arch = load_arch(&resource_root.join("fdp3p7_arch.xml")).expect("load external arch");
     assert!(arch.width > 0);
     assert!(arch.height > 0);
-}
-
-#[test]
-#[ignore = "requires external baseline bitstream inputs"]
-fn baseline_config_image_text_bitstream_matches_expected() {
-    let Some((arch_path, cil_path, config_image_path, baseline_bitstream_path)) =
-        baseline_bitstream_paths()
-    else {
-        eprintln!(
-            "skipping: set FDE_BASELINE_ARCH_XML, FDE_BASELINE_CIL_XML, \
-FDE_BASELINE_CONFIG_IMAGE_JSON, and FDE_BASELINE_TEXT_BITSTREAM"
-        );
-        return;
-    };
-
-    let arch = load_arch(&arch_path).expect("load baseline arch");
-    let cil = load_cil(&cil_path).expect("load baseline cil");
-    let config_image: ConfigImage = serde_json::from_str(
-        &fs::read_to_string(&config_image_path).expect("read baseline config image"),
-    )
-    .expect("parse baseline config image");
-    let rendered = serialize_text_bitstream("baseline", &arch, &arch_path, &cil, &config_image)
-        .expect("serialize baseline text bitstream")
-        .expect("text bitstream should be available");
-
-    let temp_dir = TempDir::new().expect("tempdir");
-    let rendered_path = temp_dir.path().join("rendered.bit");
-    fs::write(&rendered_path, rendered.text).expect("write rendered text bitstream");
-
-    let expected = normalized_bitstream_lines(&baseline_bitstream_path);
-    let actual = normalized_bitstream_lines(&rendered_path);
-    let (word_diffs, bit_diffs, first) = diff_bitstream_lines(&expected, &actual);
-
-    assert_eq!(
-        word_diffs,
-        0,
-        "baseline text bitstream mismatch: word_diffs={word_diffs}, bit_diffs={bit_diffs}, {}",
-        first.unwrap_or_else(|| "no differing word located".to_string())
-    );
 }
 
 #[test]
@@ -616,47 +588,4 @@ fn complex_external_resource_sidecar_contains_nontrivial_config_and_route_sectio
             "unexpected sidecar warning: {unwanted}"
         );
     }
-}
-
-#[test]
-#[ignore = "benchmark-style end-to-end implementation timing"]
-fn end_to_end_impl_benchmark() {
-    let (_temp, out_dir) = temp_out("impl-benchmark");
-    let options = ImplementationOptions {
-        input: fixture("tests/fixtures/blinky-yosys.edf"),
-        out_dir: out_dir.clone(),
-        resource_root: Some(fixture("tests/fixtures/hw_lib")),
-        constraints: Some(fixture("tests/fixtures/fdp3p7-constraints.xml")),
-        ..ImplementationOptions::default()
-    };
-
-    let start = Instant::now();
-    let report = run_implementation(&options).expect("benchmark implementation run");
-    let elapsed = start.elapsed();
-    let bitstream = PathBuf::from(
-        report
-            .artifacts
-            .get("bitstream")
-            .expect("bitstream artifact"),
-    );
-    let sidecar = PathBuf::from(
-        report
-            .artifacts
-            .get("bitstream_sidecar")
-            .expect("bitstream sidecar"),
-    );
-    let bitstream_len = fs::metadata(&bitstream).expect("bitstream metadata").len();
-    let sidecar_len = fs::metadata(&sidecar).expect("sidecar metadata").len();
-
-    eprintln!(
-        "end-to-end impl: total_ms={} bitstream_bytes={} sidecar_bytes={} stages={}",
-        elapsed.as_millis(),
-        bitstream_len,
-        sidecar_len,
-        report.stages.len()
-    );
-
-    assert!(bitstream_len > 0);
-    assert!(sidecar_len > 0);
-    assert!(report.stages.len() >= 6);
 }

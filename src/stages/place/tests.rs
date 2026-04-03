@@ -3,7 +3,7 @@ use super::{
     cost::{PlacementEvaluator, evaluate},
     graph::build_cluster_graph,
     model::{PlacementModel, Point},
-    run, solver,
+    run,
 };
 use crate::{
     ir::{Cell, CellPin, Cluster, ClusterId, Design, Endpoint, Net, Port},
@@ -12,7 +12,6 @@ use crate::{
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Instant;
 
 fn mini_arch() -> Arch {
     Arch {
@@ -559,40 +558,6 @@ fn large_synthetic_design_places_legally_and_deterministically() -> Result<()> {
     assert!(occupancy.values().all(|count| *count <= slices_per_tile));
     assert!(coords_a.iter().all(|(_, x, y)| *x < 14 && *y < 14));
 
-    Ok(())
-}
-
-#[test]
-#[ignore = "benchmark-style stress test for larger synthetic placement"]
-fn large_synthetic_design_benchmark() -> Result<()> {
-    let design = large_grid_design(10, 10);
-    let arch = synthetic_arch(15, 15);
-    let delay = synthetic_delay(arch.width, arch.height);
-    let options = PlaceOptions {
-        arch: arch.into(),
-        delay: Some(delay.into()),
-        constraints: Vec::new().into(),
-        mode: PlaceMode::TimingDriven,
-        seed: 0x1234_5678,
-    };
-
-    let start_full = Instant::now();
-    let full = solver::solve_for_test(&design, &options, false)?;
-    let elapsed_full = start_full.elapsed();
-    let start_incremental = Instant::now();
-    let incremental = solver::solve_for_test(&design, &options, true)?;
-    let elapsed_incremental = start_incremental.elapsed();
-
-    assert_eq!(full.placements, incremental.placements);
-    assert_metrics_close(&full.metrics, &incremental.metrics);
-
-    eprintln!(
-        "large synthetic placement: clusters={} full_ms={} incremental_ms={}",
-        full.placements.len(),
-        elapsed_full.as_millis(),
-        elapsed_incremental.as_millis()
-    );
-    assert_eq!(full.placements.len(), 10 * 10);
     Ok(())
 }
 

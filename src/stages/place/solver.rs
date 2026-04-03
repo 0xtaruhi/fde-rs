@@ -48,15 +48,6 @@ pub(crate) fn solve(
     solve_internal(design, options, None)
 }
 
-#[cfg(test)]
-pub(crate) fn solve_for_test(
-    design: &crate::ir::Design,
-    options: &PlaceOptions,
-    use_incremental: bool,
-) -> Result<PlacementSolution> {
-    solve_internal(design, options, Some(use_incremental))
-}
-
 fn solve_internal(
     design: &crate::ir::Design,
     options: &PlaceOptions,
