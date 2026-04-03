@@ -26,7 +26,7 @@ The `src/` root should stay compact. Top-level directories are grouped as:
 - `src/core`: domain semantics and IR
 - `src/infra`: parsers, persistence, resource loading
 - `src/stages`: implementation stages and stage-local helpers
-- `src/bin`: compatibility binaries and the main executable entrypoints
+- `src/bin`: the primary executable entrypoint(s)
 
 Bitgen-related support code should be kept together under the `bitgen` subtree instead of spreading
 device lowering, config image building, route-bit derivation, and frame serialization across many
@@ -55,7 +55,7 @@ Strings should not drive core logic directly in stage code. Instead:
 - Add typed semantic enums for endpoint kind, primitive kind, site kind, and net origin.
 - Expose helper methods on IR and device types so stage code can avoid raw string branching.
 - Refactor the highest-value hotspots first:
-  - `route_bits/mapping.rs`
+  - `route/mapping/mod.rs`
   - `sta/mod.rs`
   - `analysis/criticality.rs`
   - `place/model.rs`
@@ -83,7 +83,7 @@ Strings should not drive core logic directly in stage code. Instead:
 
 - Split large modules into service-oriented submodules:
   - `place`: init, improve, legalize, incremental
-  - `route`: coarse router, congestion, ordering, metrics
+  - `route`: physical router application, device lowering handoff, pip materialization
   - `sta`: graph, delay, propagate, report
   - `bitgen`: lowering, device routing, config image, emit
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Endpoint, Property};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RouteSegment {
     pub x0: usize,
     pub y0: usize,
@@ -25,6 +25,29 @@ impl RouteSegment {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RoutePip {
+    pub x: usize,
+    pub y: usize,
+    pub from_net: String,
+    pub to_net: String,
+}
+
+impl RoutePip {
+    pub fn new(
+        position: (usize, usize),
+        from_net: impl Into<String>,
+        to_net: impl Into<String>,
+    ) -> Self {
+        Self {
+            x: position.0,
+            y: position.1,
+            from_net: from_net.into(),
+            to_net: to_net.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Net {
     pub name: String,
@@ -36,6 +59,8 @@ pub struct Net {
     pub properties: Vec<Property>,
     #[serde(default)]
     pub route: Vec<RouteSegment>,
+    #[serde(default)]
+    pub route_pips: Vec<RoutePip>,
     #[serde(default)]
     pub estimated_delay_ns: f64,
     #[serde(default)]
@@ -65,7 +90,16 @@ impl Net {
         self
     }
 
+    pub fn with_route_pip(mut self, pip: RoutePip) -> Self {
+        self.route_pips.push(pip);
+        self
+    }
+
     pub fn route_length(&self) -> usize {
-        self.route.iter().map(RouteSegment::length).sum()
+        if self.route.is_empty() {
+            self.route_pips.len()
+        } else {
+            self.route.iter().map(RouteSegment::length).sum()
+        }
     }
 }

@@ -3,7 +3,11 @@ mod encode;
 mod layout;
 mod model;
 
-use crate::{cil::Cil, config_image::ConfigImage, resource::Arch};
+use crate::{
+    bitgen::ConfigImage,
+    cil::Cil,
+    resource::{Arch, routing},
+};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -27,7 +31,7 @@ pub fn serialize_text_bitstream(
     }
 
     let mut notes = Vec::new();
-    let transmission_defaults = super::route_bits::load_site_route_defaults(arch_path, cil)
+    let transmission_defaults = routing::load_site_route_defaults(arch_path, cil)
         .context("failed to load transmission default SRAM state")?;
     let tile_columns =
         layout::build_tile_columns(arch, cil, config_image, &transmission_defaults, &mut notes);

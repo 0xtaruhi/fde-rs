@@ -1,18 +1,15 @@
-use super::{ConfigImage, api::BitgenOptions};
-use crate::ir::{Cluster, Design, Net};
+use super::{ConfigImage, api::BitgenOptions, circuit::BitgenCircuit};
 use sha2::{Digest, Sha256};
 
 pub(super) fn build_deterministic_payload(
-    design: &Design,
+    circuit: &BitgenCircuit,
     options: &BitgenOptions,
-    clusters: &[Cluster],
-    nets: &[Net],
     config_image: Option<&ConfigImage>,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"FDEBIT24");
-    write_chunk(&mut bytes, "design", design.name.as_bytes());
-    write_chunk(&mut bytes, "stage", design.stage.as_bytes());
+    write_chunk(&mut bytes, "design", circuit.design_name.as_bytes());
+    write_chunk(&mut bytes, "stage", circuit.stage_name.as_bytes());
     if let Some(arch_name) = options.arch_name.as_ref() {
         write_chunk(&mut bytes, "arch", arch_name.as_bytes());
     }
@@ -20,7 +17,7 @@ pub(super) fn build_deterministic_payload(
         write_chunk(&mut bytes, "cil", cil_path.to_string_lossy().as_bytes());
     }
 
-    for cluster in clusters {
+    for cluster in &circuit.clusters {
         let payload = format!(
             "{}@{},{}:{}",
             cluster.name,
@@ -31,19 +28,12 @@ pub(super) fn build_deterministic_payload(
         write_chunk(&mut bytes, "clb", payload.as_bytes());
     }
 
-    for net in nets {
+    for net in &circuit.nets {
         let payload = format!(
             "{}:{}:{}",
             net.name,
             net.route_length(),
-            net.route
-                .iter()
-                .map(|segment| format!(
-                    "{}:{}-{}:{}",
-                    segment.x0, segment.y0, segment.x1, segment.y1
-                ))
-                .collect::<Vec<_>>()
-                .join("|")
+            serialize_net_route(net)
         );
         write_chunk(&mut bytes, "net", payload.as_bytes());
     }
@@ -76,4 +66,25 @@ fn write_chunk(bytes: &mut Vec<u8>, tag: &str, payload: &[u8]) {
     bytes.extend_from_slice(tag.as_bytes());
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.extend_from_slice(payload);
+}
+
+fn serialize_net_route(net: &crate::ir::Net) -> String {
+    if !net.route.is_empty() {
+        net.route
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{}:{}-{}:{}",
+                    segment.x0, segment.y0, segment.x1, segment.y1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    } else {
+        net.route_pips
+            .iter()
+            .map(|pip| format!("{}:{}@{},{}", pip.from_net, pip.to_net, pip.x, pip.y))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
 }

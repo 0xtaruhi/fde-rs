@@ -1,0 +1,83 @@
+use super::{rewrite::rewrite_design, verilog::export_structural_verilog};
+use crate::{
+    ir::Design,
+    report::{StageOutput, StageReport},
+};
+use anyhow::Result;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct MapOptions {
+    pub lut_size: usize,
+    pub cell_library: Option<PathBuf>,
+    pub emit_structural_verilog: bool,
+}
+
+impl Default for MapOptions {
+    fn default() -> Self {
+        Self {
+            lut_size: 4,
+            cell_library: None,
+            emit_structural_verilog: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MapArtifact {
+    pub design: Design,
+    pub structural_verilog: Option<String>,
+}
+
+pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapArtifact>> {
+    design.stage = "mapped".to_string();
+    design.metadata.lut_size = options.lut_size;
+    if design.metadata.source_format.is_empty() {
+        design.metadata.source_format = "ir".to_string();
+    }
+    if let Some(cell_library) = &options.cell_library {
+        design.note_once(format!(
+            "Mapping referenced cell library {}",
+            cell_library.display()
+        ));
+    }
+
+    let summary = rewrite_design(&mut design, options);
+
+    let structural_verilog = options
+        .emit_structural_verilog
+        .then(|| export_structural_verilog(&design));
+
+    let mut report = StageReport::new("map");
+    report.push(format!(
+        "Mapped {} cells and {} nets.",
+        design.cells.len(),
+        design.nets.len()
+    ));
+    if summary.normalized_luts > 0 {
+        report.push(format!(
+            "Normalized repeated LUT inputs in {} cells.",
+            summary.normalized_luts
+        ));
+    }
+    if summary.lowered_constants > 0 {
+        report.push(format!(
+            "Lowered {} constant source cells into LUT-backed drivers.",
+            summary.lowered_constants
+        ));
+    }
+    if summary.buffered_ff_inputs > 0 {
+        report.push(format!(
+            "Inserted {} LUT buffers on non-LUT FF data inputs.",
+            summary.buffered_ff_inputs
+        ));
+    }
+
+    Ok(StageOutput {
+        value: MapArtifact {
+            design,
+            structural_verilog,
+        },
+        report,
+    })
+}

@@ -1,15 +1,14 @@
-use super::lower_design;
 use crate::{
     bitgen::{BitgenOptions, run as run_bitgen},
     cil::load_cil,
     constraints::load_constraints,
     domain::{NetOrigin, SiteKind},
-    ir::{Cell, Cluster, Design, Endpoint, Net, RouteSegment},
+    ir::{Cell, Cluster, Design, Endpoint, Net, RoutePip, RouteSegment},
     map::{MapOptions, load_input, run as run_map},
     pack::{PackOptions, run as run_pack},
     place::{PlaceMode, PlaceOptions, run as run_place},
     resource::{TileKind, load_arch, load_delay_model},
-    route_bits::route_device_design,
+    route::{DeviceRouteImage, lower_design, route_device_design},
 };
 use anyhow::Result;
 use std::{collections::BTreeSet, path::PathBuf};
@@ -23,6 +22,19 @@ fn segments_from_points(points: &[(usize, usize)]) -> Vec<RouteSegment> {
         .windows(2)
         .map(|window| RouteSegment::new(window[0], window[1]))
         .collect()
+}
+
+fn with_route_pips(mut design: Design, route_image: &DeviceRouteImage) -> Design {
+    for net in &mut design.nets {
+        net.route.clear();
+        net.route_pips = route_image
+            .pips
+            .iter()
+            .filter(|pip| pip.net_name == net.name)
+            .map(|pip| RoutePip::new((pip.x, pip.y), pip.from_net.clone(), pip.to_net.clone()))
+            .collect();
+    }
+    design
 }
 
 fn guided_logic_design(
@@ -213,6 +225,163 @@ fn lowering_materializes_clock_and_io_sites_when_external_resources_are_availabl
 }
 
 #[test]
+fn exact_clock_routing_connects_gclk_pad_into_global_buffer_when_resources_are_available()
+-> Result<()> {
+    let Some(bundle) = crate::resource::ResourceBundle::discover_from(&repo_root()).ok() else {
+        return Ok(());
+    };
+    let arch_path = bundle.root.join("fdp3p7_arch.xml");
+    let cil_path = bundle.root.join("fdp3p7_cil.xml");
+    let delay_path = bundle.root.join("fdp3p7_dly.xml");
+    if !arch_path.exists() || !cil_path.exists() {
+        return Ok(());
+    }
+
+    let design = load_input(&repo_root().join("tests/fixtures/blinky-yosys.edf"))?;
+    let mapped = run_map(design, &MapOptions::default())?.value.design;
+    let packed = run_pack(
+        mapped,
+        &PackOptions {
+            family: Some("fdp3".to_string()),
+            ..PackOptions::default()
+        },
+    )?
+    .value;
+    let arch = load_arch(&arch_path)?;
+    let delay = load_delay_model(Some(&delay_path))?;
+    let constraints = load_constraints(&repo_root().join("tests/fixtures/fdp3p7-constraints.xml"))?;
+    let placed = run_place(
+        packed,
+        &PlaceOptions {
+            arch: arch.clone().into(),
+            delay: delay.map(Into::into),
+            constraints: constraints.clone().into(),
+            mode: PlaceMode::TimingDriven,
+            seed: 0xFDE_2024,
+        },
+    )?
+    .value;
+    let cil = load_cil(&cil_path)?;
+    let lowered = lower_design(placed, &arch, Some(&cil), &constraints)?;
+
+    let gclk_pad = lowered
+        .cells
+        .iter()
+        .find(|cell| {
+            cell.synthetic && cell.site_kind == SiteKind::GclkIob && cell.cell_name == "$iob$clk"
+        })
+        .expect("synthetic clock pad cell");
+    let gclk = lowered
+        .cells
+        .iter()
+        .find(|cell| {
+            cell.synthetic && cell.site_kind == SiteKind::Gclk && cell.cell_name == "$gclk$clk"
+        })
+        .expect("synthetic global clock buffer");
+    let expected_from = format!(
+        "{}_CLKPAD{}",
+        gclk_pad.tile_wire_prefix(),
+        gclk_pad.site_slot()
+    );
+    let expected_to = format!("{}_GCLKBUF{}_IN", gclk.tile_wire_prefix(), gclk.z);
+
+    let route_image = crate::route::route_device_design(&lowered, &arch, &arch_path, &cil)?;
+
+    assert!(route_image.pips.iter().any(|pip| {
+        pip.net_name == "gclk::clk" && pip.from_net == expected_from && pip.to_net == expected_to
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn exact_logical_clock_routing_stays_on_dedicated_global_spine_when_resources_are_available()
+-> Result<()> {
+    let Some(bundle) = crate::resource::ResourceBundle::discover_from(&repo_root()).ok() else {
+        return Ok(());
+    };
+    let arch_path = bundle.root.join("fdp3p7_arch.xml");
+    let cil_path = bundle.root.join("fdp3p7_cil.xml");
+    let delay_path = bundle.root.join("fdp3p7_dly.xml");
+    if !arch_path.exists() || !cil_path.exists() {
+        return Ok(());
+    }
+
+    let design = load_input(&repo_root().join("tests/fixtures/blinky-yosys.edf"))?;
+    let mapped = run_map(design, &MapOptions::default())?.value.design;
+    let packed = run_pack(
+        mapped,
+        &PackOptions {
+            family: Some("fdp3".to_string()),
+            ..PackOptions::default()
+        },
+    )?
+    .value;
+    let arch = load_arch(&arch_path)?;
+    let delay = load_delay_model(Some(&delay_path))?;
+    let constraints = load_constraints(&repo_root().join("tests/fixtures/fdp3p7-constraints.xml"))?;
+    let placed = run_place(
+        packed,
+        &PlaceOptions {
+            arch: arch.clone().into(),
+            delay: delay.map(Into::into),
+            constraints: constraints.clone().into(),
+            mode: PlaceMode::TimingDriven,
+            seed: 0xFDE_2024,
+        },
+    )?
+    .value;
+    let cil = load_cil(&cil_path)?;
+    let lowered = lower_design(placed, &arch, Some(&cil), &constraints)?;
+
+    let gclk = lowered
+        .cells
+        .iter()
+        .find(|cell| {
+            cell.synthetic && cell.site_kind == SiteKind::Gclk && cell.cell_name == "$gclk$clk"
+        })
+        .expect("synthetic global clock buffer");
+    let logical_clock_net = lowered
+        .nets
+        .iter()
+        .find(|net| {
+            net.driver.as_ref().is_some_and(|driver| {
+                driver.kind == crate::domain::EndpointKind::Cell
+                    && driver.name == gclk.cell_name
+                    && driver.pin == "OUT"
+            })
+        })
+        .expect("logical clock net");
+    let expected_from = format!("{}_GCLK{}_PW", gclk.tile_wire_prefix(), gclk.z);
+    let expected_to = format!("{}_GCLK{}", gclk.tile_wire_prefix(), gclk.z);
+
+    let route_image = crate::route::route_device_design(&lowered, &arch, &arch_path, &cil)?;
+    let logical_clock_pips = route_image
+        .pips
+        .iter()
+        .filter(|pip| pip.net_name == logical_clock_net.name)
+        .collect::<Vec<_>>();
+
+    assert!(
+        logical_clock_pips
+            .iter()
+            .any(|pip| pip.from_net == expected_from && pip.to_net == expected_to)
+    );
+    assert!(
+        logical_clock_pips
+            .iter()
+            .any(|pip| { pip.from_net.contains("GCLK") && pip.to_net == "S0_CLK_B" })
+    );
+    assert!(
+        logical_clock_pips
+            .iter()
+            .all(|pip| { pip.to_net.contains("GCLK") || pip.to_net == "S0_CLK_B" })
+    );
+
+    Ok(())
+}
+
+#[test]
 fn lowering_uses_cluster_slot_to_select_slice_site_name_when_cil_is_available() -> Result<()> {
     let Some(bundle) = crate::resource::ResourceBundle::discover_from(&repo_root()).ok() else {
         return Ok(());
@@ -305,24 +474,28 @@ fn lowering_and_device_router_preserve_logical_route_guidance_when_resources_are
     assert_ne!(direct_pips, detour_pips);
 
     let bitstream_direct = run_bitgen(
-        guided_logic_design(src, dst, &direct_guide),
+        with_route_pips(guided_logic_design(src, dst, &direct_guide), &route_direct),
         &BitgenOptions {
             arch_name: Some(arch.name.clone()),
             arch_path: Some(arch_path.clone()),
             cil_path: Some(cil_path.clone()),
             cil: Some(cil.clone()),
             device_design: Some(lowered_direct),
+            route_image: Some(route_direct),
+            ..BitgenOptions::default()
         },
     )?
     .value;
     let bitstream_detour = run_bitgen(
-        guided_logic_design(src, dst, &detour_guide),
+        with_route_pips(guided_logic_design(src, dst, &detour_guide), &route_detour),
         &BitgenOptions {
             arch_name: Some(arch.name.clone()),
             arch_path: Some(arch_path),
             cil_path: Some(cil_path),
-            cil: Some(cil),
+            cil: Some(cil.clone()),
             device_design: Some(lowered_detour),
+            route_image: Some(route_detour),
+            ..BitgenOptions::default()
         },
     )?
     .value;

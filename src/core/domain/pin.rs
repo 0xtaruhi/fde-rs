@@ -134,8 +134,24 @@ mod tests {
             PinRole::RegisterClock
         );
         assert_eq!(
+            PinRole::classify_for_primitive(ff, "CKN"),
+            PinRole::RegisterClock
+        );
+        assert_eq!(
             PinRole::classify_for_primitive(ff, "Q"),
             PinRole::RegisterOutput
+        );
+        assert_eq!(
+            PinRole::classify_for_primitive(ff, "E"),
+            PinRole::RegisterClockEnable
+        );
+        assert_eq!(
+            PinRole::classify_for_primitive(ff, "RN"),
+            PinRole::RegisterSetReset
+        );
+        assert_eq!(
+            PinRole::classify_for_primitive(ff, "SN"),
+            PinRole::RegisterSetReset
         );
 
         assert_eq!(

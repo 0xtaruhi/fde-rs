@@ -188,6 +188,21 @@ impl Arch {
         self.pad_sites.get(name)
     }
 
+    pub fn pad_at_site(
+        &self,
+        x: usize,
+        y: usize,
+        z: Option<usize>,
+        kind: Option<PadSiteKind>,
+    ) -> Option<&Pad> {
+        self.pads.iter().find(|pad| {
+            pad.x == x
+                && pad.y == y
+                && z.is_none_or(|z| pad.z == z)
+                && kind.is_none_or(|kind| pad.site_kind == kind)
+        })
+    }
+
     pub fn logic_sites(&self) -> Vec<(usize, usize)> {
         if !self.tiles.is_empty() {
             let mut sites = self

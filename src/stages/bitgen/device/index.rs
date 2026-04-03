@@ -13,10 +13,6 @@ macro_rules! define_device_id {
             pub(crate) const fn new(index: usize) -> Self {
                 Self(index)
             }
-
-            pub(crate) const fn index(self) -> usize {
-                self.0
-            }
         }
     };
 }
@@ -31,13 +27,10 @@ pub(crate) enum DeviceEndpointTarget {
     Unknown,
 }
 
-impl DeviceEndpointTarget {
-    pub(crate) fn cell_id(self) -> Option<DeviceCellId> {
-        match self {
-            Self::Cell(cell_id) => Some(cell_id),
-            Self::Port(_) | Self::Unknown => None,
-        }
-    }
+pub(crate) enum DeviceEndpointRef<'a> {
+    Cell(&'a DeviceCell),
+    Port(&'a DevicePort),
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -88,23 +81,20 @@ impl<'a> DeviceDesignIndex<'a> {
         }
     }
 
-    pub(crate) fn cell_for_endpoint(&self, endpoint: &DeviceEndpoint) -> Option<DeviceCellId> {
-        self.resolve_endpoint(endpoint).cell_id()
-    }
-
-    pub(crate) fn port_for_endpoint(&self, endpoint: &DeviceEndpoint) -> Option<DevicePortId> {
+    pub(crate) fn resolve_endpoint_ref(
+        &self,
+        device: &'a DeviceDesign,
+        endpoint: &DeviceEndpoint,
+    ) -> DeviceEndpointRef<'a> {
         match self.resolve_endpoint(endpoint) {
-            DeviceEndpointTarget::Port(port_id) => Some(port_id),
-            DeviceEndpointTarget::Cell(_) | DeviceEndpointTarget::Unknown => None,
+            DeviceEndpointTarget::Cell(cell_id) => {
+                DeviceEndpointRef::Cell(&device.cells[cell_id.0])
+            }
+            DeviceEndpointTarget::Port(port_id) => {
+                DeviceEndpointRef::Port(&device.ports[port_id.0])
+            }
+            DeviceEndpointTarget::Unknown => DeviceEndpointRef::Unknown,
         }
-    }
-
-    pub(crate) fn cell(&self, device: &'a DeviceDesign, id: DeviceCellId) -> &'a DeviceCell {
-        &device.cells[id.index()]
-    }
-
-    pub(crate) fn port(&self, device: &'a DeviceDesign, id: DevicePortId) -> &'a DevicePort {
-        &device.ports[id.index()]
     }
 }
 
@@ -112,8 +102,8 @@ impl<'a> DeviceDesignIndex<'a> {
 mod tests {
     use super::{DeviceDesignIndex, DeviceEndpointTarget};
     use crate::{
-        device::{DeviceCell, DeviceDesign, DeviceEndpoint, DevicePort},
-        domain::{EndpointKind, SiteKind},
+        bitgen::{DeviceCell, DeviceDesign, DeviceEndpoint, DevicePort},
+        domain::{CellKind, EndpointKind, SiteKind},
         ir::PortDirection,
     };
 
@@ -127,7 +117,7 @@ mod tests {
                 "RIGHT",
                 (1, 0, 0),
             )],
-            cells: vec![DeviceCell::new("u0", "LUT4").placed(
+            cells: vec![DeviceCell::new("u0", CellKind::Lut, "LUT4").placed(
                 SiteKind::LogicSlice,
                 "S0",
                 "LUT0",

@@ -1,15 +1,41 @@
-use super::build_config_image;
+use super::encode_config_image;
 use crate::{
+    bitgen::{ProgrammedSite, ProgrammingImage, RequestedConfig},
     cil::parse_cil_str,
-    device::{DeviceCell, DeviceDesign, DeviceEndpoint, DeviceNet},
-    domain::{EndpointKind, SiteKind},
-    ir::{PortDirection, Property},
+    domain::SiteKind,
     resource::{Arch, TileInstance},
 };
 use std::collections::BTreeMap;
 
+fn request(cfg_name: &str, function_name: &str) -> RequestedConfig {
+    RequestedConfig::new(cfg_name, function_name)
+}
+
+fn programmed_site(
+    tile_name: &str,
+    tile_type: &str,
+    site_kind: SiteKind,
+    site_name: &str,
+    x: usize,
+    y: usize,
+    requests: &[(&str, &str)],
+) -> ProgrammedSite {
+    ProgrammedSite::new(
+        tile_name,
+        tile_type,
+        site_kind,
+        site_name,
+        x,
+        y,
+        requests
+            .iter()
+            .map(|(cfg_name, function_name)| request(cfg_name, function_name))
+            .collect(),
+    )
+}
+
 #[test]
-fn builds_tile_assignments_for_slice_iob_and_gclk() {
+fn builds_tile_assignments_for_slice_iob_and_gclk_programming_requests() {
     let cil = parse_cil_str(
         r##"
         <device name="mini">
@@ -44,16 +70,6 @@ fn builds_tile_assignments_for_slice_iob_and_gclk() {
                     <sram basic_cell="DXMUX" name="S0" content="1"/>
                   </function>
                 </cfg_element>
-                <cfg_element name="DYMUX">
-                  <function name="1" default="yes">
-                    <sram basic_cell="DYMUX" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="FXMUX">
-                  <function name="F" default="no">
-                    <sram basic_cell="FXMUX" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
                 <cfg_element name="CKINV">
                   <function name="1" default="no">
                     <sram basic_cell="CKINV" name="P" content="1"/>
@@ -63,9 +79,6 @@ fn builds_tile_assignments_for_slice_iob_and_gclk() {
             </block_site>
             <block_site name="IOB">
               <config_info amount="3">
-                <cfg_element name="IOATTRBOX">
-                  <function name="LVTTL" default="yes"/>
-                </cfg_element>
                 <cfg_element name="OMUX">
                   <function name="O" default="no">
                     <sram basic_cell="OMUX" name="S0" content="1"/>
@@ -120,8 +133,6 @@ fn builds_tile_assignments_for_slice_iob_and_gclk() {
                       <sram basic_cell="FFX" sram_name="INIT" local_place="B1W1"/>
                       <sram basic_cell="FFX" sram_name="AS" local_place="B1W2"/>
                       <sram basic_cell="DXMUX" sram_name="S0" local_place="B1W3"/>
-                      <sram basic_cell="DYMUX" sram_name="S0" local_place="B2W3"/>
-                      <sram basic_cell="FXMUX" sram_name="S0" local_place="B2W0"/>
                       <sram basic_cell="CKINV" sram_name="P" local_place="B2W1"/>
                     </site_sram>
                   </site>
@@ -159,98 +170,47 @@ fn builds_tile_assignments_for_slice_iob_and_gclk() {
     )
     .expect("parse mini cil");
 
-    let device = DeviceDesign {
-        name: "mini".to_string(),
-        device: "mini".to_string(),
-        ports: vec![],
-        cells: vec![
-            DeviceCell {
-                cell_name: "u_lut".to_string(),
-                type_name: "LUT2".to_string(),
-                properties: vec![Property::new("lut_init", "10")],
-                site_kind: SiteKind::LogicSlice,
-                site_name: "S0".to_string(),
-                bel: "LUT0".to_string(),
-                tile_name: "T0".to_string(),
-                tile_type: "CENTER".to_string(),
-                x: 1,
-                y: 1,
-                z: 0,
-                cluster_name: Some("clb_0".to_string()),
-                synthetic: false,
-            },
-            DeviceCell {
-                cell_name: "u_ff".to_string(),
-                type_name: "DFFHQ".to_string(),
-                properties: Vec::new(),
-                site_kind: SiteKind::LogicSlice,
-                site_name: "S0".to_string(),
-                bel: "FF0".to_string(),
-                tile_name: "T0".to_string(),
-                tile_type: "CENTER".to_string(),
-                x: 1,
-                y: 1,
-                z: 0,
-                cluster_name: Some("clb_0".to_string()),
-                synthetic: false,
-            },
-            DeviceCell {
-                cell_name: "$iob$out".to_string(),
-                type_name: "IOB".to_string(),
-                properties: Vec::new(),
-                site_kind: SiteKind::Iob,
-                site_name: "IOB0".to_string(),
-                bel: "PAD".to_string(),
-                tile_name: "IO0".to_string(),
-                tile_type: "RIGHT".to_string(),
-                x: 3,
-                y: 0,
-                z: 0,
-                cluster_name: None,
-                synthetic: true,
-            },
-            DeviceCell {
-                cell_name: "$gclk$clk".to_string(),
-                type_name: "GCLK".to_string(),
-                properties: Vec::new(),
-                site_kind: SiteKind::Gclk,
-                site_name: "GCLKBUF0".to_string(),
-                bel: "BUF".to_string(),
-                tile_name: "CLK0".to_string(),
-                tile_type: "CLKB".to_string(),
-                x: 4,
-                y: 0,
-                z: 0,
-                cluster_name: None,
-                synthetic: true,
-            },
+    let programming = ProgrammingImage {
+        sites: vec![
+            programmed_site(
+                "T0",
+                "CENTER",
+                SiteKind::LogicSlice,
+                "S0",
+                1,
+                1,
+                &[
+                    ("F", "0xA"),
+                    ("FFX", "#FF"),
+                    ("INITX", "LOW"),
+                    ("SYNCX", "ASYNC"),
+                    ("DXMUX", "1"),
+                    ("CKINV", "1"),
+                ],
+            ),
+            programmed_site(
+                "IO0",
+                "RIGHT",
+                SiteKind::Iob,
+                "IOB0",
+                3,
+                0,
+                &[("OMUX", "O"), ("OUTMUX", "1"), ("DRIVEATTRBOX", "12")],
+            ),
+            programmed_site(
+                "CLK0",
+                "CLKB",
+                SiteKind::Gclk,
+                "GCLKBUF0",
+                4,
+                0,
+                &[("CEMUX", "1"), ("DISABLE_ATTR", "LOW")],
+            ),
         ],
-        nets: vec![DeviceNet {
-            name: "logic_to_out".to_string(),
-            driver: Some(DeviceEndpoint {
-                kind: EndpointKind::Cell,
-                name: "u_ff".to_string(),
-                pin: "Q".to_string(),
-                x: 1,
-                y: 1,
-                z: 0,
-            }),
-            sinks: vec![DeviceEndpoint {
-                kind: EndpointKind::Cell,
-                name: "$iob$out".to_string(),
-                pin: "OUT".to_string(),
-                x: 3,
-                y: 0,
-                z: 0,
-            }],
-            origin: "logical-net".into(),
-            guide_tiles: Vec::new(),
-            sink_guides: Vec::new(),
-        }],
-        notes: vec![PortDirection::Output.as_str().to_string()],
+        ..ProgrammingImage::default()
     };
 
-    let image = build_config_image(&device, &cil, None, None).expect("build config image");
+    let image = encode_config_image(&programming, &cil, None).expect("encode config image");
     assert_eq!(image.tiles.len(), 3);
 
     let center = image
@@ -289,10 +249,10 @@ fn builds_tile_assignments_for_slice_iob_and_gclk() {
             .any(|bit| bit.cfg_name == "SYNCX" && bit.value == 1)
     );
     assert!(
-        !center
+        center
             .assignments
             .iter()
-            .any(|bit| bit.basic_cell == "DYMUX")
+            .any(|bit| bit.basic_cell == "DXMUX" && bit.value == 1)
     );
     assert!(center.packed_bits().iter().any(|byte| *byte != 0));
 
@@ -338,7 +298,7 @@ fn builds_tile_assignments_for_slice_iob_and_gclk() {
 }
 
 #[test]
-fn widens_small_lut_init_to_site_truth_table_width() {
+fn encodes_addressed_lut_requests_into_site_srams() {
     let cil = parse_cil_str(
         r##"
         <device name="mini">
@@ -404,30 +364,20 @@ fn widens_small_lut_init_to_site_truth_table_width() {
     )
     .expect("parse mini cil");
 
-    let device = DeviceDesign {
-        name: "mini".to_string(),
-        device: "mini".to_string(),
-        ports: vec![],
-        cells: vec![DeviceCell {
-            cell_name: "u_lut".to_string(),
-            type_name: "LUT2".to_string(),
-            properties: vec![Property::new("lut_init", "1")],
-            site_kind: SiteKind::LogicSlice,
-            site_name: "S0".to_string(),
-            bel: "LUT0".to_string(),
-            tile_name: "T0".to_string(),
-            tile_type: "CENTER".to_string(),
-            x: 1,
-            y: 1,
-            z: 0,
-            cluster_name: Some("clb_0".to_string()),
-            synthetic: false,
-        }],
-        nets: vec![],
-        notes: vec![],
+    let programming = ProgrammingImage {
+        sites: vec![programmed_site(
+            "T0",
+            "CENTER",
+            SiteKind::LogicSlice,
+            "S0",
+            1,
+            1,
+            &[("F", "0x1111")],
+        )],
+        ..ProgrammingImage::default()
     };
 
-    let image = build_config_image(&device, &cil, None, None).expect("build config image");
+    let image = encode_config_image(&programming, &cil, None).expect("encode config image");
     let center = image
         .tiles
         .iter()
@@ -496,27 +446,17 @@ fn owner_tile_assignments_move_into_target_tile_when_arch_is_available() {
     )
     .expect("parse mini cil");
 
-    let device = DeviceDesign {
-        name: "mini".to_string(),
-        device: "mini".to_string(),
-        ports: vec![],
-        cells: vec![DeviceCell {
-            cell_name: "u_ff".to_string(),
-            type_name: "DFFHQ".to_string(),
-            properties: Vec::new(),
-            site_kind: SiteKind::LogicSlice,
-            site_name: "S0".to_string(),
-            bel: "FF0".to_string(),
-            tile_name: "SRC0".to_string(),
-            tile_type: "SOURCE".to_string(),
-            x: 0,
-            y: 1,
-            z: 0,
-            cluster_name: Some("clb_0".to_string()),
-            synthetic: false,
-        }],
-        nets: vec![],
-        notes: vec![],
+    let programming = ProgrammingImage {
+        sites: vec![programmed_site(
+            "SRC0",
+            "SOURCE",
+            SiteKind::LogicSlice,
+            "S0",
+            0,
+            1,
+            &[("FFX", "#FF")],
+        )],
+        ..ProgrammingImage::default()
     };
     let arch = Arch {
         width: 1,
@@ -552,7 +492,7 @@ fn owner_tile_assignments_move_into_target_tile_when_arch_is_available() {
         ..Arch::default()
     };
 
-    let image = build_config_image(&device, &cil, Some(&arch), None).expect("build config image");
+    let image = encode_config_image(&programming, &cil, Some(&arch)).expect("encode config image");
     assert_eq!(image.tiles.len(), 2);
 
     let source = image
@@ -676,30 +616,27 @@ fn explicit_slice_requests_override_default_alias_configs_on_shared_srams() {
     )
     .expect("parse mini cil");
 
-    let device = DeviceDesign {
-        name: "mini".to_string(),
-        device: "mini".to_string(),
-        ports: vec![],
-        cells: vec![DeviceCell {
-            cell_name: "u_ff".to_string(),
-            type_name: "DFFHQ".to_string(),
-            properties: Vec::new(),
-            site_kind: SiteKind::LogicSlice,
-            site_name: "S0".to_string(),
-            bel: "FF0".to_string(),
-            tile_name: "T0".to_string(),
-            tile_type: "CENTER".to_string(),
-            x: 1,
-            y: 1,
-            z: 0,
-            cluster_name: Some("clb_0".to_string()),
-            synthetic: false,
-        }],
-        nets: vec![],
-        notes: vec![],
+    let programming = ProgrammingImage {
+        sites: vec![programmed_site(
+            "T0",
+            "CENTER",
+            SiteKind::LogicSlice,
+            "S0",
+            1,
+            1,
+            &[
+                ("FFX", "#FF"),
+                ("INITX", "LOW"),
+                ("SYNC_ATTR", "ASYNC"),
+                ("SYNCX", "ASYNC"),
+                ("DXMUX", "1"),
+                ("CKINV", "1"),
+            ],
+        )],
+        ..ProgrammingImage::default()
     };
 
-    let image = build_config_image(&device, &cil, None, None).expect("build config image");
+    let image = encode_config_image(&programming, &cil, None).expect("encode config image");
     let center = image
         .tiles
         .iter()
@@ -723,181 +660,5 @@ fn explicit_slice_requests_override_default_alias_configs_on_shared_srams() {
             .assignments
             .iter()
             .any(|bit| bit.basic_cell == "FFX" && bit.sram_name == "AS" && bit.value == 1)
-    );
-}
-
-#[test]
-fn lut_only_slice_uses_xused_yused_without_ff_control_bits() {
-    let cil = parse_cil_str(
-        r##"
-        <device name="mini">
-          <site_library>
-            <block_site name="SLICE">
-              <config_info amount="8">
-                <cfg_element name="F">
-                  <function name="0x0" quomodo="srambit" manner="computation" default="no">
-                    <sram basic_cell="FLUT0" name="SRAM" address="0"/>
-                    <sram basic_cell="FLUT1" name="SRAM" address="1"/>
-                    <sram basic_cell="FLUT2" name="SRAM" address="2"/>
-                    <sram basic_cell="FLUT3" name="SRAM" address="3"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="G">
-                  <function name="0x0" quomodo="srambit" manner="computation" default="no">
-                    <sram basic_cell="GLUT0" name="SRAM" address="0"/>
-                    <sram basic_cell="GLUT1" name="SRAM" address="1"/>
-                    <sram basic_cell="GLUT2" name="SRAM" address="2"/>
-                    <sram basic_cell="GLUT3" name="SRAM" address="3"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="FXMUX">
-                  <function name="F" default="no">
-                    <sram basic_cell="FXMUX" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="GYMUX">
-                  <function name="G" default="no">
-                    <sram basic_cell="GYMUX" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="XUSED">
-                  <function name="0" default="no">
-                    <sram basic_cell="XUSED" name="S0" content="0"/>
-                  </function>
-                  <function name="1" default="yes">
-                    <sram basic_cell="XUSED" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="YUSED">
-                  <function name="0" default="no">
-                    <sram basic_cell="YUSED" name="S0" content="0"/>
-                  </function>
-                  <function name="1" default="yes">
-                    <sram basic_cell="YUSED" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="DXMUX">
-                  <function name="1" default="yes">
-                    <sram basic_cell="DXMUX" name="S0" content="1"/>
-                  </function>
-                </cfg_element>
-                <cfg_element name="CKINV">
-                  <function name="1" default="no">
-                    <sram basic_cell="CKINV" name="P" content="1"/>
-                  </function>
-                </cfg_element>
-              </config_info>
-            </block_site>
-          </site_library>
-          <cluster_library>
-            <homogeneous_cluster name="SLICE1x1" type="SLICE"/>
-          </cluster_library>
-          <tile_library>
-            <tile name="CENTER" sram_amount="R3C8">
-              <cluster_info amount="1">
-                <cluster type="SLICE1x1">
-                  <site name="S0" position="R0C0">
-                    <site_sram>
-                      <sram basic_cell="FLUT0" sram_name="SRAM" local_place="B0W0"/>
-                      <sram basic_cell="FLUT1" sram_name="SRAM" local_place="B0W1"/>
-                      <sram basic_cell="FLUT2" sram_name="SRAM" local_place="B0W2"/>
-                      <sram basic_cell="FLUT3" sram_name="SRAM" local_place="B0W3"/>
-                      <sram basic_cell="GLUT0" sram_name="SRAM" local_place="B0W4"/>
-                      <sram basic_cell="GLUT1" sram_name="SRAM" local_place="B0W5"/>
-                      <sram basic_cell="GLUT2" sram_name="SRAM" local_place="B0W6"/>
-                      <sram basic_cell="GLUT3" sram_name="SRAM" local_place="B0W7"/>
-                      <sram basic_cell="FXMUX" sram_name="S0" local_place="B1W0"/>
-                      <sram basic_cell="GYMUX" sram_name="S0" local_place="B1W1"/>
-                      <sram basic_cell="XUSED" sram_name="S0" local_place="B1W2"/>
-                      <sram basic_cell="YUSED" sram_name="S0" local_place="B1W3"/>
-                      <sram basic_cell="DXMUX" sram_name="S0" local_place="B1W4"/>
-                      <sram basic_cell="CKINV" sram_name="P" local_place="B1W5"/>
-                    </site_sram>
-                  </site>
-                </cluster>
-              </cluster_info>
-            </tile>
-          </tile_library>
-        </device>
-        "##,
-    )
-    .expect("parse mini cil");
-
-    let device = DeviceDesign {
-        name: "mini".to_string(),
-        device: "mini".to_string(),
-        ports: vec![],
-        cells: vec![
-            DeviceCell {
-                cell_name: "u_lut0".to_string(),
-                type_name: "LUT2".to_string(),
-                properties: vec![Property::new("lut_init", "5")],
-                site_kind: SiteKind::LogicSlice,
-                site_name: "S0".to_string(),
-                bel: "LUT0".to_string(),
-                tile_name: "T0".to_string(),
-                tile_type: "CENTER".to_string(),
-                x: 1,
-                y: 1,
-                z: 0,
-                cluster_name: Some("clb_0".to_string()),
-                synthetic: false,
-            },
-            DeviceCell {
-                cell_name: "u_lut1".to_string(),
-                type_name: "LUT2".to_string(),
-                properties: vec![Property::new("lut_init", "a")],
-                site_kind: SiteKind::LogicSlice,
-                site_name: "S0".to_string(),
-                bel: "LUT1".to_string(),
-                tile_name: "T0".to_string(),
-                tile_type: "CENTER".to_string(),
-                x: 1,
-                y: 1,
-                z: 0,
-                cluster_name: Some("clb_0".to_string()),
-                synthetic: false,
-            },
-        ],
-        nets: vec![],
-        notes: vec![],
-    };
-
-    let image = build_config_image(&device, &cil, None, None).expect("build config image");
-    let center = image
-        .tiles
-        .iter()
-        .find(|tile| tile.tile_name == "T0")
-        .expect("center tile");
-
-    assert!(
-        center
-            .configs
-            .iter()
-            .any(|cfg| cfg.cfg_name == "XUSED" && cfg.function_name == "0")
-    );
-    assert!(
-        center
-            .configs
-            .iter()
-            .any(|cfg| cfg.cfg_name == "YUSED" && cfg.function_name == "0")
-    );
-    assert!(
-        center
-            .assignments
-            .iter()
-            .any(|bit| bit.basic_cell == "XUSED" && bit.value == 0)
-    );
-    assert!(
-        center
-            .assignments
-            .iter()
-            .any(|bit| bit.basic_cell == "YUSED" && bit.value == 0)
-    );
-    assert!(
-        !center
-            .assignments
-            .iter()
-            .any(|bit| matches!(bit.basic_cell.as_str(), "DXMUX" | "CKINV"))
     );
 }

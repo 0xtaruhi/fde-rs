@@ -5,7 +5,6 @@ Standalone Rust 2024 implementation flow for the FDE toolchain.
 `fde-rs` is the Rust-first home for the modern FDE flow:
 
 - main entrypoint: `fde`
-- stage binaries: `map`, `pack`, `place`, `route`, `sta`, `bitgen`, `nlfiner`, `import`
 - frontend assumption: synthesize with Yosys first, then hand EDIF to this project
 
 ## What Works
@@ -13,13 +12,13 @@ Standalone Rust 2024 implementation flow for the FDE toolchain.
 - `fde map`: EDIF -> mapped IR
 - `fde pack`: mapped IR -> clustered IR
 - `fde place`: clustered IR -> placed IR
-- `fde route`: placed IR -> routed IR
+- `fde route`: placed IR -> routed IR with physical PIPs
 - `fde sta`: routed IR -> timing summary + report
-- `fde bitgen`: routed/timed IR -> deterministic `.bit` + readable sidecar
+- `fde bitgen`: routed/timed IR with physical PIPs -> deterministic `.bit` + readable sidecar
 - `fde normalize`: cleanup/rename pass
 - `fde impl`: one-command end-to-end implementation flow
 
-The current `bitgen` is deterministic and regression-friendly. It emits CIL-backed tile config images for supported `SLICE`/`IOB`/`GCLK` sites in the sidecar and payload, and `fde impl` keeps the full implementation flow in Rust.
+The current `route` stage is the physical router. It emits routed XML with physical `<pip>` records only. `bitgen` consumes that routed netlist boundary directly, derives programming/config requests on the bitgen side, and does not reroute inside bitgen. The current `bitgen` is deterministic and regression-friendly. It emits CIL-backed tile config images for supported `SLICE`/`IOB`/`GCLK` sites in the sidecar and payload, and `fde impl` keeps the full implementation flow in Rust.
 
 ## Build
 
@@ -85,7 +84,31 @@ Run the live board suite in one shot:
 python3 scripts/board_e2e.py run
 ```
 
-The live board path uses the in-repo probe tool under [`tools/wave_probe/`](/Users/zhangzhengyi/Documents/Projects/fde-rs-standalone/tools/wave_probe), which depends on the published [`vlfd-rs` 1.0.0 crate](https://docs.rs/vlfd-rs/latest/vlfd_rs/). It does not require the legacy `FDE-Source` repository.
+Compare board results against an existing proven hardware corpus:
+
+```bash
+python3 scripts/board_diff.py run
+```
+
+This comparison probes every discoverable baseline bitstream and only uses the
+result when those candidates agree on one hardware baseline; it does not use
+`examples/board-e2e/manifest.json` to choose the baseline.
+
+Compare packed slice configs against the emitted bitstream sidecar for one case:
+
+```bash
+python3 scripts/slice_config_diff.py \
+  --packed /path/to/02-packed.xml \
+  --sidecar /path/to/06-output.bit.txt
+```
+
+The board manifest can also pin per-case `wave_probe` segments for long-cycle
+checks. For example, `sticky16-check` uses repeated `0x0008*192`,
+`0x000c*192`, `0x0004*192`, and `0x0000*192` segments so the board regression
+catches the multi-stage routing bug that only shows up after the longer
+stimulus window.
+
+The live board path uses the in-repo probe tool under [`tools/wave_probe/`](/Users/zhangzhengyi/Documents/Projects/fde-rs-standalone/tools/wave_probe), which depends on the published [`vlfd-rs` 1.0.0 crate](https://docs.rs/vlfd-rs/latest/vlfd_rs/). It does not require the sibling `FDE-Source` repository unless you want to probe an external baseline corpus.
 
 The default full resource bundle is vendored under [`resources/hw_lib/`](/Users/zhangzhengyi/Documents/Projects/fde-rs-standalone/resources/hw_lib).
 
@@ -95,12 +118,13 @@ Artifacts land in `build/blinky-run/`:
 - `02-packed.xml`
 - `03-placed.xml`
 - `04-routed.xml`
-- `04-device.json`
 - `05-timed.xml`
 - `05-timing.rpt`
 - `06-output.bit`
 - `06-output.bit.txt`
 - `report.json`
+
+The default stage outputs follow the FDE XML/bitstream contract: `design`/`external`/`library`/`topModule` XML plus the matching `.bit` sidecar. That artifact shape is the public boundary. Rust may keep typed IR internally for implementation and debugging, but Rust-specific formats are not the default user-facing stage outputs.
 
 Run individual stages:
 
@@ -120,14 +144,14 @@ cargo run --bin fde -- place \
   --arch tests/fixtures/hw_lib/fdp3p7_arch.xml \
   --delay tests/fixtures/hw_lib/fdp3p7_dly.xml \
   --constraints examples/blinky/constraints.xml \
-  --mode timing
+  --mode bounding
 
 cargo run --bin fde -- route \
   --input build/place.xml \
   --output build/route.xml \
   --arch tests/fixtures/hw_lib/fdp3p7_arch.xml \
-  --constraints examples/blinky/constraints.xml \
-  --mode timing
+  --cil tests/fixtures/hw_lib/fdp3p7_cil.xml \
+  --constraints examples/blinky/constraints.xml
 
 cargo run --bin fde -- sta \
   --input build/route.xml \
@@ -155,35 +179,26 @@ cargo run --bin fde -- impl \
   --out-dir build/external-resource-run
 ```
 
-The compatibility wrappers also accept compatibility invocations:
-
-```bash
-cargo run --bin map -- \
-  -y \
-  -i examples/blinky/blinky.edf \
-  -o build/map.xml \
-  -c /path/to/hw_lib/dc_cell.xml \
-  -e
-
-cargo run --bin pack -- \
-  -c fdp3 \
-  -n build/map.xml \
-  -l /path/to/hw_lib/fdp3_cell.xml \
-  -r /path/to/hw_lib/fdp3_dcplib.xml \
-  -o build/pack.xml \
-  -g /path/to/hw_lib/fdp3_config.xml \
-  -e
-```
-
 ## Yosys Frontend
 
-This repo does not try to be a full Verilog parser. Use Yosys first, for example:
+This repo does not try to be a full Verilog parser. Use Yosys first. For the FDE-specific flow used by Aspen, use the bundled helper script:
+
+```bash
+python3 scripts/synth_yosys_fde.py \
+  --top your_top \
+  --out-edf build/your_top.edf \
+  path/to/your_top.v
+```
+
+That script mirrors Aspen's `yosys-fde` flow, writes an EDIF netlist compatible with this repo, and can optionally also emit the intermediate Yosys JSON netlist.
+
+If you already have a different Yosys flow, you can still produce EDIF manually, for example:
 
 ```bash
 yosys -p 'read_verilog your_top.v; synth -top your_top; write_edif synth.edf'
 ```
 
-Then feed `synth.edf` into `fde map` or `fde impl`.
+Then feed the generated EDIF into `fde map` or `fde impl`.
 
 ## Repository Scope
 

@@ -5,6 +5,7 @@ mod endpoint;
 mod net;
 mod pin;
 mod primitive;
+mod routing;
 mod site;
 mod timing;
 
@@ -14,5 +15,13 @@ pub use endpoint::EndpointKind;
 pub use net::NetOrigin;
 pub use pin::PinRole;
 pub use primitive::{ConstantKind, PrimitiveKind};
+pub use routing::{
+    SliceControlWireKind, SliceOutputWireKind, is_clock_distribution_wire_name,
+    is_clock_sink_wire_name, is_dedicated_clock_wire_name, is_directional_channel_wire_name,
+    is_hex_like_wire_name, is_long_wire_name, is_pad_stub_wire_name, normalized_slice_site_name,
+    output_wire_index, pin_map_property_name, sink_output_preference, slice_control_wire_name,
+    slice_lut_input_wire_prefix, slice_lut_output_wire_name, slice_output_wire_kind,
+    slice_register_data_wire_name, slice_register_output_wire_name,
+};
 pub use site::SiteKind;
 pub use timing::TimingPathCategory;

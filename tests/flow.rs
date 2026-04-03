@@ -150,11 +150,11 @@ fn diff_bitstream_lines(expected: &[String], actual: &[String]) -> (usize, usize
     (word_diffs, bit_diffs, first)
 }
 
-fn reference_bitstream_paths() -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
-    let arch = std::env::var_os("FDE_REFERENCE_ARCH_XML").map(PathBuf::from)?;
-    let cil = std::env::var_os("FDE_REFERENCE_CIL_XML").map(PathBuf::from)?;
-    let config_image = std::env::var_os("FDE_REFERENCE_CONFIG_IMAGE_JSON").map(PathBuf::from)?;
-    let bitstream = std::env::var_os("FDE_REFERENCE_TEXT_BITSTREAM").map(PathBuf::from)?;
+fn baseline_bitstream_paths() -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+    let arch = std::env::var_os("FDE_BASELINE_ARCH_XML").map(PathBuf::from)?;
+    let cil = std::env::var_os("FDE_BASELINE_CIL_XML").map(PathBuf::from)?;
+    let config_image = std::env::var_os("FDE_BASELINE_CONFIG_IMAGE_JSON").map(PathBuf::from)?;
+    let bitstream = std::env::var_os("FDE_BASELINE_TEXT_BITSTREAM").map(PathBuf::from)?;
     Some((arch, cil, config_image, bitstream))
 }
 
@@ -333,40 +333,40 @@ fn can_parse_external_arch_when_available() {
 }
 
 #[test]
-#[ignore = "requires external reference bitstream inputs"]
-fn reference_config_image_text_bitstream_matches_expected() {
-    let Some((arch_path, cil_path, config_image_path, reference_bitstream_path)) =
-        reference_bitstream_paths()
+#[ignore = "requires external baseline bitstream inputs"]
+fn baseline_config_image_text_bitstream_matches_expected() {
+    let Some((arch_path, cil_path, config_image_path, baseline_bitstream_path)) =
+        baseline_bitstream_paths()
     else {
         eprintln!(
-            "skipping: set FDE_REFERENCE_ARCH_XML, FDE_REFERENCE_CIL_XML, \
-FDE_REFERENCE_CONFIG_IMAGE_JSON, and FDE_REFERENCE_TEXT_BITSTREAM"
+            "skipping: set FDE_BASELINE_ARCH_XML, FDE_BASELINE_CIL_XML, \
+FDE_BASELINE_CONFIG_IMAGE_JSON, and FDE_BASELINE_TEXT_BITSTREAM"
         );
         return;
     };
 
-    let arch = load_arch(&arch_path).expect("load reference arch");
-    let cil = load_cil(&cil_path).expect("load reference cil");
+    let arch = load_arch(&arch_path).expect("load baseline arch");
+    let cil = load_cil(&cil_path).expect("load baseline cil");
     let config_image: ConfigImage = serde_json::from_str(
-        &fs::read_to_string(&config_image_path).expect("read reference config image"),
+        &fs::read_to_string(&config_image_path).expect("read baseline config image"),
     )
-    .expect("parse reference config image");
-    let rendered = serialize_text_bitstream("reference", &arch, &arch_path, &cil, &config_image)
-        .expect("serialize reference text bitstream")
+    .expect("parse baseline config image");
+    let rendered = serialize_text_bitstream("baseline", &arch, &arch_path, &cil, &config_image)
+        .expect("serialize baseline text bitstream")
         .expect("text bitstream should be available");
 
     let temp_dir = TempDir::new().expect("tempdir");
     let rendered_path = temp_dir.path().join("rendered.bit");
     fs::write(&rendered_path, rendered.text).expect("write rendered text bitstream");
 
-    let expected = normalized_bitstream_lines(&reference_bitstream_path);
+    let expected = normalized_bitstream_lines(&baseline_bitstream_path);
     let actual = normalized_bitstream_lines(&rendered_path);
     let (word_diffs, bit_diffs, first) = diff_bitstream_lines(&expected, &actual);
 
     assert_eq!(
         word_diffs,
         0,
-        "reference text bitstream mismatch: word_diffs={word_diffs}, bit_diffs={bit_diffs}, {}",
+        "baseline text bitstream mismatch: word_diffs={word_diffs}, bit_diffs={bit_diffs}, {}",
         first.unwrap_or_else(|| "no differing word located".to_string())
     );
 }

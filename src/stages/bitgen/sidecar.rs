@@ -1,22 +1,20 @@
 use super::{
-    ConfigImage, DeviceRouteImage, SerializedTextBitstream, api::BitgenOptions,
-    artifacts::PreparedArtifacts,
+    ConfigImage, SerializedTextBitstream, api::BitgenOptions, artifacts::PreparedArtifacts,
+    circuit::BitgenCircuit,
 };
-use crate::ir::{Cluster, Design, Net};
+use crate::bitgen::ProgrammingImage;
 use std::fmt::Write;
 
 pub(super) fn build_sidecar(
-    design: &Design,
+    circuit: &BitgenCircuit,
     options: &BitgenOptions,
-    clusters: &[Cluster],
-    nets: &[Net],
     artifacts: &PreparedArtifacts,
     sha256: &str,
 ) -> String {
     let mut sidecar = String::new();
     let _ = writeln!(sidecar, "# FDE bitstream sidecar");
-    let _ = writeln!(sidecar, "design={}", design.name);
-    let _ = writeln!(sidecar, "stage={}", design.stage);
+    let _ = writeln!(sidecar, "design={}", circuit.design_name);
+    let _ = writeln!(sidecar, "stage={}", circuit.stage_name);
     let _ = writeln!(
         sidecar,
         "mode={}",
@@ -34,7 +32,7 @@ pub(super) fn build_sidecar(
     }
     let _ = writeln!(sidecar, "sha256={}", sha256);
     let _ = writeln!(sidecar);
-    for cluster in clusters {
+    for cluster in &circuit.clusters {
         let _ = writeln!(
             sidecar,
             "CLUSTER {} @ {},{} :: {}",
@@ -44,20 +42,13 @@ pub(super) fn build_sidecar(
             cluster.members.join(",")
         );
     }
-    for net in nets {
+    for net in &circuit.nets {
         let _ = writeln!(
             sidecar,
             "NET {} len={} route={}",
             net.name,
             net.route_length(),
-            net.route
-                .iter()
-                .map(|segment| format!(
-                    "{}:{}-{}:{}",
-                    segment.x0, segment.y0, segment.x1, segment.y1
-                ))
-                .collect::<Vec<_>>()
-                .join("|")
+            serialize_net_route(net)
         );
     }
     if let Some(serialized) = artifacts.text_bitstream.as_ref() {
@@ -66,8 +57,8 @@ pub(super) fn build_sidecar(
     if let Some(config_image) = artifacts.config_image.as_ref() {
         render_config_image_sidecar(&mut sidecar, config_image);
     }
-    if let Some(route_image) = artifacts.route_image.as_ref() {
-        render_route_sidecar(&mut sidecar, route_image);
+    if let Some(programming_image) = artifacts.programming_image.as_ref() {
+        render_programming_sidecar(&mut sidecar, programming_image);
     }
     sidecar
 }
@@ -122,14 +113,38 @@ fn render_config_image_sidecar(sidecar: &mut String, config_image: &ConfigImage)
     }
 }
 
-fn render_route_sidecar(sidecar: &mut String, route_image: &DeviceRouteImage) {
+fn render_programming_sidecar(sidecar: &mut String, programming: &ProgrammingImage) {
     let _ = writeln!(sidecar);
     let _ = writeln!(sidecar, "# Routed Transmission Pips");
-    for pip in &route_image.pips {
+    for note in &programming.notes {
+        let _ = writeln!(sidecar, "NOTE {}", note);
+    }
+    for pip in &programming.routes {
         let _ = writeln!(
             sidecar,
             "PIP {} {} {} @ {},{} {} -> {}",
             pip.net_name, pip.tile_name, pip.site_name, pip.x, pip.y, pip.from_net, pip.to_net
         );
+    }
+}
+
+fn serialize_net_route(net: &crate::ir::Net) -> String {
+    if !net.route.is_empty() {
+        net.route
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{}:{}-{}:{}",
+                    segment.x0, segment.y0, segment.x1, segment.y1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    } else {
+        net.route_pips
+            .iter()
+            .map(|pip| format!("{}:{}@{},{}", pip.from_net, pip.to_net, pip.x, pip.y))
+            .collect::<Vec<_>>()
+            .join("|")
     }
 }

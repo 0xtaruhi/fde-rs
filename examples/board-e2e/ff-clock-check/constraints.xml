@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <design name="ff_clock_check">
-  <port name="clk" position="P150"/>
+  <port name="clk" position="P77"/>
   <port name="q" position="P7"/>
 </design>

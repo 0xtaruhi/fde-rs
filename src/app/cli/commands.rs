@@ -3,8 +3,9 @@ use std::{fs, sync::Arc};
 
 use crate::{
     bitgen,
+    cil::load_cil,
     import::{self, ImportOptions},
-    io::{load_design, save_design},
+    io::{DesignWriteContext, load_design, save_design, save_design_with_context},
     map::{self, MapOptions},
     normalize::{self, NormalizeOptions},
     orchestrator,
@@ -81,20 +82,28 @@ pub(crate) fn run_pack(args: PackArgs, emit_report: bool) -> Result<()> {
 
 pub(crate) fn run_place(args: PlaceArgs, emit_report: bool) -> Result<()> {
     let design = load_design(&args.input)?;
-    let arch = load_arch(&args.arch)?;
+    let arch = Arc::new(load_arch(&args.arch)?);
     let delay = load_delay_model(args.delay.as_deref())?;
     let constraints = load_constraints_or_empty(args.constraints.as_ref())?;
     let result = place::run(
         design,
         &PlaceOptions {
-            arch: Arc::new(arch),
+            arch: Arc::clone(&arch),
             delay: delay.map(Arc::new),
-            constraints,
+            constraints: Arc::clone(&constraints),
             mode: args.mode.into(),
             seed: args.seed,
         },
     )?;
-    save_design(&result.value, &args.output)?;
+    save_design_with_context(
+        &result.value,
+        &args.output,
+        &DesignWriteContext {
+            arch: Some(arch.as_ref()),
+            constraints: constraints.as_ref(),
+            ..DesignWriteContext::default()
+        },
+    )?;
     if emit_report {
         print_stage_report(&result.report);
     }
@@ -103,17 +112,43 @@ pub(crate) fn run_place(args: PlaceArgs, emit_report: bool) -> Result<()> {
 
 pub(crate) fn run_route(args: RouteArgs, emit_report: bool) -> Result<()> {
     let design = load_design(&args.input)?;
-    let arch = load_arch(&args.arch)?;
+    let arch = Arc::new(load_arch(&args.arch)?);
     let constraints = load_constraints_or_empty(args.constraints.as_ref())?;
+    let cil = match args.cil.as_ref() {
+        Some(path) => Some(load_cil(path)?),
+        None => None,
+    };
+    let device_design = cil
+        .as_ref()
+        .map(|cil| {
+            route::lower_design(
+                design.clone(),
+                arch.as_ref(),
+                Some(cil),
+                constraints.as_ref(),
+            )
+        })
+        .transpose()?;
     let result = route::run(
         design,
         &RouteOptions {
-            arch: Arc::new(arch),
-            constraints,
-            mode: args.mode.into(),
+            arch: Arc::clone(&arch),
+            arch_path: args.arch.clone(),
+            constraints: Arc::clone(&constraints),
+            cil: cil.clone(),
+            device_design,
         },
     )?;
-    save_design(&result.value, &args.output)?;
+    save_design_with_context(
+        &result.value,
+        &args.output,
+        &DesignWriteContext {
+            arch: Some(arch.as_ref()),
+            cil: cil.as_ref(),
+            constraints: constraints.as_ref(),
+            cil_path: args.cil.as_deref(),
+        },
+    )?;
     if emit_report {
         print_stage_report(&result.report);
     }
@@ -130,7 +165,7 @@ pub(crate) fn run_sta(args: StaArgs, emit_report: bool) -> Result<()> {
     let mut result = sta::run(
         design,
         &StaOptions {
-            arch: arch.map(Arc::new),
+            arch: arch.clone().map(Arc::new),
             delay: delay.map(Arc::new),
         },
     )?;
@@ -139,7 +174,14 @@ pub(crate) fn run_sta(args: StaArgs, emit_report: bool) -> Result<()> {
             .report
             .push(format!("Referenced timing library {}", path.display()));
     }
-    save_design(&result.value.design, &args.output)?;
+    save_design_with_context(
+        &result.value.design,
+        &args.output,
+        &DesignWriteContext {
+            arch: arch.as_ref(),
+            ..DesignWriteContext::default()
+        },
+    )?;
     fs::write(&args.report, &result.value.report_text)
         .with_context(|| format!("failed to write {}", args.report.display()))?;
     if emit_report {
@@ -150,7 +192,7 @@ pub(crate) fn run_sta(args: StaArgs, emit_report: bool) -> Result<()> {
 
 pub(crate) fn run_bitgen(args: BitgenArgs, emit_report: bool) -> Result<()> {
     let design = load_design(&args.input)?;
-    let prepared = prepare_bitgen(design.clone(), args.arch.as_ref(), args.cil.as_ref())?;
+    let prepared = prepare_bitgen(&design, args.arch.as_ref(), args.cil.as_ref())?;
     let result = bitgen::run(design, &prepared.options)?;
     let sidecar = args
         .sidecar

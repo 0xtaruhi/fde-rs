@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <design name="ff_slot1_check">
-  <port name="clk" position="P150"/>
+  <port name="clk" position="P77"/>
   <port name="din" position="P152"/>
   <port name="q_a" position="P7"/>
   <port name="q_c" position="P6"/>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<design name="complex_p77_sticky_probe">
+  <port name="clk" position="P77"/>
+  <port name="rst" position="P152"/>
+  <port name="sel" position="P150"/>
+  <port name="y0" position="P7"/>
+  <port name="y1" position="P6"/>
+  <port name="y2" position="P5"/>
+  <port name="y3" position="P4"/>
+</design>

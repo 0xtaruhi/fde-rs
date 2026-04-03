@@ -1,5 +1,5 @@
 use crate::{
-    domain::{EndpointKind, NetOrigin, PrimitiveKind, SiteKind},
+    domain::{CellKind, EndpointKind, NetOrigin, PrimitiveKind, SiteKind},
     ir::{PortDirection, Property},
     resource::TileKind,
 };
@@ -79,6 +79,8 @@ impl DevicePort {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeviceCell {
     pub cell_name: String,
+    #[serde(default)]
+    pub kind: CellKind,
     pub type_name: String,
     #[serde(default)]
     pub properties: Vec<Property>,
@@ -95,9 +97,10 @@ pub struct DeviceCell {
 }
 
 impl DeviceCell {
-    pub fn new(cell_name: impl Into<String>, type_name: impl Into<String>) -> Self {
+    pub fn new(cell_name: impl Into<String>, kind: CellKind, type_name: impl Into<String>) -> Self {
         Self {
             cell_name: cell_name.into(),
+            kind,
             type_name: type_name.into(),
             ..Self::default()
         }
@@ -139,7 +142,7 @@ impl DeviceCell {
     }
 
     pub fn primitive_kind(&self) -> PrimitiveKind {
-        PrimitiveKind::classify(&self.type_name, &self.type_name)
+        PrimitiveKind::from_cell_kind(self.kind, &self.type_name)
     }
 
     pub fn site_kind_class(&self) -> SiteKind {

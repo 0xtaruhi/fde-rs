@@ -150,20 +150,28 @@ impl PrimitiveKind {
         self.is_sequential()
             && (trimmed_eq_ignore_ascii_case(pin, "C")
                 || trimmed_eq_ignore_ascii_case(pin, "CK")
-                || trimmed_eq_ignore_ascii_case(pin, "CLK"))
+                || trimmed_eq_ignore_ascii_case(pin, "CLK")
+                || trimmed_eq_ignore_ascii_case(pin, "CKN")
+                || trimmed_eq_ignore_ascii_case(pin, "CLKN"))
     }
 
     pub fn is_clock_enable_pin(self, pin: &str) -> bool {
-        self.is_sequential() && trimmed_eq_ignore_ascii_case(pin, "CE")
+        self.is_sequential()
+            && (trimmed_eq_ignore_ascii_case(pin, "CE") || trimmed_eq_ignore_ascii_case(pin, "E"))
     }
 
     pub fn is_set_reset_pin(self, pin: &str) -> bool {
         self.is_sequential()
             && (trimmed_eq_ignore_ascii_case(pin, "R")
                 || trimmed_eq_ignore_ascii_case(pin, "S")
+                || trimmed_eq_ignore_ascii_case(pin, "RN")
+                || trimmed_eq_ignore_ascii_case(pin, "SN")
                 || trimmed_eq_ignore_ascii_case(pin, "SR")
                 || trimmed_eq_ignore_ascii_case(pin, "RST")
-                || trimmed_eq_ignore_ascii_case(pin, "RESET"))
+                || trimmed_eq_ignore_ascii_case(pin, "RESET")
+                || trimmed_eq_ignore_ascii_case(pin, "SET")
+                || trimmed_eq_ignore_ascii_case(pin, "CLR")
+                || trimmed_eq_ignore_ascii_case(pin, "CLEAR"))
     }
 
     pub fn is_register_data_pin(self, pin: &str) -> bool {
@@ -196,6 +204,9 @@ mod tests {
         assert!(ff.is_register_output_pin("Q"));
         assert!(ff.is_clock_pin("C"));
         assert!(ff.is_clock_pin("clk"));
+        assert!(ff.is_clock_pin("CKN"));
+        assert!(ff.is_set_reset_pin("RN"));
+        assert!(ff.is_set_reset_pin("SN"));
         assert!(ff.is_register_data_pin("D"));
 
         let gnd = PrimitiveKind::classify("constant", "GND");

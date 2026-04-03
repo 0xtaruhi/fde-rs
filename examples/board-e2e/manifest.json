@@ -4,61 +4,269 @@
       "name": "invert",
       "edf": "invert/invert.edf",
       "constraints": "invert/constraints.xml",
-      "expected_outputs": ["0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd"]
+      "expected_outputs": [
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd"
+      ]
     },
     {
       "name": "loopback",
       "edf": "loopback/loopback.edf",
       "constraints": "loopback/constraints.xml",
-      "expected_outputs": ["0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf"]
+      "expected_outputs": [
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf"
+      ]
     },
     {
       "name": "logic-mesh",
       "edf": "logic-mesh/logic_mesh.edf",
       "constraints": "logic-mesh/constraints.xml",
-      "expected_outputs": ["0x8", "0xc", "0xd", "0xc", "0x8", "0xb", "0x8", "0xc", "0xd", "0xc", "0xc", "0xd", "0xc", "0x8"]
+      "expected_outputs": [
+        "0x8",
+        "0xc",
+        "0xd",
+        "0xc",
+        "0x8",
+        "0xb",
+        "0x8",
+        "0xc",
+        "0xd",
+        "0xc",
+        "0xc",
+        "0xd",
+        "0xc",
+        "0x8"
+      ]
     },
     {
       "name": "ff-data-check",
       "edf": "ff-data-check/ff_data_check.edf",
       "constraints": "ff-data-check/constraints.xml",
-      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd"]
+      "expected_outputs": [
+        "0xf",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xf"
+      ]
     },
     {
       "name": "ff-shift2-check",
       "edf": "ff-shift2-check/ff_shift2_check.edf",
       "constraints": "ff-shift2-check/constraints.xml",
-      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xe", "0xe", "0xe", "0xd", "0xd", "0xd", "0xf", "0xf", "0xf"]
+      "expected_outputs": [
+        "0xd",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xd"
+      ]
     },
     {
       "name": "ff-clock-check",
       "edf": "ff-clock-check/ff_clock_check.edf",
       "constraints": "ff-clock-check/constraints.xml",
-      "expected_outputs": ["0xe", "0xe", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf"]
+      "expected_outputs": [
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf"
+      ]
     },
     {
       "name": "ff-fanout4-check",
       "edf": "ff-fanout4-check/ff_fanout4_check.edf",
       "constraints": "ff-fanout4-check/constraints.xml",
-      "expected_outputs": ["0x0", "0x0", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf", "0xf"]
+      "expected_outputs": [
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf",
+        "0xf"
+      ]
     },
     {
       "name": "ff-shift2-split-check",
       "edf": "ff-shift2-split-check/ff_shift2_split_check.edf",
       "constraints": "ff-shift2-split-check/constraints.xml",
-      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xe", "0xe", "0xe", "0xd", "0xd", "0xd", "0xf", "0xf", "0xf"]
+      "expected_outputs": [
+        "0xd",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xe",
+        "0xd"
+      ]
     },
     {
       "name": "ff-slot1-check",
       "edf": "ff-slot1-check/ff_slot1_check.edf",
       "constraints": "ff-slot1-check/constraints.xml",
-      "expected_outputs": ["0xc", "0xc", "0xd", "0xd", "0xd", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd", "0xd", "0xd", "0xd"]
+      "expected_outputs": [
+        "0xd",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xd"
+      ]
     },
     {
       "name": "shift2-noq0-out",
       "edf": "shift2-noq0-out/shift2_noq0_out.edf",
       "constraints": "shift2-noq0-out/constraints.xml",
-      "expected_outputs": ["0xc", "0xc", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd", "0xc", "0xc", "0xc", "0xd", "0xd", "0xd"]
+      "expected_outputs": [
+        "0xc",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xc",
+        "0xc",
+        "0xc",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xd",
+        "0xc"
+      ]
+    },
+    {
+      "name": "add16-folded-check",
+      "edf": "add16-folded-check/add16_folded_check.edf",
+      "constraints": "add16-folded-check/constraints.xml",
+      "probe_segments": [
+        "0x0008*64",
+        "0x000c*64",
+        "0x0008*64",
+        "0x0000*64",
+        "0x0004*64",
+        "0x0000*64",
+        "0x0004*64",
+        "0x0000*64",
+        "0x0004*64",
+        "0x0000*64",
+        "0x0004*64",
+        "0x0000*64",
+        "0x0004*64",
+        "0x0000*64",
+        "0x0004*64"
+      ],
+      "expected_outputs": [
+        "0x0",
+        "0x0",
+        "0x0",
+        "0x2",
+        "0x4",
+        "0x7",
+        "0x0",
+        "0x2",
+        "0x4",
+        "0x0",
+        "0x5",
+        "0xc",
+        "0x4",
+        "0x0",
+        "0x2",
+        "0x3"
+      ]
+    },
+    {
+      "name": "sticky16-check",
+      "edf": "sticky16-check/complex_p77_sticky_probe.edf",
+      "constraints": "sticky16-check/constraints.xml",
+      "probe_segments": [
+        "0x0008*192",
+        "0x000c*192",
+        "0x0004*192",
+        "0x0000*192"
+      ],
+      "expected_outputs": [
+        "0x0",
+        "0x0",
+        "0xf",
+        "0x0",
+        "0x0"
+      ]
     }
   ]
 }

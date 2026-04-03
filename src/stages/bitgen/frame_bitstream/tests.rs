@@ -7,8 +7,8 @@ use tempfile::NamedTempFile;
 
 use super::{decode::decode_text_bitstream, layout::build_tile_columns, serialize_text_bitstream};
 use crate::{
+    bitgen::{ConfigImage, TileBitAssignment, TileConfigImage},
     cil::parse_cil_str,
-    config_image::{ConfigImage, TileBitAssignment, TileConfigImage},
     resource::{Arch, TileInstance},
 };
 

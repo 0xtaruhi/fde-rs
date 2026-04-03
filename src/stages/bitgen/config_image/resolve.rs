@@ -1,9 +1,7 @@
+use super::super::literal::{address_count, evaluate_equation, parse_bit_literal};
 use crate::cil::{SiteDef, SiteFunction};
 
-use super::{
-    literal::{address_count, evaluate_equation, parse_bit_literal},
-    types::{ConfigResolution, ResolvedSiteBit},
-};
+use super::types::{ConfigResolution, ResolvedSiteBit};
 
 pub(crate) fn resolve_site_config(
     site_def: &SiteDef,

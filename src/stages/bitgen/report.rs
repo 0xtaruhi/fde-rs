@@ -21,9 +21,9 @@ pub(super) fn build_report(byte_count: usize, artifacts: &PreparedArtifacts) -> 
             .map(|tile| tile.set_bit_count())
             .sum::<usize>();
         let routed_pips = artifacts
-            .route_image
+            .programming_image
             .as_ref()
-            .map(|image| image.pips.len())
+            .map(|image| image.routes.len())
             .unwrap_or(0);
         report.push(format!(
             "Materialized {} config bits across {} tile images with {} routed pips.",

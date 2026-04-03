@@ -1,60 +1,70 @@
-use crate::{ir::RouteSegment, route::RouteMode};
+use crate::route::{
+    types::RouteNode,
+    wire::{WireBounds, route_node_base_cost, route_node_class, tile_distance, wire_bounds},
+};
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RouteMetrics {
-    pub(crate) iterations: usize,
-    pub(crate) occupied_edges: usize,
-    pub(crate) overflow: usize,
-    pub(crate) max_edge_usage: usize,
-    pub(crate) history_edges: usize,
-    pub(crate) total_length: usize,
-    pub(crate) overflow_nets: usize,
-    pub(crate) timing_cost: f64,
-}
+use super::{
+    policy::node_has_successors,
+    router::{RouteSinkContext, SinkRouteSpec},
+};
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SearchProfile {
-    pub(crate) present_factor: f64,
-    pub(crate) history_factor: f64,
-    pub(crate) heuristic_factor: f64,
-    pub(crate) bend_penalty: f64,
-}
-
-pub(crate) fn search_profile(mode: RouteMode, criticality: f64, iteration: usize) -> SearchProfile {
-    match mode {
-        RouteMode::BreadthFirst => SearchProfile {
-            present_factor: 0.0,
-            history_factor: 0.0,
-            heuristic_factor: 0.0,
-            bend_penalty: 0.0,
-        },
-        RouteMode::Directed => SearchProfile {
-            present_factor: 3.0 + iteration as f64 * 0.2,
-            history_factor: 1.1 + iteration as f64 * 0.1,
-            heuristic_factor: 0.95,
-            bend_penalty: 0.14,
-        },
-        RouteMode::TimingDriven => {
-            let criticality = criticality.clamp(0.0, 1.0);
-            SearchProfile {
-                present_factor: 0.35 + 2.5 * (1.0 - criticality) + iteration as f64 * 0.14,
-                history_factor: 0.45 + 1.1 * (1.0 - criticality) + iteration as f64 * 0.08,
-                heuristic_factor: 1.1 + 0.55 * criticality,
-                bend_penalty: 0.04 + 0.08 * criticality,
-            }
-        }
+pub(super) fn route_transition_cost(
+    context: &RouteSinkContext<'_>,
+    _spec: &SinkRouteSpec<'_>,
+    _current: &RouteNode,
+    neighbor: &RouteNode,
+    local_arc: Option<usize>,
+) -> usize {
+    if local_arc.is_none() {
+        0
+    } else {
+        route_node_cost(context, neighbor)
     }
 }
 
-pub(crate) fn estimate_route_delay(route: &[RouteSegment], wire_r: f64, wire_c: f64) -> f64 {
-    let length = route.iter().map(|segment| segment.length()).sum::<usize>() as f64;
-    let bends = route
-        .windows(2)
-        .filter(|window| {
-            let a = &window[0];
-            let b = &window[1];
-            (a.x0 == a.x1) != (b.x0 == b.x1)
+pub(super) fn route_heuristic(
+    context: &RouteSinkContext<'_>,
+    node: &RouteNode,
+    sink_x: usize,
+    sink_y: usize,
+) -> usize {
+    let Some(bounds) = context.stitched_components.bounds(node) else {
+        if let Some(bounds) = wire_bounds(
+            context.arch,
+            node.x,
+            node.y,
+            context.wires.resolve(node.wire),
+        ) {
+            return axis_distance(sink_x, bounds.min_x, bounds.max_x)
+                + axis_distance(sink_y, bounds.min_y, bounds.max_y);
+        }
+        return tile_distance(node.x, node.y, sink_x, sink_y);
+    };
+
+    axis_distance(sink_x, bounds.min_x, bounds.max_x)
+        + axis_distance(sink_y, bounds.min_y, bounds.max_y)
+}
+
+fn route_node_cost(context: &RouteSinkContext<'_>, node: &RouteNode) -> usize {
+    let raw = context.wires.resolve(node.wire);
+    let bounds = context
+        .stitched_components
+        .bounds(node)
+        .map(|bounds| WireBounds {
+            min_x: bounds.min_x,
+            max_x: bounds.max_x,
+            min_y: bounds.min_y,
+            max_y: bounds.max_y,
         })
-        .count() as f64;
-    length * (wire_r + wire_c + 0.02) + bends * 0.05
+        .or_else(|| wire_bounds(context.arch, node.x, node.y, raw));
+    let class = route_node_class(raw, bounds, node_has_successors(context, node));
+    route_node_base_cost(class)
+}
+
+fn axis_distance(value: usize, min: usize, max: usize) -> usize {
+    if value < min {
+        min - value
+    } else {
+        value.saturating_sub(max)
+    }
 }

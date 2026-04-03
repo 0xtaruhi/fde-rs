@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <design name="ff_fanout4_check">
-  <port name="clk" position="P150"/>
+  <port name="clk" position="P77"/>
   <port name="q0" position="P7"/>
   <port name="q1" position="P6"/>
   <port name="q2" position="P5"/>

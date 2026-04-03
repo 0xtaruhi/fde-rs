@@ -25,7 +25,7 @@ enum Token {
 #[derive(Debug, Clone)]
 struct ParsedName {
     display: String,
-    reference: String,
+    stable_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +51,7 @@ struct DesignBuilder {
     top_name: String,
     design: Design,
     cell_types: BTreeMap<String, String>,
+    library_cell_names: BTreeMap<String, String>,
     instance_names: BTreeMap<String, String>,
     pending_nets: Vec<PendingNet>,
 }
@@ -67,6 +68,7 @@ impl DesignBuilder {
             top_name,
             design,
             cell_types: BTreeMap::new(),
+            library_cell_names: BTreeMap::new(),
             instance_names: BTreeMap::new(),
             pending_nets: Vec::new(),
         }
@@ -77,11 +79,19 @@ impl DesignBuilder {
     }
 
     fn push_instance(&mut self, instance_ref: String, mut cell: Cell) {
+        if let Some(resolved_type_name) = self.library_cell_names.get(&cell.type_name) {
+            cell.type_name = resolved_type_name.clone();
+        }
         cell.kind = classify_cell_kind(&cell.type_name);
         self.instance_names.insert(instance_ref, cell.name.clone());
         self.cell_types
             .insert(cell.name.clone(), cell.type_name.clone());
         self.design.cells.push(cell);
+    }
+
+    fn register_library_cell(&mut self, name: ParsedName) {
+        self.library_cell_names
+            .insert(name.stable_name, name.display);
     }
 
     fn push_net(&mut self, net: PendingNet) {
@@ -184,6 +194,7 @@ impl<'a> Parser<'a> {
                 let head = self.expect_atom()?;
                 match head.as_str() {
                     "library" => self.parse_library(&mut builder)?,
+                    "external" => self.parse_library(&mut builder)?,
                     _ => self.skip_current_list()?,
                 }
             } else {
@@ -220,6 +231,7 @@ impl<'a> Parser<'a> {
                 let head = self.expect_atom()?;
                 match head.as_str() {
                     "cell" if is_design_library => self.parse_cell(builder)?,
+                    "cell" => self.parse_library_cell(builder)?,
                     _ => self.skip_current_list()?,
                 }
             } else {
@@ -247,6 +259,16 @@ impl<'a> Parser<'a> {
             } else {
                 self.skip_value()?;
             }
+        }
+        self.expect_rparen()
+    }
+
+    fn parse_library_cell(&mut self, builder: &mut DesignBuilder) -> Result<()> {
+        if let Some(name) = self.parse_name_expr()? {
+            builder.register_library_cell(name);
+        }
+        while !self.peek_is_rparen()? {
+            self.skip_value()?;
         }
         self.expect_rparen()
     }
@@ -346,7 +368,7 @@ impl<'a> Parser<'a> {
     fn parse_instance(&mut self, builder: &mut DesignBuilder) -> Result<()> {
         let name = self
             .parse_name_expr()?
-            .ok_or_else(|| self.error("malformed instance reference"))?;
+            .ok_or_else(|| self.error("malformed instance target"))?;
         let mut type_name = "GENERIC".to_string();
         let mut properties = Vec::new();
 
@@ -381,7 +403,7 @@ impl<'a> Parser<'a> {
         for (key, value) in properties {
             cell.set_property(key, value);
         }
-        builder.push_instance(name.reference, cell);
+        builder.push_instance(name.stable_name, cell);
         Ok(())
     }
 
@@ -522,41 +544,44 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_instance_ref(&mut self) -> Result<String> {
-        let reference = self
+        let stable_name = self
             .parse_name_expr()?
-            .map(|name| name.reference)
+            .map(|name| name.stable_name)
             .unwrap_or_default();
         while !self.peek_is_rparen()? {
             self.skip_value()?;
         }
         self.expect_rparen()?;
-        Ok(reference)
+        Ok(stable_name)
     }
 
     fn parse_name_expr(&mut self) -> Result<Option<ParsedName>> {
         match self.peek_token()? {
             Some(Token::Atom(_)) => Ok(self.parse_atom_value()?.map(|value| ParsedName {
                 display: value.clone(),
-                reference: value,
+                stable_name: value,
             })),
             Some(Token::LParen) => {
                 self.expect_lparen()?;
                 let head = self.expect_atom()?;
                 let parsed = match head.as_str() {
                     "rename" => {
-                        let reference = self
+                        let stable_name = self
                             .parse_name_expr()?
                             .map(|name| name.display)
                             .unwrap_or_default();
                         let display = self
                             .parse_name_expr()?
                             .map(|name| name.display)
-                            .unwrap_or_else(|| reference.clone());
+                            .unwrap_or_else(|| stable_name.clone());
                         while !self.peek_is_rparen()? {
                             self.skip_value()?;
                         }
                         self.expect_rparen()?;
-                        Some(ParsedName { display, reference })
+                        Some(ParsedName {
+                            display,
+                            stable_name,
+                        })
                     }
                     "array" => {
                         let value = self
@@ -569,7 +594,7 @@ impl<'a> Parser<'a> {
                         self.expect_rparen()?;
                         Some(ParsedName {
                             display: value.clone(),
-                            reference: value,
+                            stable_name: value,
                         })
                     }
                     "member" => {
@@ -588,7 +613,7 @@ impl<'a> Parser<'a> {
                         let indexed = indexed_name(&value, index);
                         Some(ParsedName {
                             display: indexed.clone(),
-                            reference: indexed,
+                            stable_name: indexed,
                         })
                     }
                     _ => {
@@ -945,6 +970,50 @@ mod tests {
         let sink = net0.sinks.first().expect("sink");
         assert_eq!(sink.name, "u_lut");
         assert_eq!(sink.pin, "ADR0");
+    }
+
+    #[test]
+    fn resolves_renamed_external_library_cells_before_classifying_instances() {
+        let design = parse_source(
+            r#"
+            (edif top
+              (external LIB
+                (cell (rename id00001 "$_DFF_P_")
+                  (cellType GENERIC)
+                  (view VIEW_NETLIST
+                    (viewType NETLIST)
+                    (interface
+                      (port C (direction INPUT))
+                      (port D (direction INPUT))
+                      (port Q (direction OUTPUT))))))
+              (library DESIGN
+                (cell top
+                  (view NETLIST
+                    (interface
+                      (port clk (direction INPUT))
+                      (port q (direction OUTPUT)))
+                    (contents
+                      (instance (rename id100 ff0)
+                        (viewRef NETLIST (cellRef id00001 (libraryRef LIB))))
+                      (net clk_net
+                        (joined
+                          (portRef clk)
+                          (portRef C (instanceRef id100))))
+                      (net q_net
+                        (joined
+                          (portRef Q (instanceRef id100))
+                          (portRef q))))))))
+            "#,
+        )
+        .expect("parse external rename");
+
+        let cell = design
+            .cells
+            .iter()
+            .find(|cell| cell.name == "ff0")
+            .expect("ff0");
+        assert_eq!(cell.type_name, "$_DFF_P_");
+        assert_eq!(cell.kind.as_str(), "ff");
     }
 
     #[test]

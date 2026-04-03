@@ -8,11 +8,9 @@ use crate::{
     bitgen::BitgenOptions,
     cil::load_cil,
     constraints::{SharedConstraints, load_constraints},
-    device::lower_design,
     ir::Design,
-    place::PlaceMode,
     resource::load_arch,
-    route::RouteMode,
+    route::{lower_design, materialize_design_route_image},
 };
 
 pub(crate) struct PreparedBitgen {
@@ -31,7 +29,7 @@ pub(crate) fn default_sidecar_path(output: &Path) -> PathBuf {
 }
 
 pub(crate) fn prepare_bitgen(
-    design: Design,
+    design: &Design,
     arch_path: Option<&PathBuf>,
     cil_path: Option<&PathBuf>,
 ) -> Result<PreparedBitgen> {
@@ -39,13 +37,19 @@ pub(crate) fn prepare_bitgen(
         Some(path) => Some(load_arch(path)?),
         None => None,
     };
-    let arch_name = arch.as_ref().map(|arch| arch.name.clone());
     let cil = match cil_path {
         Some(path) => Some(load_cil(path)?),
         None => None,
     };
+    let arch_name = arch.as_ref().map(|arch| arch.name.clone());
     let device_design = match (arch.as_ref(), cil.as_ref()) {
-        (Some(arch), Some(cil)) => Some(lower_design(design, arch, Some(cil), &[])?),
+        (Some(arch), Some(cil)) => Some(lower_design(design.clone(), arch, Some(cil), &[])?),
+        _ => None,
+    };
+    let route_image = match (arch.as_ref(), arch_path, cil.as_ref()) {
+        (Some(arch), Some(arch_path), Some(cil)) => {
+            materialize_design_route_image(design, arch, arch_path, cil)?
+        }
         _ => None,
     };
     Ok(PreparedBitgen {
@@ -55,24 +59,8 @@ pub(crate) fn prepare_bitgen(
             cil_path: cil_path.cloned(),
             cil,
             device_design,
+            route_image,
+            ..BitgenOptions::default()
         },
     })
-}
-
-pub(crate) fn compat_place_mode(bounding: bool, timing: bool) -> PlaceMode {
-    if bounding && !timing {
-        PlaceMode::BoundingBox
-    } else {
-        PlaceMode::TimingDriven
-    }
-}
-
-pub(crate) fn compat_route_mode(breadth: bool, directed: bool) -> RouteMode {
-    if breadth {
-        RouteMode::BreadthFirst
-    } else if directed {
-        RouteMode::Directed
-    } else {
-        RouteMode::TimingDriven
-    }
 }

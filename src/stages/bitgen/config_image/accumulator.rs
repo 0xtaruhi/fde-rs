@@ -1,4 +1,4 @@
-use super::types::{AppliedSiteConfig, SiteInstance, TileBitAssignment, TileConfigImage};
+use super::types::{AppliedSiteConfig, TileBitAssignment, TileConfigImage};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct TileAccumulator {
@@ -13,19 +13,6 @@ pub(crate) struct TileAccumulator {
 }
 
 impl TileAccumulator {
-    pub(crate) fn new(site: &SiteInstance, rows: usize, cols: usize) -> Self {
-        Self {
-            tile_name: site.tile_name.clone(),
-            tile_type: site.tile_type.clone(),
-            x: site.x,
-            y: site.y,
-            rows,
-            cols,
-            configs: BTreeSet::new(),
-            assignments: BTreeMap::new(),
-        }
-    }
-
     pub(crate) fn new_tile(
         tile_name: &str,
         tile_type: &str,
@@ -54,6 +41,29 @@ impl TileAccumulator {
         self.assignments
             .entry((assignment.row, assignment.col))
             .and_modify(|existing| {
+                assert_eq!(
+                    existing.value,
+                    assignment.value,
+                    "conflicting bit assignment on tile {} ({}, {}) at B{}W{}: \
+existing {}:{}:{} {}:{}={} vs new {}:{}:{} {}:{}={}",
+                    self.tile_name,
+                    self.x,
+                    self.y,
+                    assignment.row,
+                    assignment.col,
+                    existing.site_name,
+                    existing.cfg_name,
+                    existing.function_name,
+                    existing.basic_cell,
+                    existing.sram_name,
+                    existing.value,
+                    assignment.site_name,
+                    assignment.cfg_name,
+                    assignment.function_name,
+                    assignment.basic_cell,
+                    assignment.sram_name,
+                    assignment.value
+                );
                 *existing = assignment.clone();
             })
             .or_insert(assignment);

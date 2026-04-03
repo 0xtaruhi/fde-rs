@@ -1,7 +1,21 @@
+use crate::domain::ascii::trimmed_contains_ignore_ascii_case;
 use crate::domain::{CellKind, ConstantKind, PrimitiveKind};
 use serde::{Deserialize, Serialize};
 
 use super::{CellPin, Property};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum SliceBindingKind {
+    #[default]
+    Lut,
+    Sequential,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SliceBinding {
+    pub slot: usize,
+    pub kind: SliceBindingKind,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cell {
@@ -16,6 +30,8 @@ pub struct Cell {
     pub properties: Vec<Property>,
     #[serde(default)]
     pub cluster: Option<String>,
+    #[serde(default)]
+    pub slice_binding: Option<SliceBinding>,
 }
 
 impl Cell {
@@ -51,6 +67,11 @@ impl Cell {
         self
     }
 
+    pub fn with_slice_binding(mut self, slot: usize, kind: SliceBindingKind) -> Self {
+        self.slice_binding = Some(SliceBinding { slot, kind });
+        self
+    }
+
     pub fn primitive_kind(&self) -> PrimitiveKind {
         PrimitiveKind::from_cell_kind(self.kind, &self.type_name)
     }
@@ -81,6 +102,10 @@ impl Cell {
         }
     }
 
+    pub fn set_slice_binding(&mut self, slot: usize, kind: SliceBindingKind) {
+        self.slice_binding = Some(SliceBinding { slot, kind });
+    }
+
     pub fn is_sequential(&self) -> bool {
         self.primitive_kind().is_sequential()
     }
@@ -95,5 +120,53 @@ impl Cell {
 
     pub fn is_buffer(&self) -> bool {
         self.primitive_kind().is_buffer()
+    }
+
+    pub fn register_clock_net(&self) -> Option<&str> {
+        self.input_net_matching(|primitive, port| primitive.is_clock_pin(port))
+    }
+
+    pub fn register_clock_enable_net(&self) -> Option<&str> {
+        self.input_net_matching(|primitive, port| primitive.is_clock_enable_pin(port))
+    }
+
+    pub fn register_set_reset_net(&self) -> Option<&str> {
+        self.input_net_matching(|primitive, port| primitive.is_set_reset_pin(port))
+    }
+
+    pub fn register_clock_is_inverted(&self) -> bool {
+        self.is_sequential()
+            && (self.inputs.iter().any(|pin| {
+                pin.port.eq_ignore_ascii_case("CKN") || pin.port.eq_ignore_ascii_case("CLKN")
+            }) || trimmed_contains_ignore_ascii_case(&self.type_name, "dffn"))
+    }
+
+    fn input_net_matching(
+        &self,
+        mut predicate: impl FnMut(PrimitiveKind, &str) -> bool,
+    ) -> Option<&str> {
+        let primitive = self.primitive_kind();
+        self.inputs
+            .iter()
+            .find(|pin| predicate(primitive, &pin.port))
+            .map(|pin| pin.net.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cell;
+
+    #[test]
+    fn register_control_helpers_cover_common_ff_pins() {
+        let ff = Cell::ff("ff0", "EDFFNRHQ")
+            .with_input("CKN", "clk")
+            .with_input("E", "ce")
+            .with_input("RN", "rst");
+
+        assert_eq!(ff.register_clock_net(), Some("clk"));
+        assert!(ff.register_clock_is_inverted());
+        assert_eq!(ff.register_clock_enable_net(), Some("ce"));
+        assert_eq!(ff.register_set_reset_net(), Some("rst"));
     }
 }

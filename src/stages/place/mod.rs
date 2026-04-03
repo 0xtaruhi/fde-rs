@@ -25,6 +25,8 @@ pub enum PlaceMode {
     TimingDriven,
 }
 
+pub const DEFAULT_PLACE_SEED: u64 = 1;
+
 #[derive(Debug, Clone)]
 pub struct PlaceOptions {
     pub arch: SharedArch,
@@ -35,6 +37,10 @@ pub struct PlaceOptions {
 }
 
 pub fn run(mut design: Design, options: &PlaceOptions) -> Result<StageOutput<Design>> {
+    if matches!(options.mode, PlaceMode::TimingDriven) && options.delay.is_none() {
+        bail!("timing-driven placement requires an explicit delay model");
+    }
+
     design.stage = "placed".to_string();
     design.metadata.arch_name = options.arch.name.clone();
     apply_constraints(&mut design, &options.arch, &options.constraints);

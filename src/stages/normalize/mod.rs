@@ -11,18 +11,9 @@ pub struct NormalizeOptions {
     pub config: Option<PathBuf>,
 }
 
-pub fn run(mut design: Design, options: &NormalizeOptions) -> Result<StageOutput<Design>> {
+pub fn run(mut design: Design, _options: &NormalizeOptions) -> Result<StageOutput<Design>> {
     let before_cells = design.cells.len();
     design.stage = "normalized".to_string();
-    if let Some(cell_library) = &options.cell_library {
-        design.note(format!(
-            "Normalizer referenced cell library {}",
-            cell_library.display()
-        ));
-    }
-    if let Some(config) = &options.config {
-        design.note(format!("Normalizer referenced config {}", config.display()));
-    }
 
     design.cells.retain(|cell| {
         !(cell.kind == CellKind::Buffer

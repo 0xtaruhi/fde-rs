@@ -1,5 +1,5 @@
 use crate::{
-    ir::{Cell, Design, DesignIndex, Endpoint, EndpointTarget, Net, RouteSegment},
+    ir::{Cell, Design, DesignIndex, Endpoint, EndpointTarget, Net, RoutePip, RouteSegment},
     resource::{Arch, DelayModel},
 };
 
@@ -13,6 +13,13 @@ pub(crate) fn net_delay_ns(
     if !net.route.is_empty() {
         return estimate_route_delay(
             &net.route,
+            arch.map(|arch| arch.wire_r).unwrap_or(0.04),
+            arch.map(|arch| arch.wire_c).unwrap_or(0.03),
+        );
+    }
+    if !net.route_pips.is_empty() {
+        return estimate_pip_delay(
+            &net.route_pips,
             arch.map(|arch| arch.wire_r).unwrap_or(0.04),
             arch.map(|arch| arch.wire_c).unwrap_or(0.03),
         );
@@ -54,6 +61,10 @@ pub(crate) fn estimate_route_delay(route: &[RouteSegment], wire_r: f64, wire_c: 
         })
         .count() as f64;
     length * (wire_r + wire_c + 0.02) + bends * 0.05
+}
+
+pub(crate) fn estimate_pip_delay(route_pips: &[RoutePip], wire_r: f64, wire_c: f64) -> f64 {
+    route_pips.len() as f64 * (wire_r + wire_c + 0.02)
 }
 
 fn endpoint_distance(

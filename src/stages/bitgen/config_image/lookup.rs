@@ -1,7 +1,6 @@
 use crate::{
     cil::{TileSite, TileSiteSram},
-    device::DeviceCell,
-    route_bits::RouteBit,
+    route::RouteBit,
 };
 
 use super::types::ResolvedSiteBit;
@@ -31,19 +30,4 @@ pub(crate) fn find_route_sram<'a>(
         .srams
         .iter()
         .find(|sram| sram.basic_cell == bit.basic_cell && sram.sram_name == bit.sram_name)
-}
-
-pub(crate) fn cell_property<'a>(cell: &'a DeviceCell, key: &str) -> Option<&'a str> {
-    cell.properties
-        .iter()
-        .find(|property| property.key.eq_ignore_ascii_case(key))
-        .map(|property| property.value.as_str())
-}
-
-pub(crate) fn bel_slot(bel: &str) -> Option<usize> {
-    bel.chars()
-        .rev()
-        .find(|ch| ch.is_ascii_digit())
-        .and_then(|ch| ch.to_digit(10))
-        .map(|digit| digit as usize)
 }

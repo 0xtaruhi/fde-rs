@@ -5,8 +5,7 @@ use crate::{
     bitgen::{self, BitgenOptions},
     cil::load_cil,
     constraints::load_constraints,
-    device::lower_design,
-    io::save_design,
+    io::{DesignWriteContext, save_design, save_design_with_context},
     map::{self, MapOptions},
     pack::{self, PackOptions},
     place::{self, PlaceOptions},
@@ -34,6 +33,10 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
     };
     let arch = Arc::new(load_arch(&resources.arch)?);
     let delay_model = load_delay_model(resources.delay.as_deref())?.map(Arc::new);
+    let loaded_cil = match resources.cil.as_ref() {
+        Some(cil_path) => Some(load_cil(cil_path)?),
+        None => None,
+    };
     let artifacts = FlowArtifacts::modern(&options.out_dir);
 
     let input_design = map::load_input(&options.input)?;
@@ -69,37 +72,59 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
             seed: options.seed,
         },
     )?;
-    save_design(&place_result.value, &artifacts.place)?;
+    save_design_with_context(
+        &place_result.value,
+        &artifacts.place,
+        &DesignWriteContext {
+            arch: Some(arch.as_ref()),
+            constraints: constraints.as_ref(),
+            ..DesignWriteContext::default()
+        },
+    )?;
 
-    let route_result = route::run(
+    let route_device_design = loaded_cil
+        .as_ref()
+        .map(|cil| {
+            route::lower_design(
+                place_result.value.clone(),
+                arch.as_ref(),
+                Some(cil),
+                constraints.as_ref(),
+            )
+        })
+        .transpose()?;
+    let route_result = route::run_with_artifacts(
         place_result.value,
         &RouteOptions {
             arch: Arc::clone(&arch),
+            arch_path: resources.arch.clone(),
             constraints: Arc::clone(&constraints),
-            mode: options.route_mode,
+            cil: loaded_cil.clone(),
+            device_design: route_device_design,
         },
     )?;
-    save_design(&route_result.value, &artifacts.route)?;
-
-    let mut loaded_cil = None;
-    let mut device_design = None;
-    if let (Some(cil_path), Some(device_path)) = (resources.cil.as_ref(), artifacts.device.as_ref())
-    {
-        let cil = load_cil(cil_path)?;
-        let device = lower_design(
-            route_result.value.clone(),
-            arch.as_ref(),
-            Some(&cil),
-            constraints.as_ref(),
-        )?;
-        fs::write(device_path, serde_json::to_string_pretty(&device)?)
+    let route::RouteStageArtifacts {
+        design: routed_design,
+        device_design,
+        route_image,
+    } = route_result.value;
+    save_design_with_context(
+        &routed_design,
+        &artifacts.route,
+        &DesignWriteContext {
+            arch: Some(arch.as_ref()),
+            cil: loaded_cil.as_ref(),
+            constraints: constraints.as_ref(),
+            cil_path: resources.cil.as_deref(),
+        },
+    )?;
+    if let Some(device_path) = artifacts.device.as_ref() {
+        fs::write(device_path, serde_json::to_string_pretty(&device_design)?)
             .with_context(|| format!("failed to write {}", device_path.display()))?;
-        loaded_cil = Some(cil);
-        device_design = Some(device);
     }
 
     let mut sta_result = sta::run(
-        route_result.value,
+        routed_design,
         &StaOptions {
             arch: Some(Arc::clone(&arch)),
             delay: delay_model.clone(),
@@ -110,7 +135,14 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
             .report
             .push(format!("Referenced timing library {}", sta_lib.display()));
     }
-    save_design(&sta_result.value.design, &artifacts.sta)?;
+    save_design_with_context(
+        &sta_result.value.design,
+        &artifacts.sta,
+        &DesignWriteContext {
+            arch: Some(arch.as_ref()),
+            ..DesignWriteContext::default()
+        },
+    )?;
     fs::write(&artifacts.sta_report, &sta_result.value.report_text)
         .with_context(|| format!("failed to write {}", artifacts.sta_report.display()))?;
 
@@ -121,7 +153,8 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
             arch_path: Some(resources.arch.clone()),
             cil_path: resources.cil.clone(),
             cil: loaded_cil,
-            device_design,
+            device_design: Some(device_design),
+            route_image: Some(route_image),
         },
     )?;
     fs::write(&artifacts.bitstream, &bitgen_result.value.bytes)
@@ -132,19 +165,21 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
     )
     .with_context(|| format!("failed to write {}", artifacts.bitstream_sidecar.display()))?;
 
+    let stages = vec![
+        map_result.report,
+        pack_result.report,
+        place_result.report,
+        route_result.report,
+        sta_result.report,
+        bitgen_result.report,
+    ];
+
     let report = build_report(
         sta_result.value.design.name.clone(),
         &options.out_dir,
         options.seed,
         &artifacts,
-        vec![
-            map_result.report,
-            pack_result.report,
-            place_result.report,
-            route_result.report,
-            sta_result.report,
-            bitgen_result.report,
-        ],
+        stages,
         sta_result.value.design.timing.clone(),
         Some(bitgen_result.value.sha256.clone()),
     );

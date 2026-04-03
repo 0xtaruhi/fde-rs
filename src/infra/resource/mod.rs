@@ -4,6 +4,7 @@ mod arch;
 mod bundle;
 mod constants;
 mod delay;
+pub(crate) mod routing;
 
 pub use arch::{Arch, Pad, PadSiteKind, TileInstance, TileKind, TileSideCapacity, load_arch};
 pub use bundle::ResourceBundle;

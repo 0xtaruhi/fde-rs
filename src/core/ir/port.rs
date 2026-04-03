@@ -60,6 +60,8 @@ pub struct Port {
     pub x: Option<usize>,
     #[serde(default)]
     pub y: Option<usize>,
+    #[serde(default)]
+    pub z: Option<usize>,
 }
 
 impl Port {
@@ -91,6 +93,13 @@ impl Port {
     pub fn at(mut self, x: usize, y: usize) -> Self {
         self.x = Some(x);
         self.y = Some(y);
+        self
+    }
+
+    pub fn at_site(mut self, x: usize, y: usize, z: usize) -> Self {
+        self.x = Some(x);
+        self.y = Some(y);
+        self.z = Some(z);
         self
     }
 }
