@@ -15,15 +15,9 @@ permissions:
   contents: read
 
 jobs:
-  rust:
-    name: Rust CI (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -65,7 +59,6 @@ jobs:
           test -f "${out_dir}/report.json"
 
       - name: Board EDF dry run
-        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
@@ -86,6 +79,79 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: blinky-run-${{ matrix.os }}
+          name: blinky-run-linux-x64
           path: ${{ runner.temp }}/blinky-run
           if-no-files-found: ignore
+
+  build-artifacts:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary_name: fde
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary_name: fde
+          - label: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary_name: fde
+          - label: macos-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            binary_name: fde
+          - label: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            binary_name: fde.exe
+          - label: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary_name: fde.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --locked --release --bin fde
+
+      - name: Assemble distributable artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="dist/fde-${{ matrix.target }}"
+          built_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          mkdir -p "${dist}"
+          cp "target/release/${{ matrix.binary_name }}" "${dist}/"
+          cp README.md LICENSE "${dist}/"
+          cat > "${dist}/BUILD_INFO.txt" <<EOF
+          project=fde-rs
+          binary=${{ matrix.binary_name }}
+          target=${{ matrix.target }}
+          runner=${{ matrix.runner }}
+          git_sha=${{ github.sha }}
+          git_ref=${{ github.ref }}
+          workflow_run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          built_at=${built_at}
+          EOF
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fde-${{ matrix.target }}
+          path: dist/fde-${{ matrix.target }}
+          if-no-files-found: error

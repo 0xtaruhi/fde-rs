@@ -18,12 +18,12 @@ pub(crate) struct FlowArtifacts {
     pub(crate) sta: PathBuf,
     pub(crate) sta_report: PathBuf,
     pub(crate) bitstream: PathBuf,
-    pub(crate) bitstream_sidecar: PathBuf,
+    pub(crate) bitstream_sidecar: Option<PathBuf>,
     pub(crate) report: PathBuf,
 }
 
 impl FlowArtifacts {
-    pub(crate) fn modern(out_dir: &Path) -> Self {
+    pub(crate) fn modern(out_dir: &Path, emit_sidecar: bool) -> Self {
         Self {
             map: out_dir.join("01-mapped.xml"),
             pack: out_dir.join("02-packed.xml"),
@@ -33,7 +33,7 @@ impl FlowArtifacts {
             sta: out_dir.join("05-timed.xml"),
             sta_report: out_dir.join("05-timing.rpt"),
             bitstream: out_dir.join("06-output.bit"),
-            bitstream_sidecar: out_dir.join("06-output.bit.txt"),
+            bitstream_sidecar: emit_sidecar.then(|| out_dir.join("06-output.sidecar.txt")),
             report: out_dir.join("report.json"),
         }
     }
@@ -56,10 +56,12 @@ impl FlowArtifacts {
             "bitstream".to_string(),
             self.bitstream.display().to_string(),
         );
-        artifacts.insert(
-            "bitstream_sidecar".to_string(),
-            self.bitstream_sidecar.display().to_string(),
-        );
+        if let Some(sidecar) = self.bitstream_sidecar.as_ref().filter(|path| path.exists()) {
+            artifacts.insert(
+                "bitstream_sidecar".to_string(),
+                sidecar.display().to_string(),
+            );
+        }
         artifacts.insert("report".to_string(), self.report.display().to_string());
         artifacts
     }

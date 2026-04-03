@@ -36,7 +36,8 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Live board single-case run: `python3 scripts/board_e2e.py run sticky16-check`
 - Board baseline diff: `python3 scripts/board_diff.py run`
 - Random board/model diff: `python3 scripts/random_board_diff.py --count 5 --seed 20260322 --keep-going`
-- Slice config diff: `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.bit.txt>`
+- Slice config diff: `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.sidecar.txt>`
+- Emit debug sidecar: `cargo run --bin fde -- impl --input <design.edf> --constraints <constraints.xml> --resource-root resources/hw_lib --out-dir build/<run> --emit-sidecar`
 - Aspen-style Verilog->EDF synthesis: `python3 scripts/synth_yosys_fde.py --top <top> --out-edf build/<top>.edf <sources...>`
 - In-repo board probe: `cargo run --manifest-path tools/wave_probe/Cargo.toml -- <bitstream>`
 - Main help: `cargo run --bin fde -- --help`
@@ -548,7 +549,7 @@ Two key cases:
 
 #### 3) Compare Rust slice config against a known C++ packed result
 
-- `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.bit.txt>`
+- `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.sidecar.txt>`
 
 This is still useful, but do not stop here if the signatures look aligned. The live
 board bug may still be in route/site-route encoding.

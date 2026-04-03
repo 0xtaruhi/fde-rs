@@ -37,7 +37,7 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
         Some(cil_path) => Some(load_cil(cil_path)?),
         None => None,
     };
-    let artifacts = FlowArtifacts::modern(&options.out_dir);
+    let artifacts = FlowArtifacts::modern(&options.out_dir, options.emit_sidecar);
 
     let input_design = map::load_input(&options.input)?;
     let map_result = map::run(
@@ -159,11 +159,10 @@ pub(crate) fn run(options: &ImplementationOptions) -> Result<ImplementationRepor
     )?;
     fs::write(&artifacts.bitstream, &bitgen_result.value.bytes)
         .with_context(|| format!("failed to write {}", artifacts.bitstream.display()))?;
-    fs::write(
-        &artifacts.bitstream_sidecar,
-        &bitgen_result.value.sidecar_text,
-    )
-    .with_context(|| format!("failed to write {}", artifacts.bitstream_sidecar.display()))?;
+    if let Some(sidecar_path) = artifacts.bitstream_sidecar.as_ref() {
+        fs::write(sidecar_path, &bitgen_result.value.sidecar_text)
+            .with_context(|| format!("failed to write {}", sidecar_path.display()))?;
+    }
 
     let stages = vec![
         map_result.report,

@@ -1,48 +1,109 @@
+<div align="center">
+
 # fde-rs
 
-A standalone Rust implementation flow for FDE.
+**A deterministic Rust implementation flow for FDE — from EDIF to bitstream.**
 
-`fde-rs` is a Rust-first toolchain that consumes **EDIF** netlists, runs the full
-implementation pipeline, and emits the same family of stage artifacts users
-expect from FDE-style flows: mapped XML, packed XML, placed XML, routed XML,
-STA reports, and deterministic bitstreams.
+<p>
+  Rust-first architecture, explicit stage boundaries, readable artifacts, and board-facing regressions.
+</p>
 
-The project is intentionally **library-first, CLI-second**:
+<p>
+  <a href="https://github.com/0xtaruhi/fde-rs/actions/workflows/ci.yml">
+    <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/0xtaruhi/fde-rs/ci.yml?branch=main&style=for-the-badge&label=CI">
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/github/license/0xtaruhi/fde-rs?style=for-the-badge">
+  </a>
+  <img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-f74c00?style=for-the-badge&logo=rust&logoColor=white">
+  <img alt="Platforms" src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-2563eb?style=for-the-badge&logo=apple&logoColor=white">
+</p>
 
-- reusable typed IR in Rust
-- thin CLI orchestration
-- deterministic outputs for a fixed seed
-- stage-local logic instead of a giant monolith
+<p>
+  <img alt="Deterministic outputs" src="https://img.shields.io/badge/Outputs-Deterministic-0f766e?style=for-the-badge">
+  <img alt="Frontend" src="https://img.shields.io/badge/Frontend-Yosys%20EDIF-111827?style=for-the-badge">
+  <img alt="Pipeline" src="https://img.shields.io/badge/Pipeline-map%20%E2%86%92%20pack%20%E2%86%92%20place%20%E2%86%92%20route%20%E2%86%92%20bitgen-7c3aed?style=for-the-badge">
+</p>
+
+<p>
+  <a href="https://github.com/0xtaruhi/fde-rs/stargazers">
+    <img alt="GitHub stars" src="https://img.shields.io/github/stars/0xtaruhi/fde-rs?style=social">
+  </a>
+  <a href="https://github.com/0xtaruhi/fde-rs/network/members">
+    <img alt="GitHub forks" src="https://img.shields.io/github/forks/0xtaruhi/fde-rs?style=social">
+  </a>
+</p>
+
+<p>
+  <a href="#quick-start"><strong>Quick start</strong></a>
+  ·
+  <a href="#pipeline"><strong>Pipeline</strong></a>
+  ·
+  <a href="#board-regressions"><strong>Board regressions</strong></a>
+  ·
+  <a href="#development"><strong>Development</strong></a>
+</p>
+
+</div>
+
+---
+
+## Why fde-rs
+
+`fde-rs` is the standalone Rust home for the FDE implementation flow.
+
+It is built around a few non-negotiables:
+
+- **Determinism first** — fixed seeds should reproduce the same implementation output.
+- **Clear stage boundaries** — `map`, `pack`, `place`, `route`, `sta`, and `bitgen` stay separate.
+- **Typed IR over string soup** — shared Rust data structures are the source of truth.
+- **Thin CLI, strong library core** — orchestration lives at the edge, logic stays reusable.
+- **Debuggable artifacts** — each stage emits readable outputs that make failures inspectable.
+- **Hardware-facing compatibility** — XML and bitstream artifacts remain a stable contract.
+
+If you already synthesize with Yosys and want a modern, maintainable, board-oriented
+implementation flow in Rust, this repository is the intended path.
 
 ## Highlights
 
-- **End-to-end Rust flow**: `map -> pack -> place -> route -> sta -> bitgen`
-- **Deterministic implementation**: same seed, same output
-- **Board-oriented regressions** checked in under [`examples/board-e2e/`](examples/board-e2e)
-- **Readable sidecar output** next to generated bitstreams for debugging
-- **Yosys-friendly frontend**: synthesize to EDIF, then hand off to `fde-rs`
+| Capability | Status |
+| --- | --- |
+| EDIF import and normalization | ✅ |
+| Packing and placement | ✅ |
+| Physical routing with emitted pips | ✅ |
+| STA summary and timing report | ✅ |
+| Deterministic bitgen | ✅ |
+| Optional debug sidecar emission | ✅ |
+| Checked-in board regression corpus | ✅ |
+| Full Rust `impl` orchestration | ✅ |
 
 ## Pipeline
 
-| Stage | Input | Output |
-| --- | --- | --- |
-| `map` | EDIF | mapped XML |
-| `pack` | mapped XML | packed XML |
-| `place` | packed XML | placed XML |
-| `route` | placed XML | routed XML with physical pips |
-| `sta` | routed XML | timed XML + timing report |
-| `bitgen` | routed/timed XML | deterministic `.bit` + sidecar |
-| `impl` | EDIF + constraints | full staged run |
+```mermaid
+flowchart LR
+    A[EDIF] --> B[map]
+    B --> C[pack]
+    C --> D[place]
+    D --> E[route]
+    E --> F[sta]
+    E --> G[bitgen]
+    F --> H[Timed XML + timing report]
+    G --> I[.bit]
+    G -.-> J[optional .sidecar.txt]
+```
+
+The main entrypoint is `fde impl`, which drives the full staged pipeline and writes
+all intermediate artifacts to disk.
 
 ## Quick start
 
-### 1) Build
+### Build
 
 ```bash
 cargo build
 ```
 
-### 2) Run the full flow
+### Run the full flow
 
 ```bash
 cargo run --bin fde -- impl \
@@ -52,19 +113,29 @@ cargo run --bin fde -- impl \
   --out-dir build/blinky-run
 ```
 
-### 3) Inspect the outputs
+Add `--emit-sidecar` when you want the extra human-readable debug dump.
 
-Typical artifacts include:
+### Typical outputs
 
-- `01-mapped.xml`
-- `02-packed.xml`
-- `03-placed.xml`
-- `04-routed.xml`
-- `05-timed.xml`
-- `05-timing.rpt`
-- `06-output.bit`
-- `06-output.bit.txt`
-- `report.json`
+A normal implementation run emits:
+
+```text
+01-mapped.xml
+02-packed.xml
+03-placed.xml
+04-routed.xml
+04-device.json
+05-timed.xml
+05-timing.rpt
+06-output.bit
+report.json
+```
+
+For debug-oriented inspection, add `--emit-sidecar` to also write:
+
+```text
+06-output.sidecar.txt
+```
 
 ## Command-line usage
 
@@ -96,15 +167,24 @@ cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-outp
   --cil resources/hw_lib/fdp3p7_cil.xml
 ```
 
-## Frontend model: use Yosys first
+Emit the optional debug sidecar:
 
-This repository is **not** trying to be a full Verilog frontend.
+```bash
+cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-output.bit \
+  --arch resources/hw_lib/fdp3p7_arch.xml \
+  --cil resources/hw_lib/fdp3p7_cil.xml \
+  --emit-sidecar
+```
 
-The intended flow is:
+## Frontend model: synthesize with Yosys first
 
-1. synthesize with Yosys
-2. write EDIF
-3. run `fde-rs`
+`fde-rs` is intentionally **not** a full Verilog frontend.
+
+The expected frontend flow is:
+
+1. read Verilog in Yosys
+2. synthesize to EDIF
+3. hand the EDIF to `fde-rs`
 
 Bundled helper:
 
@@ -119,27 +199,27 @@ If you already have your own Yosys flow, any compatible EDIF is fine.
 
 ## Board regressions
 
-Checked-in board cases live under [`examples/board-e2e/`](examples/board-e2e).
+Board-facing cases live under [`examples/board-e2e/`](examples/board-e2e).
 Each case includes:
 
-- a synthesized `.edf`
-- a `constraints.xml`
+- a checked-in `.edf`
+- a checked-in `constraints.xml`
 - expected probe outputs recorded in [`manifest.json`](examples/board-e2e/manifest.json)
 
-Run the live board regression suite:
+Run the live board suite:
 
 ```bash
 python3 scripts/board_e2e.py run
 ```
 
-Run one case:
+Run a single case:
 
 ```bash
 python3 scripts/board_e2e.py run logic-mesh
 ```
 
-Some cases use custom `probe_segments` in the manifest for longer stimulus
-windows. This keeps hardware regressions reproducible from checked-in inputs.
+Some cases override the default waveform via `probe_segments` in the manifest so
+long-cycle hardware behavior stays reproducible.
 
 ## Development
 
@@ -152,7 +232,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 ```
 
-### CI-parity command
+### CI parity
 
 ```bash
 cargo fmt --all -- --check && \
@@ -165,7 +245,7 @@ cargo test --locked --quiet
 
 - `python3 scripts/board_e2e.py run`
 - `python3 scripts/random_board_diff.py --count 5 --seed 20260322 --keep-going`
-- `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.bit.txt>`
+- `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.sidecar.txt>`
 
 ## Repository layout
 
@@ -173,8 +253,8 @@ cargo test --locked --quiet
 src/
   app/        CLI and orchestration
   core/       typed IR and semantic domain helpers
-  infra/      XML/EDIF/resource/constraint I/O
-  stages/     map/pack/place/route/sta/bitgen logic
+  infra/      EDIF, XML, resources, constraints, serialization
+  stages/     map, pack, place, route, sta, bitgen
 examples/     sample inputs and board regressions
 docs/         design notes and refactor plans
 scripts/      synthesis, board, and debug helpers
@@ -185,18 +265,20 @@ scripts/      synthesis, board, and debug helpers
 - **Determinism matters**
 - **Typed IR first**
 - **Thin CLI layer**
-- **Clear stage boundaries**
-- **Compatibility at the artifact boundary**
+- **Clear stage ownership**
+- **Readable artifacts for debugging**
+- **Compatibility at the file boundary**
 
-The public contract is the emitted XML/bitstream shape, not hidden Rust-only
-intermediate formats.
+The public contract is the emitted XML and bitstream shape. Internally, Rust stays
+free to use stronger typed models as long as those external artifacts remain stable,
+inspectable, and useful.
 
-## Status
+## Project status
 
-`fde-rs` is under active development, but it already supports meaningful
-end-to-end implementation, board-facing regressions, and bitstream generation in
+`fde-rs` is under active development, but it already supports meaningful end-to-end
+implementation, board-facing regressions, and deterministic bitstream generation in
 Rust.
 
 ## License
 
-This project is licensed under the terms of the [LICENSE](LICENSE) file.
+This project is licensed under the terms of the [MIT License](LICENSE).

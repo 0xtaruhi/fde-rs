@@ -180,12 +180,20 @@ fn end_to_end_impl_generates_artifacts() {
         "sta",
         "sta_report",
         "bitstream",
-        "bitstream_sidecar",
         "report",
     ] {
         let path = PathBuf::from(report.artifacts.get(key).expect("artifact path"));
         assert!(path.exists(), "missing artifact {key}: {}", path.display());
     }
+
+    assert!(
+        !report.artifacts.contains_key("bitstream_sidecar"),
+        "sidecar should be opt-in"
+    );
+    assert!(
+        !out_dir.join("06-output.sidecar.txt").exists(),
+        "unexpected default sidecar output"
+    );
 
     assert!(report.timing.is_some());
     assert!(report.bitstream_sha256.is_some());
@@ -199,6 +207,7 @@ fn end_to_end_impl_handles_used_ground_constant_net() {
         out_dir: out_dir.clone(),
         resource_root: Some(fixture("tests/fixtures/hw_lib")),
         constraints: Some(fixture("tests/fixtures/const-gnd-constraints.xml")),
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     })
     .expect("implementation run with used ground net");
@@ -280,6 +289,7 @@ fn implementation_is_deterministic_for_same_seed() {
         resource_root: Some(fixture("tests/fixtures/hw_lib")),
         constraints: Some(fixture("tests/fixtures/constraints.xml")),
         seed: 12345,
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     };
     let report_a = run_implementation(&ImplementationOptions {
@@ -355,6 +365,7 @@ fn rust_impl_emits_device_and_tile_config_when_external_resources_are_available(
         out_dir: out_dir.clone(),
         resource_root: Some(resource_root),
         constraints: Some(fixture("tests/fixtures/fdp3p7-constraints.xml")),
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     })
     .expect("rust implementation run");
@@ -397,6 +408,7 @@ fn rust_impl_emits_text_bitstream_when_external_resources_are_available() {
         out_dir: out_dir.clone(),
         resource_root: Some(resource_root),
         constraints: Some(fixture("tests/fixtures/fdp3p7-constraints.xml")),
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     })
     .expect("rust implementation run");
@@ -440,6 +452,7 @@ fn complex_external_resource_impl_emits_text_bitstream() {
         out_dir: out_dir.clone(),
         resource_root: Some(resource_root),
         constraints: Some(constraints),
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     })
     .expect("complex rust implementation");
@@ -495,6 +508,7 @@ fn complex_external_resource_impl_is_seed_stable() {
         resource_root: Some(resource_root),
         constraints: Some(constraints),
         seed: 0x1234_5678,
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     };
 
@@ -560,6 +574,7 @@ fn complex_external_resource_sidecar_contains_nontrivial_config_and_route_sectio
         out_dir,
         resource_root: Some(resource_root),
         constraints: Some(constraints),
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     })
     .expect("complex sidecar run");

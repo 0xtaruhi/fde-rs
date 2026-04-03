@@ -160,6 +160,8 @@ pub(crate) struct BitgenArgs {
     #[arg(long, short = 'c')]
     pub(crate) cil: Option<PathBuf>,
     #[arg(long)]
+    pub(crate) emit_sidecar: bool,
+    #[arg(long)]
     pub(crate) sidecar: Option<PathBuf>,
 }
 
@@ -209,6 +211,8 @@ pub(crate) struct ImplArgs {
     pub(crate) sta_lib: Option<PathBuf>,
     #[arg(long)]
     pub(crate) cil: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) emit_sidecar: bool,
     #[arg(long, default_value = "fdp3")]
     pub(crate) family: String,
     #[arg(long, default_value_t = 4)]
@@ -236,6 +240,7 @@ impl From<ImplArgs> for ImplementationOptions {
             delay: value.delay,
             sta_lib: value.sta_lib,
             cil: value.cil,
+            emit_sidecar: value.emit_sidecar,
             family: Some(value.family),
             lut_size: value.lut_size,
             pack_capacity: value.pack_capacity,

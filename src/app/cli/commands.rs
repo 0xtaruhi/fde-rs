@@ -194,13 +194,15 @@ pub(crate) fn run_bitgen(args: BitgenArgs, emit_report: bool) -> Result<()> {
     let design = load_design(&args.input)?;
     let prepared = prepare_bitgen(&design, args.arch.as_ref(), args.cil.as_ref())?;
     let result = bitgen::run(design, &prepared.options)?;
-    let sidecar = args
-        .sidecar
-        .unwrap_or_else(|| default_sidecar_path(&args.output));
     fs::write(&args.output, &result.value.bytes)
         .with_context(|| format!("failed to write {}", args.output.display()))?;
-    fs::write(&sidecar, &result.value.sidecar_text)
-        .with_context(|| format!("failed to write {}", sidecar.display()))?;
+    if args.emit_sidecar || args.sidecar.is_some() {
+        let sidecar = args
+            .sidecar
+            .unwrap_or_else(|| default_sidecar_path(&args.output));
+        fs::write(&sidecar, &result.value.sidecar_text)
+            .with_context(|| format!("failed to write {}", sidecar.display()))?;
+    }
     if emit_report {
         print_stage_report(&result.report);
     }

@@ -25,7 +25,7 @@ pub(crate) fn load_constraints_or_empty(path: Option<&PathBuf>) -> Result<Shared
 }
 
 pub(crate) fn default_sidecar_path(output: &Path) -> PathBuf {
-    output.with_extension("bit.txt")
+    output.with_extension("sidecar.txt")
 }
 
 pub(crate) fn prepare_bitgen(
