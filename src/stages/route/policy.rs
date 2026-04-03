@@ -148,7 +148,7 @@ pub(super) fn should_skip_local_arc(
 
     let from = wires.resolve(arc.from);
     let to = wires.resolve(arc.to);
-    to == "LEFT_O1" && from.starts_with("LEFT_H6") && from.contains("_BUF")
+    to.starts_with("LEFT_O") && from.starts_with("LEFT_H6") && from.contains("_BUF")
 }
 
 fn push_unique_neighbor(
@@ -196,6 +196,32 @@ mod tests {
 
         assert!(should_skip_local_arc(&tile, &blocked, &wires));
         assert!(!should_skip_local_arc(&tile, &allowed, &wires));
+    }
+
+    #[test]
+    fn blocks_left_h6_buffer_arcs_into_all_left_outputs() {
+        let mut wires = WireInterner::default();
+        let tile = TileRouteContext {
+            tile_name: "LR5",
+            tile_type: "LR5",
+            site_name: "GSB_LFT",
+            site_type: "GSB_LFT",
+        };
+        let blocked_o2 = SiteRouteArc {
+            from: wires.intern("LEFT_H6E_BUF2"),
+            to: wires.intern("LEFT_O2"),
+            basic_cell: "SPS_O2".to_string(),
+            bits: Vec::new(),
+        };
+        let blocked_o3 = SiteRouteArc {
+            from: wires.intern("LEFT_H6A_BUF3"),
+            to: wires.intern("LEFT_O3"),
+            basic_cell: "SPS_O3".to_string(),
+            bits: Vec::new(),
+        };
+
+        assert!(should_skip_local_arc(&tile, &blocked_o2, &wires));
+        assert!(should_skip_local_arc(&tile, &blocked_o3, &wires));
     }
 
     #[test]
