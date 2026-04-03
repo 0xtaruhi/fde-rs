@@ -596,7 +596,7 @@ mod tests {
         cell.properties.push(Property::new("INIT", "01"));
         assert_eq!(
             packed_lut_function_name(&cell).as_deref(),
-            Some("#LUT:D=((A3*~A2)*~A1)")
+            Some("#LUT:D=((~A3*~A2)*~A1)")
         );
     }
 
