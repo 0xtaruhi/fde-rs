@@ -80,6 +80,16 @@ pub fn run(mut design: Design, options: &PlaceOptions) -> Result<StageOutput<Des
     assign_cluster_slots(&mut design, site_capacity)?;
 
     let mut report = StageReport::new("place");
+    report.metric("cluster_count", design.clusters.len());
+    report.metric("grid_width", options.arch.width);
+    report.metric("grid_height", options.arch.height);
+    report.metric("site_capacity", site_capacity);
+    report.metric("mode", format!("{:?}", options.mode));
+    report.metric("final_cost", solution.metrics.total);
+    report.metric("wire_cost", solution.metrics.wire_cost);
+    report.metric("congestion_cost", solution.metrics.congestion_cost);
+    report.metric("timing_cost", solution.metrics.timing_cost);
+    report.metric("locality_cost", solution.metrics.locality_cost);
     report.push(format!(
         "Placed {} clusters on a {}x{} grid with final cost {:.3}.",
         design.clusters.len(),

@@ -70,6 +70,9 @@ pub fn run_with_artifacts(
     apply_route_image(&mut design, &route_image, &options.arch);
 
     let mut report = StageReport::new("route");
+    report.metric("physical_pip_count", route_image.pips.len());
+    report.metric("routed_site_count", programmed_sites);
+    report.metric("device_net_count", device_net_count);
     report.push(format!(
         "Materialized {} physical pips across {} routed sites for {} device nets.",
         route_image.pips.len(),
@@ -77,7 +80,11 @@ pub fn run_with_artifacts(
         device_net_count,
     ));
     for note in &route_image.notes {
-        report.push(note.clone());
+        if is_route_warning(note) {
+            report.warn(note.clone());
+        } else {
+            report.push(note.clone());
+        }
     }
 
     Ok(StageOutput {
@@ -88,6 +95,14 @@ pub fn run_with_artifacts(
         },
         report,
     })
+}
+
+fn is_route_warning(note: &str) -> bool {
+    let lowered = note.to_ascii_lowercase();
+    lowered.contains("could not find a rust route")
+        || lowered.contains("has no routed driver")
+        || lowered.contains("not a routable cell")
+        || lowered.contains("has no route-source mapping")
 }
 
 fn apply_route_image(design: &mut Design, route_image: &DeviceRouteImage, arch: &Arch) {

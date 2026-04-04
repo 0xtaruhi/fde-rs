@@ -25,6 +25,9 @@ pub fn run(mut design: Design, _options: &NormalizeOptions) -> Result<StageOutpu
     canonicalize_names(&mut design);
 
     let mut report = StageReport::new("normalize");
+    report.metric("cell_count_before", before_cells);
+    report.metric("cell_count_after", design.cells.len());
+    report.metric("net_count_after", design.nets.len());
     report.push(format!(
         "Normalized design: {} -> {} cells, {} nets remain.",
         before_cells,

@@ -49,6 +49,12 @@ pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapAr
         .then(|| export_structural_verilog(&design));
 
     let mut report = StageReport::new("map");
+    report.metric("cell_count", design.cells.len());
+    report.metric("net_count", design.nets.len());
+    report.metric("lut_size", options.lut_size);
+    report.metric("normalized_lut_count", summary.normalized_luts);
+    report.metric("lowered_constant_count", summary.lowered_constants);
+    report.metric("buffered_ff_input_count", summary.buffered_ff_inputs);
     report.push(format!(
         "Mapped {} cells and {} nets.",
         design.cells.len(),

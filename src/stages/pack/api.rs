@@ -106,6 +106,17 @@ pub fn run(mut design: Design, options: &PackOptions) -> Result<StageOutput<Desi
 
     design.clusters = clusters;
     let mut report = StageReport::new("pack");
+    report.metric("logical_cell_count", design.cells.len());
+    report.metric("cluster_count", design.clusters.len());
+    report.metric("cluster_capacity", capacity);
+    report.metric(
+        "average_cluster_fill",
+        if design.clusters.is_empty() {
+            0.0
+        } else {
+            design.cells.len() as f64 / design.clusters.len() as f64
+        },
+    );
     report.push(format!(
         "Packed {} logical cells into {} clusters (capacity {}).",
         design.cells.len(),

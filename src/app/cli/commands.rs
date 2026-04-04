@@ -239,6 +239,12 @@ pub(crate) fn run_impl(args: ImplArgs) -> Result<()> {
     for stage in &report.stages {
         print_stage_report(stage);
     }
+    if let Some(summary_path) = report.artifacts.get("summary") {
+        println!("[impl] Wrote summary to {}", summary_path);
+    }
+    if let Some(log_path) = report.artifacts.get("log") {
+        println!("[impl] Wrote log to {}", log_path);
+    }
     if let Some(report_path) = report.artifacts.get("report") {
         println!("[impl] Wrote report to {}", report_path);
     }

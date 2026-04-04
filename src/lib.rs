@@ -31,7 +31,7 @@ pub use normalize::{NormalizeOptions, run as run_normalize};
 pub use orchestrator::{ImplementationOptions, run as run_implementation};
 pub use pack::{PackOptions, run as run_pack};
 pub use place::{PlaceMode, PlaceOptions, run as run_place};
-pub use report::{ImplementationReport, StageOutput, StageReport};
+pub use report::{ImplementationReport, ReportStatus, StageOutput, StageReport};
 pub use resource::{Arch, DelayModel, ResourceBundle, load_arch, load_delay_model};
 pub use route::{
     DeviceRouteImage, DeviceRoutePip, RouteBit, RouteOptions, RoutedNetPip, load_route_pips,

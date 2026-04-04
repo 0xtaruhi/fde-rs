@@ -47,6 +47,13 @@ pub fn run(mut design: Design, options: &StaOptions) -> Result<StageOutput<StaAr
     design.timing = Some(summary.clone());
 
     let mut report = StageReport::new("sta");
+    report.metric("critical_path_ns", summary.critical_path_ns);
+    report.metric("fmax_mhz", summary.fmax_mhz);
+    report.metric("top_path_count", summary.top_paths.len());
+    if let Some(path) = summary.top_paths.first() {
+        report.metric("worst_endpoint", path.endpoint.clone());
+        report.metric("worst_category", format!("{:?}", path.category));
+    }
     report.push(format!(
         "Computed STA: critical path {:.3} ns, Fmax {:.2} MHz.",
         summary.critical_path_ns, summary.fmax_mhz

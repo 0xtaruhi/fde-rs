@@ -31,6 +31,10 @@ pub fn run_path(input: &Path, options: &ImportOptions) -> Result<StageOutput<Des
     }
 
     let mut report = StageReport::new("import");
+    report.metric("cell_count", design.cells.len());
+    report.metric("net_count", design.nets.len());
+    report.metric("port_count", design.ports.len());
+    report.metric("source", input.display().to_string());
     report.push(format!(
         "Imported {} cells and {} nets from {}.",
         design.cells.len(),

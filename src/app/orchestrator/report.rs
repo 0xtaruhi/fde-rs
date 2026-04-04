@@ -1,6 +1,8 @@
 use crate::{
     ir::TimingSummary,
-    report::{ImplementationReport, StageReport},
+    report::{
+        ImplementationReport, ReportStatus, StageReport, render_detailed_log, render_summary_report,
+    },
 };
 use anyhow::{Context, Result};
 use std::{
@@ -20,6 +22,8 @@ pub(crate) struct FlowArtifacts {
     pub(crate) bitstream: PathBuf,
     pub(crate) bitstream_sidecar: Option<PathBuf>,
     pub(crate) report: PathBuf,
+    pub(crate) summary: PathBuf,
+    pub(crate) log: PathBuf,
 }
 
 impl FlowArtifacts {
@@ -35,6 +39,8 @@ impl FlowArtifacts {
             bitstream: out_dir.join("06-output.bit"),
             bitstream_sidecar: emit_sidecar.then(|| out_dir.join("06-output.sidecar.txt")),
             report: out_dir.join("report.json"),
+            summary: out_dir.join("summary.rpt"),
+            log: out_dir.join("run.log"),
         }
     }
 
@@ -63,23 +69,39 @@ impl FlowArtifacts {
             );
         }
         artifacts.insert("report".to_string(), self.report.display().to_string());
+        artifacts.insert("summary".to_string(), self.summary.display().to_string());
+        artifacts.insert("log".to_string(), self.log.display().to_string());
         artifacts
     }
 }
 
+pub(crate) struct ReportContext {
+    pub(crate) flow: String,
+    pub(crate) design: String,
+    pub(crate) out_dir: PathBuf,
+    pub(crate) seed: u64,
+    pub(crate) elapsed_ms: u64,
+    pub(crate) inputs: BTreeMap<String, String>,
+    pub(crate) resources: BTreeMap<String, String>,
+}
+
 pub(crate) fn build_report(
-    design: String,
-    out_dir: &Path,
-    seed: u64,
+    context: ReportContext,
     artifacts: &FlowArtifacts,
     stages: Vec<StageReport>,
     timing: Option<TimingSummary>,
     bitstream_sha256: Option<String>,
 ) -> ImplementationReport {
     ImplementationReport {
-        design,
-        out_dir: out_dir.display().to_string(),
-        seed,
+        schema_version: 2,
+        flow: context.flow,
+        design: context.design,
+        out_dir: context.out_dir.display().to_string(),
+        seed: context.seed,
+        status: ReportStatus::Success,
+        elapsed_ms: Some(context.elapsed_ms),
+        inputs: context.inputs,
+        resources: context.resources,
         artifacts: artifacts.artifact_map(),
         stages,
         timing,
@@ -89,5 +111,15 @@ pub(crate) fn build_report(
 
 pub(crate) fn write_report(path: &Path, report: &ImplementationReport) -> Result<()> {
     fs::write(path, serde_json::to_string_pretty(report)?)
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub(crate) fn write_summary(path: &Path, report: &ImplementationReport) -> Result<()> {
+    fs::write(path, render_summary_report(report))
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub(crate) fn write_log(path: &Path, report: &ImplementationReport) -> Result<()> {
+    fs::write(path, render_detailed_log(report))
         .with_context(|| format!("failed to write {}", path.display()))
 }
