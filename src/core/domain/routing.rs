@@ -1,4 +1,66 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CanonicalWireFamily {
+    E,
+    W,
+    N,
+    S,
+    H6E,
+    H6W,
+    H6M,
+    V6N,
+    V6S,
+    V6M,
+    Llh,
+    Llv,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct WireNameMetadata {
+    family: Option<CanonicalWireFamily>,
+    dedicated_clock: bool,
+    clock_distribution: bool,
+    clock_sink: bool,
+    pad_stub: bool,
+    hex_like: bool,
+    long: bool,
+    directional_channel: bool,
+}
+
+impl WireNameMetadata {
+    pub(crate) fn family(self) -> Option<CanonicalWireFamily> {
+        self.family
+    }
+
+    pub(crate) fn is_dedicated_clock(self) -> bool {
+        self.dedicated_clock
+    }
+
+    pub(crate) fn is_clock_distribution(self) -> bool {
+        self.clock_distribution
+    }
+
+    pub(crate) fn is_clock_sink(self) -> bool {
+        self.clock_sink
+    }
+
+    pub(crate) fn is_pad_stub(self) -> bool {
+        self.pad_stub
+    }
+
+    pub(crate) fn is_hex_like(self) -> bool {
+        self.hex_like
+    }
+
+    pub(crate) fn is_long(self) -> bool {
+        self.long
+    }
+
+    pub(crate) fn is_directional_channel(self) -> bool {
+        self.directional_channel
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SliceOutputWireKind {
     LutX,
     LutY,
@@ -17,6 +79,72 @@ pub enum SliceControlWireKind {
 enum SliceHalf {
     X,
     Y,
+}
+
+pub(crate) fn parse_canonical_indexed_wire(raw: &str) -> Option<(CanonicalWireFamily, usize)> {
+    let prefix = [
+        ("LEFT_LLH", CanonicalWireFamily::Llh),
+        ("RIGHT_LLH", CanonicalWireFamily::Llh),
+        ("TOP_LLV", CanonicalWireFamily::Llv),
+        ("BOT_LLV", CanonicalWireFamily::Llv),
+        ("LEFT_E", CanonicalWireFamily::E),
+        ("RIGHT_W", CanonicalWireFamily::W),
+        ("TOP_S", CanonicalWireFamily::S),
+        ("BOT_N", CanonicalWireFamily::N),
+        ("LEFT_H6E", CanonicalWireFamily::H6E),
+        ("RIGHT_H6W", CanonicalWireFamily::H6W),
+        ("TOP_V6S", CanonicalWireFamily::V6S),
+        ("BOT_V6N", CanonicalWireFamily::V6N),
+        ("LEFT_V6N", CanonicalWireFamily::V6N),
+        ("RIGHT_V6N", CanonicalWireFamily::V6N),
+        ("LEFT_V6S", CanonicalWireFamily::V6S),
+        ("RIGHT_V6S", CanonicalWireFamily::V6S),
+        ("TOP_H6E", CanonicalWireFamily::H6E),
+        ("BOT_H6E", CanonicalWireFamily::H6E),
+        ("TOP_H6W", CanonicalWireFamily::H6W),
+        ("BOT_H6W", CanonicalWireFamily::H6W),
+        ("LLH", CanonicalWireFamily::Llh),
+        ("LLV", CanonicalWireFamily::Llv),
+        ("H6M", CanonicalWireFamily::H6M),
+        ("H6E", CanonicalWireFamily::H6E),
+        ("H6W", CanonicalWireFamily::H6W),
+        ("V6N", CanonicalWireFamily::V6N),
+        ("V6S", CanonicalWireFamily::V6S),
+        ("V6M", CanonicalWireFamily::V6M),
+        ("E", CanonicalWireFamily::E),
+        ("W", CanonicalWireFamily::W),
+        ("N", CanonicalWireFamily::N),
+        ("S", CanonicalWireFamily::S),
+    ];
+
+    for (candidate, family) in prefix {
+        let Some(suffix) = raw.strip_prefix(candidate) else {
+            continue;
+        };
+        let Ok(index) = suffix.parse::<usize>() else {
+            continue;
+        };
+        return Some((family, index));
+    }
+
+    None
+}
+
+pub(crate) fn canonical_wire_family(raw: &str) -> Option<CanonicalWireFamily> {
+    parse_canonical_indexed_wire(raw).map(|(family, _)| family)
+}
+
+pub(crate) fn wire_name_metadata(raw: &str) -> WireNameMetadata {
+    WireNameMetadata {
+        family: canonical_wire_family(raw),
+        dedicated_clock: is_dedicated_clock_wire_name(raw),
+        clock_distribution: is_clock_distribution_wire_name(raw),
+        clock_sink: is_clock_sink_wire_name(raw),
+        pad_stub: is_pad_stub_wire_name(raw),
+        hex_like: is_hex_like_wire_name(raw),
+        long: is_long_wire_name(raw),
+        directional_channel: is_directional_channel_wire_name(raw),
+    }
 }
 
 pub fn is_dedicated_clock_wire_name(raw: &str) -> bool {
@@ -76,6 +204,13 @@ pub fn sink_output_preference(raw: &str) -> Option<usize> {
     } else {
         None
     }
+}
+
+pub(crate) fn should_skip_site_local_route_arc(site_type: &str, from: &str, to: &str) -> bool {
+    matches!(site_type, "GSB_LFT")
+        && to.starts_with("LEFT_O")
+        && from.starts_with("LEFT_H6")
+        && from.contains("_BUF")
 }
 
 pub fn normalized_slice_site_name(site_name: &str) -> &str {
@@ -146,12 +281,14 @@ fn slice_half(slot: usize) -> SliceHalf {
 #[cfg(test)]
 mod tests {
     use super::{
-        SliceControlWireKind, SliceOutputWireKind, is_clock_distribution_wire_name,
-        is_clock_sink_wire_name, is_dedicated_clock_wire_name, is_directional_channel_wire_name,
-        is_hex_like_wire_name, is_long_wire_name, normalized_slice_site_name, output_wire_index,
-        pin_map_property_name, sink_output_preference, slice_control_wire_name,
-        slice_lut_input_wire_prefix, slice_lut_output_wire_name, slice_output_wire_kind,
-        slice_register_data_wire_name, slice_register_output_wire_name,
+        CanonicalWireFamily, SliceControlWireKind, SliceOutputWireKind, canonical_wire_family,
+        is_clock_distribution_wire_name, is_clock_sink_wire_name, is_dedicated_clock_wire_name,
+        is_directional_channel_wire_name, is_hex_like_wire_name, is_long_wire_name,
+        normalized_slice_site_name, output_wire_index, parse_canonical_indexed_wire,
+        pin_map_property_name, should_skip_site_local_route_arc, sink_output_preference,
+        slice_control_wire_name, slice_lut_input_wire_prefix, slice_lut_output_wire_name,
+        slice_output_wire_kind, slice_register_data_wire_name, slice_register_output_wire_name,
+        wire_name_metadata,
     };
 
     #[test]
@@ -179,5 +316,49 @@ mod tests {
         );
         assert_eq!(slice_register_data_wire_name("S1", 1), "S1_BY_B");
         assert_eq!(pin_map_property_name(2), "pin_map_ADR2");
+    }
+
+    #[test]
+    fn canonicalizes_indexed_wire_families() {
+        assert_eq!(
+            parse_canonical_indexed_wire("RIGHT_H6W6"),
+            Some((CanonicalWireFamily::H6W, 6))
+        );
+        assert_eq!(
+            canonical_wire_family("TOP_LLV4"),
+            Some(CanonicalWireFamily::Llv)
+        );
+    }
+
+    #[test]
+    fn derives_cached_wire_name_metadata() {
+        let metadata = wire_name_metadata("CLKV_GCLK_BUFR1");
+        assert!(metadata.is_dedicated_clock());
+        assert!(metadata.is_clock_distribution());
+        assert!(!metadata.is_directional_channel());
+
+        let metadata = wire_name_metadata("LEFT_H6E_BUF2");
+        assert_eq!(metadata.family(), None);
+        assert!(metadata.is_hex_like());
+        assert!(!metadata.is_clock_sink());
+    }
+
+    #[test]
+    fn encodes_known_site_local_arc_compatibility_skip() {
+        assert!(should_skip_site_local_route_arc(
+            "GSB_LFT",
+            "LEFT_H6A_BUF1",
+            "LEFT_O1"
+        ));
+        assert!(!should_skip_site_local_route_arc(
+            "GSB_LFT",
+            "LEFT_E_BUF3",
+            "LEFT_O1"
+        ));
+        assert!(!should_skip_site_local_route_arc(
+            "GSB_RGT",
+            "LEFT_H6A_BUF1",
+            "LEFT_O1"
+        ));
     }
 }

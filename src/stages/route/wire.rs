@@ -1,8 +1,12 @@
+use crate::domain::CanonicalWireFamily;
 #[cfg(test)]
-use crate::domain::{is_dedicated_clock_wire_name, is_hex_like_wire_name, is_long_wire_name};
+use crate::domain::{
+    is_dedicated_clock_wire_name, is_hex_like_wire_name, is_long_wire_name,
+    parse_canonical_indexed_wire,
+};
 use crate::resource::{
     Arch,
-    routing::{CanonicalWireFamily, WireId, WireInterner},
+    routing::{WireId, WireInterner},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,95 +28,14 @@ pub(crate) enum RouteNodeClass {
 }
 
 #[cfg(test)]
-pub(crate) fn canonical_indexed_wire(raw: &str) -> Option<(&'static str, usize)> {
-    for prefix in [
-        "LEFT_LLH",
-        "RIGHT_LLH",
-        "TOP_LLV",
-        "BOT_LLV",
-        "LEFT_E",
-        "RIGHT_W",
-        "TOP_S",
-        "BOT_N",
-        "LEFT_H6E",
-        "RIGHT_H6W",
-        "TOP_V6S",
-        "BOT_V6N",
-        "LEFT_V6N",
-        "RIGHT_V6N",
-        "LEFT_V6S",
-        "RIGHT_V6S",
-        "TOP_H6E",
-        "BOT_H6E",
-        "TOP_H6W",
-        "BOT_H6W",
-        "LLH",
-        "LLV",
-        "H6M",
-        "H6E",
-        "H6W",
-        "V6N",
-        "V6S",
-        "V6M",
-        "E",
-        "W",
-        "N",
-        "S",
-    ] {
-        let Some(value) = raw.strip_prefix(prefix) else {
-            continue;
-        };
-        let Ok(index) = value.parse::<usize>() else {
-            continue;
-        };
-        let canonical = match prefix {
-            "LEFT_LLH" | "RIGHT_LLH" => "LLH",
-            "TOP_LLV" | "BOT_LLV" => "LLV",
-            "LEFT_E" => "E",
-            "RIGHT_W" => "W",
-            "TOP_S" => "S",
-            "BOT_N" => "N",
-            "LEFT_H6E" | "TOP_H6E" | "BOT_H6E" => "H6E",
-            "RIGHT_H6W" | "TOP_H6W" | "BOT_H6W" => "H6W",
-            "TOP_V6S" | "LEFT_V6S" | "RIGHT_V6S" => "V6S",
-            "BOT_V6N" | "LEFT_V6N" | "RIGHT_V6N" => "V6N",
-            other => other,
-        };
-        return Some((canonical, index));
-    }
-    None
+pub(crate) fn canonical_indexed_wire(raw: &str) -> Option<(CanonicalWireFamily, usize)> {
+    parse_canonical_indexed_wire(raw)
 }
 
 #[cfg(test)]
 pub(crate) fn wire_bounds(arch: &Arch, x: usize, y: usize, raw: &str) -> Option<WireBounds> {
     let (family, _) = canonical_indexed_wire(raw)?;
-    Some(match family {
-        // FDE coordinates use x as the row axis and y as the column axis.
-        // Horizontal channels therefore vary y, vertical channels vary x.
-        "E" => span_bounds(arch, x, y, 0, 1),
-        "W" => span_bounds(arch, x, y, 0, -1),
-        "N" => span_bounds(arch, x, y, -1, 0),
-        "S" => span_bounds(arch, x, y, 1, 0),
-        "H6E" => span_bounds(arch, x, y, 0, 6),
-        "H6W" => span_bounds(arch, x, y, 0, -6),
-        "H6M" => centered_span_bounds(arch, x, y, 6, true),
-        "V6N" => span_bounds(arch, x, y, -6, 0),
-        "V6S" => span_bounds(arch, x, y, 6, 0),
-        "V6M" => centered_span_bounds(arch, x, y, 6, false),
-        "LLH" => WireBounds {
-            min_x: x.min(arch.width.saturating_sub(1)),
-            max_x: x.min(arch.width.saturating_sub(1)),
-            min_y: 0,
-            max_y: arch.height.saturating_sub(1),
-        },
-        "LLV" => WireBounds {
-            min_x: 0,
-            max_x: arch.width.saturating_sub(1),
-            min_y: y.min(arch.height.saturating_sub(1)),
-            max_y: y.min(arch.height.saturating_sub(1)),
-        },
-        _ => return None,
-    })
+    Some(wire_bounds_for_family(arch, x, y, family))
 }
 
 pub(crate) fn wire_bounds_for_wire(
@@ -123,30 +46,7 @@ pub(crate) fn wire_bounds_for_wire(
     wire: WireId,
 ) -> Option<WireBounds> {
     let family = wires.metadata(wire).family()?;
-    Some(match family {
-        CanonicalWireFamily::E => span_bounds(arch, x, y, 0, 1),
-        CanonicalWireFamily::W => span_bounds(arch, x, y, 0, -1),
-        CanonicalWireFamily::N => span_bounds(arch, x, y, -1, 0),
-        CanonicalWireFamily::S => span_bounds(arch, x, y, 1, 0),
-        CanonicalWireFamily::H6E => span_bounds(arch, x, y, 0, 6),
-        CanonicalWireFamily::H6W => span_bounds(arch, x, y, 0, -6),
-        CanonicalWireFamily::H6M => centered_span_bounds(arch, x, y, 6, true),
-        CanonicalWireFamily::V6N => span_bounds(arch, x, y, -6, 0),
-        CanonicalWireFamily::V6S => span_bounds(arch, x, y, 6, 0),
-        CanonicalWireFamily::V6M => centered_span_bounds(arch, x, y, 6, false),
-        CanonicalWireFamily::Llh => WireBounds {
-            min_x: x.min(arch.width.saturating_sub(1)),
-            max_x: x.min(arch.width.saturating_sub(1)),
-            min_y: 0,
-            max_y: arch.height.saturating_sub(1),
-        },
-        CanonicalWireFamily::Llv => WireBounds {
-            min_x: 0,
-            max_x: arch.width.saturating_sub(1),
-            min_y: y.min(arch.height.saturating_sub(1)),
-            max_y: y.min(arch.height.saturating_sub(1)),
-        },
-    })
+    Some(wire_bounds_for_family(arch, x, y, family))
 }
 
 pub(crate) fn tile_distance(x0: usize, y0: usize, x1: usize, y1: usize) -> usize {
@@ -251,6 +151,40 @@ fn span_bounds(arch: &Arch, x: usize, y: usize, dx: isize, dy: isize) -> WireBou
     }
 }
 
+fn wire_bounds_for_family(
+    arch: &Arch,
+    x: usize,
+    y: usize,
+    family: CanonicalWireFamily,
+) -> WireBounds {
+    match family {
+        // FDE coordinates use x as the row axis and y as the column axis.
+        // Horizontal channels therefore vary y, vertical channels vary x.
+        CanonicalWireFamily::E => span_bounds(arch, x, y, 0, 1),
+        CanonicalWireFamily::W => span_bounds(arch, x, y, 0, -1),
+        CanonicalWireFamily::N => span_bounds(arch, x, y, -1, 0),
+        CanonicalWireFamily::S => span_bounds(arch, x, y, 1, 0),
+        CanonicalWireFamily::H6E => span_bounds(arch, x, y, 0, 6),
+        CanonicalWireFamily::H6W => span_bounds(arch, x, y, 0, -6),
+        CanonicalWireFamily::H6M => centered_span_bounds(arch, x, y, 6, true),
+        CanonicalWireFamily::V6N => span_bounds(arch, x, y, -6, 0),
+        CanonicalWireFamily::V6S => span_bounds(arch, x, y, 6, 0),
+        CanonicalWireFamily::V6M => centered_span_bounds(arch, x, y, 6, false),
+        CanonicalWireFamily::Llh => WireBounds {
+            min_x: x.min(arch.width.saturating_sub(1)),
+            max_x: x.min(arch.width.saturating_sub(1)),
+            min_y: 0,
+            max_y: arch.height.saturating_sub(1),
+        },
+        CanonicalWireFamily::Llv => WireBounds {
+            min_x: 0,
+            max_x: arch.width.saturating_sub(1),
+            min_y: y.min(arch.height.saturating_sub(1)),
+            max_y: y.min(arch.height.saturating_sub(1)),
+        },
+    }
+}
+
 fn centered_span_bounds(
     arch: &Arch,
     x: usize,
@@ -289,6 +223,7 @@ mod tests {
         RouteNodeClass, WireBounds, canonical_indexed_wire, is_exclusive_site_output_wire,
         route_node_base_cost, route_node_class, wire_bounds,
     };
+    use crate::domain::CanonicalWireFamily;
     use crate::resource::Arch;
     use std::collections::BTreeMap;
 
@@ -303,10 +238,22 @@ mod tests {
 
     #[test]
     fn canonicalizes_edge_and_long_wire_families() {
-        assert_eq!(canonical_indexed_wire("LEFT_LLH10"), Some(("LLH", 10)));
-        assert_eq!(canonical_indexed_wire("RIGHT_H6W6"), Some(("H6W", 6)));
-        assert_eq!(canonical_indexed_wire("V6M3"), Some(("V6M", 3)));
-        assert_eq!(canonical_indexed_wire("S17"), Some(("S", 17)));
+        assert_eq!(
+            canonical_indexed_wire("LEFT_LLH10"),
+            Some((CanonicalWireFamily::Llh, 10))
+        );
+        assert_eq!(
+            canonical_indexed_wire("RIGHT_H6W6"),
+            Some((CanonicalWireFamily::H6W, 6))
+        );
+        assert_eq!(
+            canonical_indexed_wire("V6M3"),
+            Some((CanonicalWireFamily::V6M, 3))
+        );
+        assert_eq!(
+            canonical_indexed_wire("S17"),
+            Some((CanonicalWireFamily::S, 17))
+        );
     }
 
     #[test]

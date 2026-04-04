@@ -2,6 +2,7 @@ mod cost;
 mod graph;
 mod model;
 mod solver;
+mod support;
 
 use crate::{
     analysis::annotate_net_criticality,

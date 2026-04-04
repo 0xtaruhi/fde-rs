@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::fmt::Write;
 
+use crate::domain::{WireNameMetadata, wire_name_metadata};
+
 #[cfg(test)]
 use clock::clock_spine_neighbors;
 pub(crate) use components::build_stitched_components;
@@ -41,100 +43,7 @@ impl WireId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CanonicalWireFamily {
-    E,
-    W,
-    N,
-    S,
-    H6E,
-    H6W,
-    H6M,
-    V6N,
-    V6S,
-    V6M,
-    Llh,
-    Llv,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct WireMetadata {
-    family: Option<CanonicalWireFamily>,
-    dedicated_clock: bool,
-    clock_distribution: bool,
-    clock_sink: bool,
-    pad_stub: bool,
-    hex_like: bool,
-    long: bool,
-    directional_channel: bool,
-}
-
-impl WireMetadata {
-    pub(crate) fn family(self) -> Option<CanonicalWireFamily> {
-        self.family
-    }
-
-    pub(crate) fn is_dedicated_clock(self) -> bool {
-        self.dedicated_clock
-    }
-
-    pub(crate) fn is_clock_distribution(self) -> bool {
-        self.clock_distribution
-    }
-
-    pub(crate) fn is_clock_sink(self) -> bool {
-        self.clock_sink
-    }
-
-    pub(crate) fn is_pad_stub(self) -> bool {
-        self.pad_stub
-    }
-
-    pub(crate) fn is_hex_like(self) -> bool {
-        self.hex_like
-    }
-
-    pub(crate) fn is_long(self) -> bool {
-        self.long
-    }
-
-    pub(crate) fn is_directional_channel(self) -> bool {
-        self.directional_channel
-    }
-
-    fn from_name(name: &str) -> Self {
-        let family = canonical_wire_family(name);
-        let dedicated_clock = name.contains("GCLK");
-        let long = matches!(
-            family,
-            Some(CanonicalWireFamily::Llh | CanonicalWireFamily::Llv)
-        ) || name.starts_with("LH")
-            || name.starts_with("LV");
-        let hex_like = matches!(
-            family,
-            Some(
-                CanonicalWireFamily::H6E
-                    | CanonicalWireFamily::H6W
-                    | CanonicalWireFamily::H6M
-                    | CanonicalWireFamily::V6N
-                    | CanonicalWireFamily::V6S
-                    | CanonicalWireFamily::V6M
-            )
-        ) || name.contains("H6")
-            || name.contains("V6");
-
-        Self {
-            family,
-            dedicated_clock,
-            clock_distribution: dedicated_clock || name.contains("CLKV") || name.contains("CLKC"),
-            clock_sink: name.ends_with("_CLK_B"),
-            pad_stub: name.contains("_P"),
-            hex_like,
-            long,
-            directional_channel: matches!(name.as_bytes().first(), Some(b'N' | b'S' | b'E' | b'W')),
-        }
-    }
-}
+pub(crate) type WireMetadata = WireNameMetadata;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WireInterner {
@@ -161,7 +70,7 @@ impl WireInterner {
         }
         let id = WireId::new(self.names.len());
         self.ids_by_name.insert(name.clone(), id);
-        self.metadata.push(WireMetadata::from_name(&name));
+        self.metadata.push(wire_name_metadata(&name));
         self.names.push(name);
         id
     }
@@ -234,55 +143,6 @@ impl WireInterner {
         self.metadata.get(id.index()).copied().unwrap_or_default()
     }
 }
-
-fn canonical_wire_family(raw: &str) -> Option<CanonicalWireFamily> {
-    let prefix = [
-        ("LEFT_LLH", CanonicalWireFamily::Llh),
-        ("RIGHT_LLH", CanonicalWireFamily::Llh),
-        ("TOP_LLV", CanonicalWireFamily::Llv),
-        ("BOT_LLV", CanonicalWireFamily::Llv),
-        ("LEFT_E", CanonicalWireFamily::E),
-        ("RIGHT_W", CanonicalWireFamily::W),
-        ("TOP_S", CanonicalWireFamily::S),
-        ("BOT_N", CanonicalWireFamily::N),
-        ("LEFT_H6E", CanonicalWireFamily::H6E),
-        ("RIGHT_H6W", CanonicalWireFamily::H6W),
-        ("TOP_V6S", CanonicalWireFamily::V6S),
-        ("BOT_V6N", CanonicalWireFamily::V6N),
-        ("LEFT_V6N", CanonicalWireFamily::V6N),
-        ("RIGHT_V6N", CanonicalWireFamily::V6N),
-        ("LEFT_V6S", CanonicalWireFamily::V6S),
-        ("RIGHT_V6S", CanonicalWireFamily::V6S),
-        ("TOP_H6E", CanonicalWireFamily::H6E),
-        ("BOT_H6E", CanonicalWireFamily::H6E),
-        ("TOP_H6W", CanonicalWireFamily::H6W),
-        ("BOT_H6W", CanonicalWireFamily::H6W),
-        ("LLH", CanonicalWireFamily::Llh),
-        ("LLV", CanonicalWireFamily::Llv),
-        ("H6M", CanonicalWireFamily::H6M),
-        ("H6E", CanonicalWireFamily::H6E),
-        ("H6W", CanonicalWireFamily::H6W),
-        ("V6N", CanonicalWireFamily::V6N),
-        ("V6S", CanonicalWireFamily::V6S),
-        ("V6M", CanonicalWireFamily::V6M),
-        ("E", CanonicalWireFamily::E),
-        ("W", CanonicalWireFamily::W),
-        ("N", CanonicalWireFamily::N),
-        ("S", CanonicalWireFamily::S),
-    ];
-
-    for (candidate, family) in prefix {
-        if raw
-            .strip_prefix(candidate)
-            .is_some_and(|suffix| suffix.parse::<usize>().is_ok())
-        {
-            return Some(family);
-        }
-    }
-
-    None
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RouteNode {
     pub(crate) x: usize,

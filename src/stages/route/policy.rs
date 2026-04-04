@@ -10,6 +10,7 @@ use crate::{
     domain::{
         is_clock_distribution_wire_name, is_clock_sink_wire_name, is_directional_channel_wire_name,
         is_hex_like_wire_name, is_long_wire_name, is_pad_stub_wire_name,
+        should_skip_site_local_route_arc,
     },
     route::types::{SiteRouteArc, WireInterner},
 };
@@ -191,13 +192,9 @@ pub(super) fn should_skip_local_arc(
     arc: &SiteRouteArc,
     wires: &WireInterner,
 ) -> bool {
-    if tile.site_type != "GSB_LFT" {
-        return false;
-    }
-
     let from = wires.resolve(arc.from);
     let to = wires.resolve(arc.to);
-    to.starts_with("LEFT_O") && from.starts_with("LEFT_H6") && from.contains("_BUF")
+    should_skip_site_local_route_arc(tile.site_type, from, to)
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use super::{
     WireInterner,
 };
 use crate::cil::{Cil, ElementPath};
+use crate::domain::should_skip_site_local_route_arc;
 use anyhow::Result;
 use roxmltree::Document;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -174,11 +175,7 @@ fn path_bits(path: &ElementPath) -> Vec<RouteBit> {
 }
 
 fn should_skip_site_arc(site_type: &str, arc: &SiteRouteArc, wires: &WireInterner) -> bool {
-    if site_type != "GSB_LFT" {
-        return false;
-    }
-
     let from = wires.resolve(arc.from);
     let to = wires.resolve(arc.to);
-    to.starts_with("LEFT_O") && from.starts_with("LEFT_H6") && from.contains("_BUF")
+    should_skip_site_local_route_arc(site_type, from, to)
 }
