@@ -108,7 +108,7 @@ impl DesignXmlWriter {
         }
 
         self.start_element(BytesStart::new("contents"))?;
-        for cell in &design.cells {
+        for cell in ordered_cells_for_write(design) {
             self.write_instance(cell, external_lib)?;
         }
         for net in &design.nets {
@@ -296,6 +296,44 @@ fn collect_external_modules(design: &Design) -> Vec<ExternalModule> {
         module.ports = port_map.into_values().collect();
     }
     modules.into_values().collect()
+}
+
+fn ordered_cells_for_write(design: &Design) -> Vec<&Cell> {
+    if design.stage != "mapped" {
+        return design.cells.iter().collect();
+    }
+
+    let mut ordered = Vec::with_capacity(design.cells.len());
+    let mut helpers = Vec::new();
+    for cell in &design.cells {
+        if let Some(rank) = mapped_helper_write_rank(cell.type_name.as_str()) {
+            helpers.push((rank, cell));
+        } else {
+            ordered.push(cell);
+        }
+    }
+    helpers.sort_by(|lhs, rhs| {
+        lhs.0
+            .cmp(&rhs.0)
+            .then_with(|| lhs.1.name.cmp(&rhs.1.name))
+            .then_with(|| lhs.1.type_name.cmp(&rhs.1.type_name))
+    });
+    ordered.extend(helpers.into_iter().map(|(_, cell)| cell));
+    ordered
+}
+
+fn mapped_helper_write_rank(type_name: &str) -> Option<u8> {
+    match type_name {
+        "IBUF" => Some(0),
+        "CLKBUF" => Some(1),
+        "IOBUF" => Some(2),
+        "OBUF" => Some(3),
+        "IPAD" => Some(4),
+        "OPAD" => Some(5),
+        "LOGIC_1" => Some(6),
+        "LOGIC_0" => Some(7),
+        _ => None,
+    }
 }
 
 fn mapped_external_modules(design: &Design) -> Vec<ExternalModule> {
@@ -587,8 +625,11 @@ pub(super) fn pin_map_indices(cell: &Cell, logical_index: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{mapped_external_modules, packed_lut_function_name};
-    use crate::ir::{Cell, Design, Property};
+    use super::{mapped_external_modules, ordered_cells_for_write, packed_lut_function_name};
+    use crate::{
+        infra::io::xml::writer::{XmlWriteContext, save_design_xml},
+        ir::{Cell, Design, Endpoint, Net, Port, Property},
+    };
 
     #[test]
     fn packed_lut_function_preserves_raw_init_width_for_lut3() {
@@ -615,11 +656,13 @@ mod tests {
     fn mapped_external_modules_define_edffhq_when_used() {
         let design = Design {
             stage: "mapped".to_string(),
-            cells: vec![Cell::ff("ff0", "EDFFHQ")
-                .with_input("D", "d")
-                .with_input("E", "ce")
-                .with_input("CK", "clk")
-                .with_output("Q", "q")],
+            cells: vec![
+                Cell::ff("ff0", "EDFFHQ")
+                    .with_input("D", "d")
+                    .with_input("E", "ce")
+                    .with_input("CK", "clk")
+                    .with_output("Q", "q"),
+            ],
             ..Design::default()
         };
 
@@ -630,14 +673,123 @@ mod tests {
             .expect("EDFFHQ module definition");
 
         assert_eq!(edff.module_type, "FFLATCH");
-        assert!(edff
-            .properties
-            .iter()
-            .any(|(key, value)| key == "edge" && value == "rise"));
+        assert!(
+            edff.properties
+                .iter()
+                .any(|(key, value)| key == "edge" && value == "rise")
+        );
         assert!(edff.ports.iter().any(|port| port.name == "E"));
-        assert!(edff
-            .ports
-            .iter()
-            .any(|port| port.name == "CK" && port.port_type.as_deref() == Some("clock")));
+        assert!(
+            edff.ports
+                .iter()
+                .any(|port| port.name == "CK" && port.port_type.as_deref() == Some("clock"))
+        );
+    }
+
+    #[test]
+    fn mapped_xml_canonicalizes_helper_instance_order_for_cpp_pack() {
+        let design = Design {
+            name: "helper_order".to_string(),
+            stage: "mapped".to_string(),
+            ports: vec![
+                Port::input("rst"),
+                Port::input("clk"),
+                Port::input("ena"),
+                Port::output("z_out"),
+                Port::output("a_out"),
+            ],
+            cells: vec![
+                Cell::ff("ff0", "EDFFHQ")
+                    .with_input("D", "next_q")
+                    .with_input("E", "ena")
+                    .with_input("CK", "clk")
+                    .with_output("Q", "q"),
+                Cell::new("lut0", crate::domain::CellKind::Lut, "LUT1")
+                    .with_input("ADR0", "rst")
+                    .with_output("O", "next_q"),
+                Cell::new("lut1", crate::domain::CellKind::Lut, "LUT1")
+                    .with_input("ADR0", "q")
+                    .with_output("O", "a_out"),
+                Cell::new("lut2", crate::domain::CellKind::Lut, "LUT1")
+                    .with_input("ADR0", "ena")
+                    .with_output("O", "z_out"),
+            ],
+            nets: vec![
+                Net::new("rst")
+                    .with_driver(Endpoint::port("rst", "rst"))
+                    .with_sink(Endpoint::cell("lut0", "ADR0")),
+                Net::new("clk")
+                    .with_driver(Endpoint::port("clk", "clk"))
+                    .with_sink(Endpoint::cell("ff0", "CK")),
+                Net::new("ena")
+                    .with_driver(Endpoint::port("ena", "ena"))
+                    .with_sink(Endpoint::cell("ff0", "E"))
+                    .with_sink(Endpoint::cell("lut2", "ADR0")),
+                Net::new("next_q")
+                    .with_driver(Endpoint::cell("lut0", "O"))
+                    .with_sink(Endpoint::cell("ff0", "D")),
+                Net::new("q")
+                    .with_driver(Endpoint::cell("ff0", "Q"))
+                    .with_sink(Endpoint::cell("lut1", "ADR0")),
+                Net::new("a_out")
+                    .with_driver(Endpoint::cell("lut1", "O"))
+                    .with_sink(Endpoint::port("a_out", "a_out")),
+                Net::new("z_out")
+                    .with_driver(Endpoint::cell("lut2", "O"))
+                    .with_sink(Endpoint::port("z_out", "z_out")),
+            ],
+            ..Design::default()
+        };
+
+        let mapped = super::super::mapped::build_fde_mapped_design(&design).expect("mapped design");
+        let ordered = ordered_cells_for_write(&mapped)
+            .into_iter()
+            .map(|cell| (cell.name.as_str(), cell.type_name.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered[4..],
+            vec![
+                ("Buf-pad-ena", "IBUF"),
+                ("Buf-pad-rst", "IBUF"),
+                ("Buf-pad-clk", "CLKBUF"),
+                ("IBuf-clkpad-clk", "CLKBUF"),
+                ("Buf-pad-a_out", "OBUF"),
+                ("Buf-pad-z_out", "OBUF"),
+                ("clk_ipad", "IPAD"),
+                ("ena_ipad", "IPAD"),
+                ("rst_ipad", "IPAD"),
+                ("a_out_opad", "OPAD"),
+                ("z_out_opad", "OPAD"),
+            ]
+        );
+
+        let xml = save_design_xml(&design, &XmlWriteContext::default()).expect("mapped xml");
+        let doc = roxmltree::Document::parse(&xml).expect("xml document");
+        let instances = doc
+            .descendants()
+            .filter(|node| node.has_tag_name("instance"))
+            .map(|node| {
+                (
+                    node.attribute("name").expect("instance name"),
+                    node.attribute("moduleRef").expect("module ref"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &instances[4..15],
+            &[
+                ("Buf-pad-ena", "IBUF"),
+                ("Buf-pad-rst", "IBUF"),
+                ("Buf-pad-clk", "CLKBUF"),
+                ("IBuf-clkpad-clk", "CLKBUF"),
+                ("Buf-pad-a_out", "OBUF"),
+                ("Buf-pad-z_out", "OBUF"),
+                ("clk_ipad", "IPAD"),
+                ("ena_ipad", "IPAD"),
+                ("rst_ipad", "IPAD"),
+                ("a_out_opad", "OPAD"),
+                ("z_out_opad", "OPAD"),
+            ]
+        );
     }
 }
