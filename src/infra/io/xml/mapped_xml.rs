@@ -52,14 +52,7 @@ pub(super) fn load_fde_mapped_design_xml(root: Node<'_, '_>) -> Result<Design> {
     let ports = module_node
         .children()
         .filter(|node| node.has_tag_name("port"))
-        .map(|port| {
-            Port::new(
-                attr(&port, "name"),
-                attr(&port, "direction")
-                    .parse()
-                    .unwrap_or(PortDirection::Input),
-            )
-        })
+        .flat_map(mapped_ports)
         .collect::<Vec<_>>();
     let port_directions = ports
         .iter()
@@ -222,7 +215,7 @@ pub(super) fn load_fde_mapped_design_xml(root: Node<'_, '_>) -> Result<Design> {
         nets.push(net);
     }
 
-    Ok(Design {
+    let mut design = Design {
         name: attr(&root, "name"),
         stage: "mapped".to_string(),
         metadata: crate::ir::Metadata {
@@ -235,7 +228,47 @@ pub(super) fn load_fde_mapped_design_xml(root: Node<'_, '_>) -> Result<Design> {
         cells: cells.into_values().collect(),
         nets,
         ..Design::default()
-    })
+    };
+    lower_mapped_constant_sources(&mut design);
+    Ok(design)
+}
+
+fn mapped_ports(node: Node<'_, '_>) -> Vec<Port> {
+    let direction = attr(&node, "direction")
+        .parse()
+        .unwrap_or(PortDirection::Input);
+    expanded_mapped_port_names(node)
+        .into_iter()
+        .map(|name| {
+            let mut port = Port::new(name, direction.clone());
+            port.width = 1;
+            port
+        })
+        .collect()
+}
+
+fn expanded_mapped_port_names(node: Node<'_, '_>) -> Vec<String> {
+    let name = attr(&node, "name");
+    let Some(msb) = node
+        .attribute("msb")
+        .and_then(|value| value.parse::<usize>().ok())
+    else {
+        return vec![name];
+    };
+    let lsb = node
+        .attribute("lsb")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(msb);
+    if msb >= lsb {
+        (lsb..=msb)
+            .rev()
+            .map(|index| format!("{name}[{index}]"))
+            .collect()
+    } else {
+        (msb..=lsb)
+            .map(|index| format!("{name}[{index}]"))
+            .collect()
+    }
 }
 
 fn mapped_modules(root: Node<'_, '_>) -> BTreeMap<String, MappedXmlModule> {
@@ -312,8 +345,6 @@ fn normalized_mapped_property_value(cell: &Cell, key: &str, value: String) -> St
         if !trimmed.is_empty()
             && !trimmed.starts_with("0x")
             && !trimmed.starts_with("0X")
-            && !trimmed.starts_with("0b")
-            && !trimmed.starts_with("0B")
             && !trimmed.contains('\'')
         {
             return format!("0x{trimmed}");
@@ -374,6 +405,82 @@ fn mapped_net_name(
         .to_string()
 }
 
+fn lower_mapped_constant_sources(design: &mut Design) {
+    let lut_size = design.metadata.lut_size.max(1);
+    let mut lowered = BTreeSet::new();
+
+    for (cell_index, cell) in design.cells.iter_mut().enumerate() {
+        let Some(init) = mapped_constant_lut_init(cell, lut_size) else {
+            continue;
+        };
+        if cell.outputs.is_empty() {
+            continue;
+        }
+        cell.kind = CellKind::Lut;
+        cell.type_name = format!("LUT{lut_size}");
+        cell.inputs.clear();
+        for output in &mut cell.outputs {
+            output.port = "O".to_string();
+        }
+        cell.set_property("lut_init", init);
+        lowered.insert(cell_index);
+    }
+
+    if lowered.is_empty() {
+        return;
+    }
+
+    let lowered_driver_nets = {
+        let index = design.index();
+        design
+            .nets
+            .iter()
+            .map(|net| {
+                net.driver
+                    .as_ref()
+                    .and_then(|driver| index.cell_for_endpoint(driver))
+                    .is_some_and(|cell_id| lowered.contains(&cell_id.index()))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (net, is_lowered_driver) in design.nets.iter_mut().zip(lowered_driver_nets) {
+        if is_lowered_driver && let Some(driver) = &mut net.driver {
+            driver.pin = "O".to_string();
+        }
+    }
+}
+
+fn mapped_constant_lut_init(cell: &Cell, lut_size: usize) -> Option<String> {
+    match cell.constant_kind()? {
+        crate::domain::ConstantKind::Zero => Some(format_lut_init_hex(0, lut_size)),
+        crate::domain::ConstantKind::One => {
+            let bits = 1usize.checked_shl(lut_size.min(7) as u32).unwrap_or(128);
+            let value = if bits >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            };
+            Some(format_lut_init_hex(value, lut_size))
+        }
+        crate::domain::ConstantKind::Unknown => None,
+    }
+}
+
+fn format_lut_init_hex(value: u128, lut_width: usize) -> String {
+    let bit_count = 1usize.checked_shl(lut_width.min(7) as u32).unwrap_or(128);
+    let masked = if bit_count >= 128 {
+        value
+    } else {
+        value & ((1u128 << bit_count) - 1)
+    };
+    let digits = match lut_width {
+        0..=2 => 1,
+        _ => 1usize << lut_width.saturating_sub(2).min(5),
+    };
+    format!("0x{masked:0digits$X}")
+}
+
 fn disjoint_find(parent: &mut [usize], index: usize) -> usize {
     if parent[index] != index {
         let root = disjoint_find(parent, parent[index]);
@@ -427,5 +534,177 @@ mod tests {
             .find(|cell| cell.name == "id00001")
             .expect("lut cell");
         assert_eq!(cell.property("lut_init"), Some("0x96"));
+    }
+
+    #[test]
+    fn mapped_lut_init_with_leading_zero_b_is_still_imported_as_hex() {
+        let xml = r#"
+<design name="demo">
+  <external name="cell_lib">
+    <module name="LUT4" type="LUT">
+      <port name="A" direction="input"/>
+      <port name="B" direction="input"/>
+      <port name="C" direction="input"/>
+      <port name="D" direction="input"/>
+      <property name="INIT" value="0000"/>
+      <port name="O" direction="output"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="demo" type="GENERIC">
+      <port name="y" direction="output"/>
+      <contents>
+        <instance name="u0" moduleRef="LUT4" libraryRef="cell_lib">
+          <property name="INIT" value="0B00"/>
+        </instance>
+        <net name="y">
+          <portRef name="O" instanceRef="u0"/>
+          <portRef name="y"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule name="demo" libraryRef="work_lib"/>
+</design>
+"#;
+
+        let doc = Document::parse(xml).expect("xml parse");
+        let design = load_fde_mapped_design_xml(doc.root_element()).expect("mapped xml import");
+        let cell = design
+            .cells
+            .iter()
+            .find(|cell| cell.name == "u0")
+            .expect("lut cell");
+        assert_eq!(cell.property("lut_init"), Some("0x0B00"));
+    }
+
+    #[test]
+    fn mapped_import_expands_bus_ports_into_bit_ports() {
+        let xml = r#"
+<design name="demo">
+  <external name="cell_lib">
+    <module name="OBUF" type="OBUF">
+      <port name="I" direction="input"/>
+      <port name="O" direction="output"/>
+    </module>
+    <module name="OPAD" type="OPAD">
+      <port name="PAD" direction="output"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="demo" type="GENERIC">
+      <port name="led" msb="1" lsb="0" direction="output"/>
+      <contents>
+        <instance name="Buf-pad-led[1]" moduleRef="OBUF" libraryRef="cell_lib"/>
+        <instance name="led[1]_opad" moduleRef="OPAD" libraryRef="cell_lib"/>
+        <instance name="Buf-pad-led[0]" moduleRef="OBUF" libraryRef="cell_lib"/>
+        <instance name="led[0]_opad" moduleRef="OPAD" libraryRef="cell_lib"/>
+        <net name="net_Buf-pad-led[1]">
+          <portRef name="O" instanceRef="Buf-pad-led[1]"/>
+          <portRef name="led[1]"/>
+        </net>
+        <net name="led[1]">
+          <portRef name="PAD" instanceRef="led[1]_opad"/>
+          <portRef name="I" instanceRef="Buf-pad-led[1]"/>
+          <portRef name="led[1]"/>
+        </net>
+        <net name="net_Buf-pad-led[0]">
+          <portRef name="O" instanceRef="Buf-pad-led[0]"/>
+          <portRef name="led[0]"/>
+        </net>
+        <net name="led[0]">
+          <portRef name="PAD" instanceRef="led[0]_opad"/>
+          <portRef name="I" instanceRef="Buf-pad-led[0]"/>
+          <portRef name="led[0]"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule name="demo" libraryRef="work_lib"/>
+</design>
+"#;
+
+        let doc = Document::parse(xml).expect("xml parse");
+        let design = load_fde_mapped_design_xml(doc.root_element()).expect("mapped xml import");
+
+        let port_names = design
+            .ports
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(port_names, vec!["led[1]", "led[0]"]);
+
+        let net_names = design
+            .nets
+            .iter()
+            .map(|net| net.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(net_names.contains(&"led[1]"));
+        assert!(net_names.contains(&"led[0]"));
+    }
+
+    #[test]
+    fn mapped_import_lowers_constant_output_drivers_into_lut_cells() {
+        let xml = r#"
+<design name="const_zero_output">
+  <external name="cell_lib">
+    <module name="LOGIC_0" type="LOGIC_0">
+      <port name="LOGIC_0_PIN" direction="output"/>
+    </module>
+    <module name="OBUF" type="OBUF">
+      <port name="I" direction="input"/>
+      <port name="O" direction="output"/>
+    </module>
+    <module name="OPAD" type="OPAD">
+      <port name="PAD" direction="output"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="const_zero_output" type="GENERIC">
+      <port name="led" direction="output"/>
+      <contents>
+        <instance name="GND" moduleRef="LOGIC_0" libraryRef="cell_lib"/>
+        <instance name="Buf-pad-led" moduleRef="OBUF" libraryRef="cell_lib"/>
+        <instance name="led_opad" moduleRef="OPAD" libraryRef="cell_lib"/>
+        <net name="net_Buf-pad-led">
+          <portRef name="LOGIC_0_PIN" instanceRef="GND"/>
+          <portRef name="I" instanceRef="Buf-pad-led"/>
+        </net>
+        <net name="led">
+          <portRef name="PAD" instanceRef="led_opad"/>
+          <portRef name="O" instanceRef="Buf-pad-led"/>
+          <portRef name="led"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule name="const_zero_output" libraryRef="work_lib"/>
+</design>
+"#;
+
+        let doc = Document::parse(xml).expect("xml parse");
+        let design = load_fde_mapped_design_xml(doc.root_element()).expect("mapped xml import");
+
+        let gnd = design
+            .cells
+            .iter()
+            .find(|cell| cell.name == "GND")
+            .expect("lowered gnd cell");
+        assert!(gnd.is_lut());
+        assert_eq!(gnd.type_name, "LUT4");
+        assert_eq!(gnd.property("lut_init"), Some("0x0000"));
+
+        let driver_net = design
+            .nets
+            .iter()
+            .find(|net| net.name == "led")
+            .expect("led net");
+        assert_eq!(
+            driver_net
+                .driver
+                .as_ref()
+                .map(|driver| (driver.name.as_str(), driver.pin.as_str())),
+            Some(("GND", "O"))
+        );
     }
 }

@@ -421,7 +421,37 @@ fn pack_respects_slice_shape_limits_when_greedy_fill_expands() -> Result<()> {
 }
 
 #[test]
-fn pack_does_not_fill_slice_with_unconnected_lane() -> Result<()> {
+fn pack_can_fill_slice_with_unconnected_pure_lut_lane() -> Result<()> {
+    let design = Design {
+        name: "pack-unconnected-luts".to_string(),
+        cells: vec![
+            Cell::lut("lut0", "LUT4").with_output("O", "n0"),
+            Cell::lut("lut1", "LUT4").with_output("O", "n1"),
+        ],
+        nets: vec![Net::new("n0"), Net::new("n1")],
+        ..Design::default()
+    };
+
+    let packed = run(
+        design,
+        &PackOptions {
+            capacity: 4,
+            ..PackOptions::default()
+        },
+    )?
+    .value;
+
+    assert_eq!(packed.clusters.len(), 1);
+    assert_eq!(
+        packed.clusters[0].members,
+        vec!["lut0".to_string(), "lut1".to_string()]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pack_does_not_mix_lut_ff_lane_with_unconnected_pure_lut_lane() -> Result<()> {
     let design = Design {
         name: "pack-no-unconnected-fill".to_string(),
         cells: vec![

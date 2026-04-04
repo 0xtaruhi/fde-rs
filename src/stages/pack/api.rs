@@ -349,13 +349,15 @@ fn best_cluster_candidate(
     cluster_control_set: Option<&ControlSet>,
     capacity: usize,
 ) -> Option<usize> {
+    let cluster_kind = lanes[cluster_lane_ids[0]].kind;
     let mut best_connected = None::<((usize, usize), usize)>;
+    let mut best_unconnected_lut = None::<usize>;
     for candidate in 0..lanes.len() {
         if used[candidate] || lanes[candidate].kind == LaneKind::Other {
             continue;
         }
         if !cluster_can_accept_lane(
-            lanes[cluster_lane_ids[0]].kind,
+            cluster_kind,
             cluster_lane_ids,
             &lanes[candidate],
             usage,
@@ -384,8 +386,18 @@ fn best_cluster_candidate(
             }
             continue;
         }
+        if cluster_kind == LaneKind::Lut {
+            match best_unconnected_lut {
+                Some(best_lane)
+                    if compare_seed_lanes(&candidate, &best_lane, topology)
+                        == std::cmp::Ordering::Greater => {}
+                _ => best_unconnected_lut = Some(candidate),
+            }
+        }
     }
-    best_connected.map(|(_, lane_id)| lane_id)
+    best_connected
+        .map(|(_, lane_id)| lane_id)
+        .or(best_unconnected_lut)
 }
 
 fn cluster_can_accept_lane(
