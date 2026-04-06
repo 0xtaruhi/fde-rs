@@ -8,6 +8,7 @@ use crate::{
     ir::{Cell, CellId, Design, Endpoint, EndpointKind},
     normalize::prune_disconnected_nets,
 };
+use anyhow::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -17,7 +18,7 @@ pub(super) struct RewriteSummary {
     pub(super) buffered_ff_inputs: usize,
 }
 
-pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> RewriteSummary {
+pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Result<RewriteSummary> {
     let lut_inits_are_decimal = design.metadata.source_format.eq_ignore_ascii_case("edif");
 
     for cell in &mut design.cells {
@@ -28,27 +29,65 @@ pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Rewri
             let width = infer_lut_width(&cell.type_name).max(1);
             cell.set_property("lut_init", default_lut_mask(width));
         }
-        if matches!(cell.primitive_kind(), PrimitiveKind::Generic) {
-            let input_count = cell.inputs.len().clamp(1, options.lut_size.max(1));
-            cell.kind = CellKind::Lut;
-            cell.type_name = format!("LUT{}", input_count.max(2));
-            canonicalize_lut_init(cell, lut_inits_are_decimal);
-            if cell.property("lut_init").is_none() {
-                cell.set_property("lut_init", default_lut_mask(input_count));
-            }
-        }
     }
+
+    reject_unsupported_generic_cells(design)?;
 
     let normalized_luts = normalize_repeated_lut_inputs(design);
     let lowered_constants = lower_constant_sources(design, options.lut_size.max(1));
     let buffered_ff_inputs = buffer_non_lut_ff_inputs(design);
     prune_disconnected_nets(design);
 
-    RewriteSummary {
+    Ok(RewriteSummary {
         normalized_luts,
         lowered_constants,
         buffered_ff_inputs,
+    })
+}
+
+fn reject_unsupported_generic_cells(design: &Design) -> Result<()> {
+    let unsupported = design
+        .cells
+        .iter()
+        .filter(|cell| matches!(cell.primitive_kind(), PrimitiveKind::Generic))
+        .map(describe_generic_cell)
+        .collect::<Vec<_>>();
+    if unsupported.is_empty() {
+        return Ok(());
     }
+
+    let preview_len = unsupported.len().min(4);
+    let preview = unsupported[..preview_len].join(", ");
+    let more = unsupported.len().saturating_sub(preview_len);
+    let suffix = if more > 0 {
+        format!(" (and {more} more)")
+    } else {
+        String::new()
+    };
+    bail!(
+        "Unsupported generic cells remain after synthesis: {preview}{suffix}. \
+Re-run Yosys with `maccmap -unmap` plus a follow-up `techmap`/`simplemap` sweep before exporting EDIF so arithmetic cells such as `$macc_v2` are lowered into supported logic."
+    );
+}
+
+fn describe_generic_cell(cell: &Cell) -> String {
+    let outputs = cell
+        .outputs
+        .iter()
+        .map(|pin| pin.port.as_str())
+        .take(3)
+        .collect::<Vec<_>>();
+    let outputs = if outputs.is_empty() {
+        "no outputs".to_string()
+    } else {
+        let suffix = if cell.outputs.len() > outputs.len() {
+            ", ..."
+        } else {
+            ""
+        };
+        format!("outputs {}{suffix}", outputs.join("/"))
+    };
+    format!("{}<{}> ({outputs})", cell.name, cell.type_name)
 }
 
 pub(super) fn normalize_repeated_lut_inputs(design: &mut Design) -> usize {

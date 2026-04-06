@@ -325,3 +325,23 @@ fn mapped_xml_roundtrip_preserves_inserted_lut1_helpers() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn map_rejects_unsupported_generic_cells_instead_of_silently_rewriting_them() {
+    let design = Design {
+        name: "generic-macc".to_string(),
+        cells: vec![
+            Cell::new("mac0", CellKind::Generic, "$macc_v2")
+                .with_input("A[0]", "a0")
+                .with_input("B[0]", "b0")
+                .with_output("Y[0]", "y0")
+                .with_output("Y[1]", "y1"),
+        ],
+        ..Design::default()
+    };
+
+    let err = run(design, &MapOptions::default()).expect_err("generic arithmetic cell must fail");
+    let message = err.to_string();
+    assert!(message.contains("$macc_v2"));
+    assert!(message.contains("maccmap -unmap"));
+}

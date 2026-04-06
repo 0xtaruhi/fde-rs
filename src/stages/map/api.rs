@@ -42,7 +42,7 @@ pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapAr
         ));
     }
 
-    let summary = rewrite_design(&mut design, options);
+    let summary = rewrite_design(&mut design, options)?;
 
     let structural_verilog = options
         .emit_structural_verilog

@@ -247,7 +247,12 @@ python3 scripts/synth_yosys_fde.py \
   path/to/your_top.v
 ```
 
-If you already have your own Yosys flow, any compatible EDIF is fine.
+The helper lowers Yosys arithmetic accumulators with `maccmap -unmap` plus a
+follow-up `techmap`/`simplemap` sweep, so downstream stages do not see raw
+`$macc_v2` or `$mul` cells in the exported EDIF.
+
+If you already have your own Yosys flow, any compatible EDIF is fine, but make
+sure arithmetic cells are similarly lowered before exporting EDIF.
 
 ## Board regressions
 
