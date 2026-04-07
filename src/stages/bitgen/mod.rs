@@ -25,6 +25,8 @@ pub(crate) use device::{DeviceDesignIndex, DeviceEndpointRef};
 pub use frame_bitstream::{SerializedTextBitstream, serialize_text_bitstream};
 
 #[cfg(test)]
+pub(crate) use programming::ProgrammedMemory;
+#[cfg(test)]
 pub(crate) use programming::RequestedConfig;
 pub(crate) use programming::{ProgrammedSite, ProgrammingImage, build_programming_image};
 

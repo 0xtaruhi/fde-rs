@@ -1,5 +1,5 @@
 use super::shared::WireSet;
-use crate::{DeviceCell, DeviceEndpoint};
+use crate::{DeviceCell, DeviceEndpoint, domain::block_ram_route_target};
 
 use super::super::types::WireInterner;
 
@@ -9,7 +9,9 @@ pub(super) fn bram_source_nets(
     wires: &mut WireInterner,
 ) -> WireSet {
     let mut set = WireSet::new();
-    set.push(wires.intern(&normalized_bram_wire_name(&endpoint.pin)));
+    if let Some(target) = block_ram_route_target(&endpoint.pin) {
+        set.push(wires.intern(&target.wire_name));
+    }
     set
 }
 
@@ -19,14 +21,8 @@ pub(super) fn bram_sink_nets(
     wires: &mut WireInterner,
 ) -> WireSet {
     let mut set = WireSet::new();
-    set.push(wires.intern(&normalized_bram_wire_name(&endpoint.pin)));
+    if let Some(target) = block_ram_route_target(&endpoint.pin) {
+        set.push(wires.intern(&target.wire_name));
+    }
     set
-}
-
-fn normalized_bram_wire_name(pin: &str) -> String {
-    pin.trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-        .map(|ch| ch.to_ascii_uppercase())
-        .collect()
 }

@@ -531,6 +531,137 @@ fn owner_tile_assignments_move_into_target_tile_when_arch_is_available() {
 }
 
 #[test]
+fn block_ram_site_requests_encode_into_owner_tiles() {
+    let cil = parse_cil_str(
+        r##"
+        <device name="mini">
+          <site_library>
+            <block_site name="BRAM">
+              <config_info amount="2">
+                <cfg_element name="PORTA_ATTR">
+                  <function name="2048X2" default="no">
+                    <sram basic_cell="BLOCKRAM" name="PORTA_ATTR0" content="1"/>
+                  </function>
+                </cfg_element>
+                <cfg_element name="ENAMUX">
+                  <function name="ENA" default="no">
+                    <sram basic_cell="BLOCKRAM" name="ENAMUX0" content="1"/>
+                  </function>
+                </cfg_element>
+              </config_info>
+            </block_site>
+          </site_library>
+          <cluster_library>
+            <homogeneous_cluster name="BRAM1x1" type="BRAM"/>
+          </cluster_library>
+          <tile_library>
+            <tile name="OWNER" sram_amount="R1C2"/>
+            <tile name="SOURCE" sram_amount="R1C2">
+              <cluster_info amount="1">
+                <cluster type="BRAM1x1">
+                  <site name="BRAM" position="R0C0">
+                    <site_sram>
+                      <sram basic_cell="BLOCKRAM" sram_name="PORTA_ATTR0" local_place="B0W0" owner_tile="OWNER" brick_offset="R-2C0"/>
+                      <sram basic_cell="BLOCKRAM" sram_name="ENAMUX0" local_place="B0W1" owner_tile="OWNER" brick_offset="R-2C0"/>
+                    </site_sram>
+                  </site>
+                </cluster>
+              </cluster_info>
+            </tile>
+          </tile_library>
+        </device>
+        "##,
+    )
+    .expect("parse mini cil");
+
+    let programming = ProgrammingImage {
+        sites: vec![programmed_site(
+            "SRC0",
+            "SOURCE",
+            SiteKind::BlockRam,
+            "BRAM",
+            2,
+            0,
+            &[("PORTA_ATTR", "2048X2"), ("ENAMUX", "ENA")],
+        )],
+        ..ProgrammingImage::default()
+    };
+    let arch = Arch {
+        width: 3,
+        height: 1,
+        tiles: BTreeMap::from([
+            (
+                (0, 0),
+                TileInstance {
+                    name: "OWN0".to_string(),
+                    tile_type: "OWNER".to_string(),
+                    logic_x: 0,
+                    logic_y: 0,
+                    bit_x: 0,
+                    bit_y: 0,
+                    phy_x: 0,
+                    phy_y: 0,
+                },
+            ),
+            (
+                (2, 0),
+                TileInstance {
+                    name: "SRC0".to_string(),
+                    tile_type: "SOURCE".to_string(),
+                    logic_x: 2,
+                    logic_y: 0,
+                    bit_x: 2,
+                    bit_y: 0,
+                    phy_x: 2,
+                    phy_y: 0,
+                },
+            ),
+        ]),
+        ..Arch::default()
+    };
+
+    let image = encode_config_image(&programming, &cil, Some(&arch)).expect("encode config image");
+
+    let source = image
+        .tiles
+        .iter()
+        .find(|tile| tile.tile_name == "SRC0")
+        .expect("source tile");
+    assert!(
+        source
+            .configs
+            .iter()
+            .any(|cfg| cfg.site_name == "BRAM" && cfg.cfg_name == "PORTA_ATTR")
+    );
+    assert!(source.assignments.is_empty());
+
+    let owner = image
+        .tiles
+        .iter()
+        .find(|tile| tile.tile_name == "OWN0")
+        .expect("owner tile");
+    assert_eq!(owner.tile_type, "OWNER");
+    assert!(owner.assignments.iter().any(|bit| {
+        bit.site_name == "BRAM"
+            && bit.cfg_name == "PORTA_ATTR"
+            && bit.basic_cell == "BLOCKRAM"
+            && bit.sram_name == "PORTA_ATTR0"
+            && bit.row == 0
+            && bit.col == 0
+            && bit.value == 1
+    }));
+    assert!(owner.assignments.iter().any(|bit| {
+        bit.site_name == "BRAM"
+            && bit.cfg_name == "ENAMUX"
+            && bit.basic_cell == "BLOCKRAM"
+            && bit.sram_name == "ENAMUX0"
+            && bit.row == 0
+            && bit.col == 1
+            && bit.value == 1
+    }));
+}
+
+#[test]
 fn explicit_slice_requests_override_default_alias_configs_on_shared_srams() {
     let cil = parse_cil_str(
         r##"

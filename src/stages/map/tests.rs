@@ -285,6 +285,305 @@ fn map_buffers_ff_data_inputs_that_are_not_lut_driven() -> Result<()> {
 }
 
 #[test]
+fn map_normalizes_ramb4_single_port_cells_into_canonical_blockram_1() -> Result<()> {
+    let design = Design {
+        name: "bram_single".to_string(),
+        cells: vec![
+            Cell::new("ram0", CellKind::BlockRam, "RAMB4_S2")
+                .with_input("CLK", "clk")
+                .with_input("WE", "we")
+                .with_input("RST", "rst")
+                .with_input("EN", "en")
+                .with_input("DI[0]", "di0")
+                .with_input("DI[1]", "di1")
+                .with_input("ADDR[0]", "a0")
+                .with_input("ADDR[10]", "a10")
+                .with_output("DO[0]", "do0")
+                .with_output("DO[1]", "do1"),
+        ],
+        nets: vec![
+            Net::new("clk")
+                .with_driver(Endpoint::port("clk", "clk"))
+                .with_sink(Endpoint::cell("ram0", "CLK")),
+            Net::new("we")
+                .with_driver(Endpoint::port("we", "we"))
+                .with_sink(Endpoint::cell("ram0", "WE")),
+            Net::new("rst")
+                .with_driver(Endpoint::port("rst", "rst"))
+                .with_sink(Endpoint::cell("ram0", "RST")),
+            Net::new("en")
+                .with_driver(Endpoint::port("en", "en"))
+                .with_sink(Endpoint::cell("ram0", "EN")),
+            Net::new("di0")
+                .with_driver(Endpoint::port("di0", "di0"))
+                .with_sink(Endpoint::cell("ram0", "DI[0]")),
+            Net::new("di1")
+                .with_driver(Endpoint::port("di1", "di1"))
+                .with_sink(Endpoint::cell("ram0", "DI[1]")),
+            Net::new("a0")
+                .with_driver(Endpoint::port("a0", "a0"))
+                .with_sink(Endpoint::cell("ram0", "ADDR[0]")),
+            Net::new("a10")
+                .with_driver(Endpoint::port("a10", "a10"))
+                .with_sink(Endpoint::cell("ram0", "ADDR[10]")),
+            Net::new("do0")
+                .with_driver(Endpoint::cell("ram0", "DO[0]"))
+                .with_sink(Endpoint::port("do0", "do0")),
+            Net::new("do1")
+                .with_driver(Endpoint::cell("ram0", "DO[1]"))
+                .with_sink(Endpoint::port("do1", "do1")),
+        ],
+        ..Design::default()
+    };
+
+    let artifact = run(design, &MapOptions::default())?.value;
+    let ram = artifact
+        .design
+        .cells
+        .iter()
+        .find(|cell| cell.name == "ram0")
+        .expect("ram0");
+
+    assert_eq!(ram.type_name, "BLOCKRAM_1");
+    assert_eq!(ram.property("PORT_ATTR"), Some("2048X2"));
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "di0")
+            .map(|pin| pin.port.as_str()),
+        Some("DI0")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "di1")
+            .map(|pin| pin.port.as_str()),
+        Some("DI1")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "a0")
+            .map(|pin| pin.port.as_str()),
+        Some("ADDR1")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "a10")
+            .map(|pin| pin.port.as_str()),
+        Some("ADDR11")
+    );
+    assert_eq!(
+        ram.outputs
+            .iter()
+            .find(|pin| pin.net == "do0")
+            .map(|pin| pin.port.as_str()),
+        Some("DO0")
+    );
+    assert_eq!(
+        ram.outputs
+            .iter()
+            .find(|pin| pin.net == "do1")
+            .map(|pin| pin.port.as_str()),
+        Some("DO1")
+    );
+
+    let do0 = artifact
+        .design
+        .nets
+        .iter()
+        .find(|net| net.name == "do0")
+        .expect("do0");
+    let a0 = artifact
+        .design
+        .nets
+        .iter()
+        .find(|net| net.name == "a0")
+        .expect("a0");
+    assert_eq!(
+        do0.driver.as_ref().map(|endpoint| endpoint.pin.as_str()),
+        Some("DO0")
+    );
+    assert_eq!(
+        a0.sinks.first().map(|endpoint| endpoint.pin.as_str()),
+        Some("ADDR1")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn map_normalizes_ramb4_dual_port_cells_into_canonical_blockram_2() -> Result<()> {
+    let mut ram = Cell::new("ram0", CellKind::BlockRam, "RAMB4_S1_S16")
+        .with_input("CLKA", "clka")
+        .with_input("WEA", "wea")
+        .with_input("RSTA", "rsta")
+        .with_input("ENA", "ena")
+        .with_input("CLKB", "clkb")
+        .with_input("WEB", "web")
+        .with_input("RSTB", "rstb")
+        .with_input("ENB", "enb")
+        .with_input("DIA[0]", "dia0")
+        .with_input("ADDRA[0]", "addra0")
+        .with_input("ADDRA[11]", "addra11")
+        .with_output("DOA[0]", "doa0")
+        .with_input("DIB[15]", "dib15")
+        .with_input("ADDRB[0]", "addrb0")
+        .with_input("ADDRB[7]", "addrb7")
+        .with_output("DOB[15]", "dob15");
+    ram.set_property("INIT_00", "0123456789ABCDEF");
+
+    let design = Design {
+        name: "bram_dual".to_string(),
+        cells: vec![ram],
+        nets: vec![
+            Net::new("clka")
+                .with_driver(Endpoint::port("clka", "clka"))
+                .with_sink(Endpoint::cell("ram0", "CLKA")),
+            Net::new("wea")
+                .with_driver(Endpoint::port("wea", "wea"))
+                .with_sink(Endpoint::cell("ram0", "WEA")),
+            Net::new("rsta")
+                .with_driver(Endpoint::port("rsta", "rsta"))
+                .with_sink(Endpoint::cell("ram0", "RSTA")),
+            Net::new("ena")
+                .with_driver(Endpoint::port("ena", "ena"))
+                .with_sink(Endpoint::cell("ram0", "ENA")),
+            Net::new("clkb")
+                .with_driver(Endpoint::port("clkb", "clkb"))
+                .with_sink(Endpoint::cell("ram0", "CLKB")),
+            Net::new("web")
+                .with_driver(Endpoint::port("web", "web"))
+                .with_sink(Endpoint::cell("ram0", "WEB")),
+            Net::new("rstb")
+                .with_driver(Endpoint::port("rstb", "rstb"))
+                .with_sink(Endpoint::cell("ram0", "RSTB")),
+            Net::new("enb")
+                .with_driver(Endpoint::port("enb", "enb"))
+                .with_sink(Endpoint::cell("ram0", "ENB")),
+            Net::new("dia0")
+                .with_driver(Endpoint::port("dia0", "dia0"))
+                .with_sink(Endpoint::cell("ram0", "DIA[0]")),
+            Net::new("addra0")
+                .with_driver(Endpoint::port("addra0", "addra0"))
+                .with_sink(Endpoint::cell("ram0", "ADDRA[0]")),
+            Net::new("addra11")
+                .with_driver(Endpoint::port("addra11", "addra11"))
+                .with_sink(Endpoint::cell("ram0", "ADDRA[11]")),
+            Net::new("doa0")
+                .with_driver(Endpoint::cell("ram0", "DOA[0]"))
+                .with_sink(Endpoint::port("doa0", "doa0")),
+            Net::new("dib15")
+                .with_driver(Endpoint::port("dib15", "dib15"))
+                .with_sink(Endpoint::cell("ram0", "DIB[15]")),
+            Net::new("addrb0")
+                .with_driver(Endpoint::port("addrb0", "addrb0"))
+                .with_sink(Endpoint::cell("ram0", "ADDRB[0]")),
+            Net::new("addrb7")
+                .with_driver(Endpoint::port("addrb7", "addrb7"))
+                .with_sink(Endpoint::cell("ram0", "ADDRB[7]")),
+            Net::new("dob15")
+                .with_driver(Endpoint::cell("ram0", "DOB[15]"))
+                .with_sink(Endpoint::port("dob15", "dob15")),
+        ],
+        ..Design::default()
+    };
+
+    let artifact = run(design, &MapOptions::default())?.value;
+    let ram = artifact
+        .design
+        .cells
+        .iter()
+        .find(|cell| cell.name == "ram0")
+        .expect("ram0");
+
+    assert_eq!(ram.type_name, "BLOCKRAM_2");
+    assert_eq!(ram.property("PORTA_ATTR"), Some("4096X1"));
+    assert_eq!(ram.property("PORTB_ATTR"), Some("256X16"));
+    assert_eq!(ram.property("INIT_00"), Some("0123456789ABCDEF"));
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "dia0")
+            .map(|pin| pin.port.as_str()),
+        Some("DIA0")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "addra0")
+            .map(|pin| pin.port.as_str()),
+        Some("ADDRA0")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "addra11")
+            .map(|pin| pin.port.as_str()),
+        Some("ADDRA11")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "dib15")
+            .map(|pin| pin.port.as_str()),
+        Some("DIB15")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "addrb0")
+            .map(|pin| pin.port.as_str()),
+        Some("ADDRB4")
+    );
+    assert_eq!(
+        ram.inputs
+            .iter()
+            .find(|pin| pin.net == "addrb7")
+            .map(|pin| pin.port.as_str()),
+        Some("ADDRB11")
+    );
+    assert_eq!(
+        ram.outputs
+            .iter()
+            .find(|pin| pin.net == "doa0")
+            .map(|pin| pin.port.as_str()),
+        Some("DOA0")
+    );
+    assert_eq!(
+        ram.outputs
+            .iter()
+            .find(|pin| pin.net == "dob15")
+            .map(|pin| pin.port.as_str()),
+        Some("DOB15")
+    );
+
+    let addrb0 = artifact
+        .design
+        .nets
+        .iter()
+        .find(|net| net.name == "addrb0")
+        .expect("addrb0");
+    let dob15 = artifact
+        .design
+        .nets
+        .iter()
+        .find(|net| net.name == "dob15")
+        .expect("dob15");
+    assert_eq!(
+        addrb0.sinks.first().map(|endpoint| endpoint.pin.as_str()),
+        Some("ADDRB4")
+    );
+    assert_eq!(
+        dob15.driver.as_ref().map(|endpoint| endpoint.pin.as_str()),
+        Some("DOB15")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn mapped_xml_roundtrip_preserves_inserted_lut1_helpers() -> Result<()> {
     let design = Design {
         name: "ff-buf-roundtrip".to_string(),

@@ -2,7 +2,7 @@ use super::{
     build_programming_image,
     derive::derive_site_programs,
     types::{
-        RequestedConfig, SiteProgramKind, SliceClockEnableMode, SliceFfDataPath,
+        BlockRamProgram, RequestedConfig, SiteProgramKind, SliceClockEnableMode, SliceFfDataPath,
         SliceLutOutputUsage,
     },
 };
@@ -20,7 +20,10 @@ fn logic_slice_program(device: &DeviceDesign) -> super::types::SliceProgram {
         .into_iter()
         .find_map(|site| match site.kind {
             SiteProgramKind::LogicSlice(program) => Some(program),
-            SiteProgramKind::Iob(_) | SiteProgramKind::Gclk | SiteProgramKind::GclkIob => None,
+            SiteProgramKind::BlockRam(_)
+            | SiteProgramKind::Iob(_)
+            | SiteProgramKind::Gclk
+            | SiteProgramKind::GclkIob => None,
         })
         .expect("logic slice program")
 }
@@ -32,6 +35,30 @@ fn compiled_logic_slice_requests(device: &DeviceDesign, cil_xml: &str) -> Vec<Re
         .into_iter()
         .find(|site| site.site_kind == SiteKind::LogicSlice)
         .expect("compiled logic slice site")
+        .requests
+}
+
+fn block_ram_program(device: &DeviceDesign) -> BlockRamProgram {
+    let index = DeviceDesignIndex::build(device);
+    derive_site_programs(device, &index)
+        .into_iter()
+        .find_map(|site| match site.kind {
+            SiteProgramKind::BlockRam(program) => Some(program),
+            SiteProgramKind::LogicSlice(_)
+            | SiteProgramKind::Iob(_)
+            | SiteProgramKind::Gclk
+            | SiteProgramKind::GclkIob => None,
+        })
+        .expect("block ram program")
+}
+
+fn compiled_block_ram_requests(device: &DeviceDesign, cil_xml: &str) -> Vec<RequestedConfig> {
+    let cil = parse_cil_str(cil_xml).expect("parse mini cil");
+    build_programming_image(device, &cil, None)
+        .sites
+        .into_iter()
+        .find(|site| site.site_kind == SiteKind::BlockRam)
+        .expect("compiled block ram site")
         .requests
 }
 
@@ -60,6 +87,52 @@ fn mini_logic_slice_lut_cil() -> &'static str {
                     <sram basic_cell="FLUT14" name="SRAM" address="14"/>
                     <sram basic_cell="FLUT15" name="SRAM" address="15"/>
                   </function>
+                </cfg_element>
+              </config_info>
+            </block_site>
+          </site_library>
+        </device>
+        "##
+}
+
+fn mini_block_ram_cil() -> &'static str {
+    r##"
+        <device name="mini">
+          <site_library>
+            <block_site name="BRAM">
+              <config_info amount="10">
+                <cfg_element name="WEAMUX">
+                  <function name="WEA" default="no"/>
+                </cfg_element>
+                <cfg_element name="WEBMUX">
+                  <function name="WEB" default="no"/>
+                </cfg_element>
+                <cfg_element name="ENAMUX">
+                  <function name="ENA" default="no"/>
+                </cfg_element>
+                <cfg_element name="ENBMUX">
+                  <function name="ENB" default="no"/>
+                </cfg_element>
+                <cfg_element name="RSTAMUX">
+                  <function name="RSTA" default="no"/>
+                </cfg_element>
+                <cfg_element name="RSTBMUX">
+                  <function name="RSTB" default="no"/>
+                </cfg_element>
+                <cfg_element name="CLKAMUX">
+                  <function name="CLK" default="no"/>
+                </cfg_element>
+                <cfg_element name="CLKBMUX">
+                  <function name="CLK" default="no"/>
+                </cfg_element>
+                <cfg_element name="PORTA_ATTR">
+                  <function name="4096X1" default="no"/>
+                  <function name="2048X2" default="no"/>
+                  <function name="256X16" default="yes"/>
+                </cfg_element>
+                <cfg_element name="PORTB_ATTR">
+                  <function name="4096X1" default="no"/>
+                  <function name="256X16" default="yes"/>
                 </cfg_element>
               </config_info>
             </block_site>
@@ -431,5 +504,199 @@ fn routed_lut_only_slice_emits_usage_bits_without_ff_controls() {
         !requests
             .iter()
             .any(|request| matches!(request.cfg_name.as_str(), "DXMUX" | "DYMUX" | "CKINV"))
+    );
+}
+
+#[test]
+fn single_port_block_ram_program_maps_port_attr_controls_and_init_words() {
+    let ram = DeviceCell::new("ram0", CellKind::BlockRam, "BLOCKRAM_1")
+        .with_properties(vec![
+            Property::new("PORT_ATTR", "2048X2"),
+            Property::new("INIT_00", "0123456789ABCDEF"),
+        ])
+        .placed(
+            SiteKind::BlockRam,
+            "BRAM",
+            "BRAM",
+            "BRAM0",
+            "LBRAMD",
+            (4, 5, 0),
+        );
+    let device = DeviceDesign {
+        cells: vec![ram],
+        nets: vec![
+            DeviceNet::new("clk", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("clk", "IN", (8, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "CLK", (4, 5, 0))),
+            DeviceNet::new("en", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("en", "IN", (8, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "EN", (4, 5, 0))),
+            DeviceNet::new("we", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("we", "IN", (8, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "WE", (4, 5, 0))),
+        ],
+        ..DeviceDesign::default()
+    };
+
+    let program = block_ram_program(&device);
+    assert_eq!(program.port_a_attr.as_deref(), Some("2048X2"));
+    assert_eq!(program.port_b_attr.as_deref(), None);
+    assert!(program.clka_used);
+    assert!(program.ena_used);
+    assert!(program.wea_used);
+    assert!(!program.rsta_used);
+    assert_eq!(
+        program
+            .init_words
+            .iter()
+            .find(|(name, _)| name == "INIT_00")
+            .map(|(_, value)| value.as_str()),
+        Some("0123456789ABCDEF")
+    );
+
+    let requests = compiled_block_ram_requests(&device, mini_block_ram_cil());
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.cfg_name == "PORTA_ATTR" && request.function_name == "2048X2")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.cfg_name == "CLKAMUX" && request.function_name == "CLK")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.cfg_name == "ENAMUX" && request.function_name == "ENA")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.cfg_name == "WEAMUX" && request.function_name == "WEA")
+    );
+    assert!(!requests.iter().any(|request| {
+        matches!(
+            request.cfg_name.as_str(),
+            "PORTB_ATTR" | "CLKBMUX" | "ENBMUX" | "WEBMUX" | "INIT_00"
+        )
+    }));
+}
+
+#[test]
+fn block_ram_program_preserves_imported_lowercase_init_properties() {
+    let ram = DeviceCell::new("ram0", CellKind::BlockRam, "BLOCKRAM_1")
+        .with_properties(vec![
+            Property::new(
+                "init_00",
+                "256'h00000000000000000000000000000000000000000000000000000000cafebabe",
+            ),
+            Property::new(
+                "init_01",
+                "256'h00000000000000000000000000000000000000000000000000000000deadbeef",
+            ),
+            Property::new("port_attr", "4096X1"),
+        ])
+        .placed(
+            SiteKind::BlockRam,
+            "BRAM",
+            "BRAM",
+            "BRAM0",
+            "LBRAMD",
+            (4, 0, 0),
+        );
+    let device = DeviceDesign {
+        cells: vec![ram],
+        ..DeviceDesign::default()
+    };
+
+    let program = block_ram_program(&device);
+    assert_eq!(program.port_a_attr.as_deref(), Some("4096X1"));
+    assert!(
+        program
+            .init_words
+            .iter()
+            .any(|(name, value)| name == "INIT_00" && value.ends_with("cafebabe"))
+    );
+    assert!(
+        program
+            .init_words
+            .iter()
+            .any(|(name, value)| name == "INIT_01" && value.ends_with("deadbeef"))
+    );
+}
+
+#[test]
+fn dual_port_block_ram_program_emits_cpp_compatible_dual_port_requests() {
+    let ram = DeviceCell::new("ram0", CellKind::BlockRam, "BLOCKRAM_2")
+        .with_properties(vec![
+            Property::new("PORTA_ATTR", "4096X1"),
+            Property::new("PORTB_ATTR", "256X16"),
+            Property::new("INIT_00", "FEDCBA9876543210"),
+        ])
+        .placed(
+            SiteKind::BlockRam,
+            "BRAM",
+            "BRAM",
+            "BRAM1",
+            "RBRAMD",
+            (10, 2, 0),
+        );
+    let device = DeviceDesign {
+        cells: vec![ram],
+        nets: vec![
+            DeviceNet::new("clka", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("clka", "IN", (0, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "CLKA", (10, 2, 0))),
+            DeviceNet::new("ena", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("ena", "IN", (0, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "ENA", (10, 2, 0))),
+            DeviceNet::new("rsta", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("rsta", "IN", (0, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "RSTA", (10, 2, 0))),
+            DeviceNet::new("clkb", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("clkb", "IN", (0, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "CLKB", (10, 2, 0))),
+            DeviceNet::new("web", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("web", "IN", (0, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "WEB", (10, 2, 0))),
+            DeviceNet::new("enb", NetOrigin::Logical)
+                .with_driver(DeviceEndpoint::port("enb", "IN", (0, 0, 0)))
+                .with_sink(DeviceEndpoint::cell("ram0", "ENB", (10, 2, 0))),
+        ],
+        ..DeviceDesign::default()
+    };
+
+    let program = block_ram_program(&device);
+    assert_eq!(program.port_a_attr.as_deref(), Some("4096X1"));
+    assert_eq!(program.port_b_attr.as_deref(), Some("256X16"));
+    assert!(program.clka_used);
+    assert!(program.ena_used);
+    assert!(program.rsta_used);
+    assert!(program.clkb_used);
+    assert!(program.enb_used);
+    assert!(program.web_used);
+    assert!(!program.wea_used);
+    assert!(!program.rstb_used);
+
+    let requests = compiled_block_ram_requests(&device, mini_block_ram_cil());
+    for (cfg_name, function_name) in [
+        ("PORTA_ATTR", "4096X1"),
+        ("PORTB_ATTR", "256X16"),
+        ("CLKAMUX", "CLK"),
+        ("ENAMUX", "ENA"),
+        ("RSTAMUX", "RSTA"),
+        ("CLKBMUX", "CLK"),
+        ("ENBMUX", "ENB"),
+        ("WEBMUX", "WEB"),
+    ] {
+        assert!(requests.iter().any(|request| {
+            request.cfg_name == cfg_name && request.function_name == function_name
+        }));
+    }
+    assert!(
+        !requests.iter().any(|request| {
+            matches!(request.cfg_name.as_str(), "WEAMUX" | "RSTBMUX" | "INIT_00")
+        })
     );
 }

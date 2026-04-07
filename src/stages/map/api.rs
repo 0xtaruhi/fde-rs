@@ -53,6 +53,7 @@ pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapAr
     report.metric("net_count", design.nets.len());
     report.metric("lut_size", options.lut_size);
     report.metric("normalized_lut_count", summary.normalized_luts);
+    report.metric("normalized_block_ram_count", summary.normalized_block_rams);
     report.metric("lowered_constant_count", summary.lowered_constants);
     report.metric("buffered_ff_input_count", summary.buffered_ff_inputs);
     report.push(format!(
@@ -64,6 +65,12 @@ pub fn run(mut design: Design, options: &MapOptions) -> Result<StageOutput<MapAr
         report.push(format!(
             "Normalized repeated LUT inputs in {} cells.",
             summary.normalized_luts
+        ));
+    }
+    if summary.normalized_block_rams > 0 {
+        report.push(format!(
+            "Canonicalized {} block RAM cells into BLOCKRAM_1/BLOCKRAM_2 forms.",
+            summary.normalized_block_rams
         ));
     }
     if summary.lowered_constants > 0 {

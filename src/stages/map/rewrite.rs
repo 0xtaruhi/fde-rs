@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RewriteSummary {
     pub(super) normalized_luts: usize,
+    pub(super) normalized_block_rams: usize,
     pub(super) lowered_constants: usize,
     pub(super) buffered_ff_inputs: usize,
 }
@@ -31,6 +32,7 @@ pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Resul
         }
     }
 
+    let normalized_block_rams = normalize_block_ram_cells(design);
     reject_unsupported_generic_cells(design)?;
 
     let normalized_luts = normalize_repeated_lut_inputs(design);
@@ -40,6 +42,7 @@ pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Resul
 
     Ok(RewriteSummary {
         normalized_luts,
+        normalized_block_rams,
         lowered_constants,
         buffered_ff_inputs,
     })
@@ -220,6 +223,241 @@ fn sync_cell_input_sinks(design: &mut Design) {
         }
         net.sinks = sinks;
     }
+}
+
+fn normalize_block_ram_cells(design: &mut Design) -> usize {
+    let mut rewrites = BTreeMap::<String, Vec<(String, String)>>::new();
+    let mut normalized = 0usize;
+
+    for cell in &mut design.cells {
+        let Some(rewrite) = block_ram_rewrite(cell) else {
+            continue;
+        };
+
+        for pin in &mut cell.inputs {
+            if let Some(new_port) = rename_port(&rewrite.pin_renames, &pin.port) {
+                pin.port = new_port;
+            }
+        }
+        for pin in &mut cell.outputs {
+            if let Some(new_port) = rename_port(&rewrite.pin_renames, &pin.port) {
+                pin.port = new_port;
+            }
+        }
+
+        cell.kind = CellKind::BlockRam;
+        cell.type_name = rewrite.canonical_type.to_string();
+        for (key, value) in rewrite.property_writes {
+            cell.set_property(key, value);
+        }
+        rewrites.insert(cell.name.clone(), rewrite.pin_renames);
+        normalized += 1;
+    }
+
+    if rewrites.is_empty() {
+        return 0;
+    }
+
+    for net in &mut design.nets {
+        if let Some(driver) = &mut net.driver
+            && driver.is_cell()
+            && let Some(pin_renames) = rewrites.get(&driver.name)
+            && let Some(new_pin) = rename_port(pin_renames, &driver.pin)
+        {
+            driver.pin = new_pin;
+        }
+        for sink in &mut net.sinks {
+            if !sink.is_cell() {
+                continue;
+            }
+            if let Some(pin_renames) = rewrites.get(&sink.name)
+                && let Some(new_pin) = rename_port(pin_renames, &sink.pin)
+            {
+                sink.pin = new_pin;
+            }
+        }
+    }
+
+    normalized
+}
+
+#[derive(Debug, Clone)]
+struct BlockRamRewrite {
+    canonical_type: &'static str,
+    pin_renames: Vec<(String, String)>,
+    property_writes: Vec<(&'static str, String)>,
+}
+
+fn block_ram_rewrite(cell: &Cell) -> Option<BlockRamRewrite> {
+    if !cell.is_block_ram() {
+        return None;
+    }
+
+    let type_name = cell.type_name.trim();
+    if type_name.eq_ignore_ascii_case("BLOCKRAM_1") || type_name.eq_ignore_ascii_case("BLOCKRAM_2")
+    {
+        return None;
+    }
+
+    if type_name.eq_ignore_ascii_case("BLOCKRAM_SINGLE_PORT") {
+        let pin_renames = single_port_bram_pin_renames(cell, 0);
+        if pin_renames.is_empty() {
+            return Some(BlockRamRewrite {
+                canonical_type: "BLOCKRAM_1",
+                pin_renames,
+                property_writes: Vec::new(),
+            });
+        }
+        return Some(BlockRamRewrite {
+            canonical_type: "BLOCKRAM_1",
+            pin_renames,
+            property_writes: Vec::new(),
+        });
+    }
+
+    if type_name.eq_ignore_ascii_case("BLOCKRAM_DUAL_PORT") {
+        return Some(BlockRamRewrite {
+            canonical_type: "BLOCKRAM_2",
+            pin_renames: dual_port_bram_pin_renames(cell, 0, 0),
+            property_writes: Vec::new(),
+        });
+    }
+
+    if let Some(width) = parse_ramb4_single_port_width(type_name) {
+        return Some(BlockRamRewrite {
+            canonical_type: "BLOCKRAM_1",
+            pin_renames: single_port_bram_pin_renames(cell, width.trailing_zeros() as usize),
+            property_writes: vec![("PORT_ATTR", block_ram_port_attr(width))],
+        });
+    }
+
+    let (width_a, width_b) = parse_ramb4_dual_port_widths(type_name)?;
+    Some(BlockRamRewrite {
+        canonical_type: "BLOCKRAM_2",
+        pin_renames: dual_port_bram_pin_renames(
+            cell,
+            width_a.trailing_zeros() as usize,
+            width_b.trailing_zeros() as usize,
+        ),
+        property_writes: vec![
+            ("PORTA_ATTR", block_ram_port_attr(width_a)),
+            ("PORTB_ATTR", block_ram_port_attr(width_b)),
+        ],
+    })
+}
+
+fn parse_ramb4_single_port_width(type_name: &str) -> Option<usize> {
+    let suffix = type_name.trim().strip_prefix("RAMB4_")?;
+    if suffix.contains('_') {
+        return None;
+    }
+    parse_ramb4_width_token(suffix)
+}
+
+fn parse_ramb4_dual_port_widths(type_name: &str) -> Option<(usize, usize)> {
+    let suffix = type_name.trim().strip_prefix("RAMB4_")?;
+    let (port_a, port_b) = suffix.split_once('_')?;
+    Some((
+        parse_ramb4_width_token(port_a)?,
+        parse_ramb4_width_token(port_b)?,
+    ))
+}
+
+fn parse_ramb4_width_token(token: &str) -> Option<usize> {
+    let width = token.strip_prefix('S')?.parse::<usize>().ok()?;
+    matches!(width, 1 | 2 | 4 | 8 | 16).then_some(width)
+}
+
+fn block_ram_port_attr(width: usize) -> String {
+    format!("{}X{width}", 4096 / width.max(1))
+}
+
+fn single_port_bram_pin_renames(cell: &Cell, addr_shift: usize) -> Vec<(String, String)> {
+    let mut renames = Vec::new();
+    for pin in cell.inputs.iter().chain(cell.outputs.iter()) {
+        let canonical = if pin.port.eq_ignore_ascii_case("CLK")
+            || pin.port.eq_ignore_ascii_case("WE")
+            || pin.port.eq_ignore_ascii_case("RST")
+            || pin.port.eq_ignore_ascii_case("EN")
+        {
+            Some(pin.port.trim().to_ascii_uppercase())
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "DI") {
+            Some(format!("DI{index}"))
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "DO") {
+            Some(format!("DO{index}"))
+        } else {
+            parse_indexed_pin(&pin.port, "ADDR").map(|index| format!("ADDR{}", index + addr_shift))
+        };
+
+        if let Some(canonical) = canonical
+            && !pin.port.eq_ignore_ascii_case(&canonical)
+        {
+            renames.push((pin.port.clone(), canonical));
+        }
+    }
+    renames
+}
+
+fn dual_port_bram_pin_renames(
+    cell: &Cell,
+    addr_shift_a: usize,
+    addr_shift_b: usize,
+) -> Vec<(String, String)> {
+    let mut renames = Vec::new();
+    for pin in cell.inputs.iter().chain(cell.outputs.iter()) {
+        let canonical = if pin.port.eq_ignore_ascii_case("CLKA")
+            || pin.port.eq_ignore_ascii_case("WEA")
+            || pin.port.eq_ignore_ascii_case("RSTA")
+            || pin.port.eq_ignore_ascii_case("ENA")
+            || pin.port.eq_ignore_ascii_case("CLKB")
+            || pin.port.eq_ignore_ascii_case("WEB")
+            || pin.port.eq_ignore_ascii_case("RSTB")
+            || pin.port.eq_ignore_ascii_case("ENB")
+        {
+            Some(pin.port.trim().to_ascii_uppercase())
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "DIA") {
+            Some(format!("DIA{index}"))
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "DOA") {
+            Some(format!("DOA{index}"))
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "ADDRA") {
+            Some(format!("ADDRA{}", index + addr_shift_a))
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "DIB") {
+            Some(format!("DIB{index}"))
+        } else if let Some(index) = parse_indexed_pin(&pin.port, "DOB") {
+            Some(format!("DOB{index}"))
+        } else {
+            parse_indexed_pin(&pin.port, "ADDRB")
+                .map(|index| format!("ADDRB{}", index + addr_shift_b))
+        };
+
+        if let Some(canonical) = canonical
+            && !pin.port.eq_ignore_ascii_case(&canonical)
+        {
+            renames.push((pin.port.clone(), canonical));
+        }
+    }
+    renames
+}
+
+fn parse_indexed_pin(pin: &str, prefix: &str) -> Option<usize> {
+    let pin = pin.trim();
+    if pin.len() < prefix.len() || !pin[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        return None;
+    }
+    let suffix = &pin[prefix.len()..];
+    if suffix.starts_with('[') && suffix.ends_with(']') {
+        return suffix[1..suffix.len() - 1].parse().ok();
+    }
+    (!suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
+        .then(|| suffix.parse().ok())
+        .flatten()
+}
+
+fn rename_port(pin_renames: &[(String, String)], port: &str) -> Option<String> {
+    pin_renames
+        .iter()
+        .find(|(old, _)| old.eq_ignore_ascii_case(port))
+        .map(|(_, new)| new.clone())
 }
 
 fn lower_constant_sources(design: &mut Design, lut_size: usize) -> usize {

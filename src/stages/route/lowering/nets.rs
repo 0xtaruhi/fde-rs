@@ -2,6 +2,7 @@ use super::DeviceLowering;
 use crate::{
     DeviceCell, DeviceEndpoint, DeviceNet, DevicePort, DeviceSinkGuide,
     domain::NetOrigin,
+    domain::{SiteKind, block_ram_route_target},
     ir::{Endpoint, EndpointTarget, PortId, RouteSegment},
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -138,11 +139,20 @@ fn port_endpoint(port: &DevicePort) -> DeviceEndpoint {
 }
 
 fn cell_endpoint(cell: &DeviceCell, pin: &str) -> DeviceEndpoint {
-    DeviceEndpoint::cell(
-        cell.cell_name.clone(),
-        pin.to_string(),
-        (cell.x, cell.y, cell.z),
-    )
+    let (x, y, z) = if cell.site_kind_class() == SiteKind::BlockRam {
+        block_ram_route_target(pin)
+            .map(|target| {
+                (
+                    cell.x.saturating_add_signed(target.row_offset),
+                    cell.y,
+                    cell.z,
+                )
+            })
+            .unwrap_or((cell.x, cell.y, cell.z))
+    } else {
+        (cell.x, cell.y, cell.z)
+    };
+    DeviceEndpoint::cell(cell.cell_name.clone(), pin.to_string(), (x, y, z))
 }
 
 fn guide_tiles(route: &[RouteSegment]) -> Vec<(usize, usize)> {
@@ -277,8 +287,8 @@ fn append_segment_tiles(tiles: &mut Vec<(usize, usize)>, segment: &RouteSegment)
 
 #[cfg(test)]
 mod tests {
-    use super::sink_guides;
-    use crate::{DeviceEndpoint, ir::RouteSegment};
+    use super::{cell_endpoint, sink_guides};
+    use crate::{DeviceCell, DeviceEndpoint, domain::SiteKind, ir::RouteSegment};
 
     fn endpoint(name: &str, pin: &str, x: usize, y: usize) -> DeviceEndpoint {
         DeviceEndpoint::cell(name.to_string(), pin.to_string(), (x, y, 0))
@@ -300,5 +310,27 @@ mod tests {
         assert_eq!(guides[0].tiles, vec![(0, 0), (0, 1), (0, 2)]);
         assert_eq!(guides[1].sink, sinks[1]);
         assert_eq!(guides[1].tiles, vec![(0, 0), (0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn block_ram_cell_endpoints_shift_to_cpp_compatible_segment_rows() {
+        let ram = DeviceCell::new("ram0", crate::domain::CellKind::BlockRam, "BLOCKRAM_2").placed(
+            SiteKind::BlockRam,
+            "BRAM",
+            "BRAM",
+            "LBRAMR12C0",
+            "LBRAMD",
+            (12, 5, 0),
+        );
+
+        let dia0 = cell_endpoint(&ram, "DIA0");
+        let clka = cell_endpoint(&ram, "CLKA");
+        let do14 = cell_endpoint(&ram, "DOA14");
+        let addrb11 = cell_endpoint(&ram, "ADDRB11");
+
+        assert_eq!((dia0.x, dia0.y, dia0.z), (9, 5, 0));
+        assert_eq!((clka.x, clka.y, clka.z), (10, 5, 0));
+        assert_eq!((do14.x, do14.y, do14.z), (11, 5, 0));
+        assert_eq!((addrb11.x, addrb11.y, addrb11.z), (12, 5, 0));
     }
 }

@@ -1,7 +1,7 @@
 use super::{
     ConfigImage, ProgrammingImage, SerializedTextBitstream, api::BitgenOptions,
     build_programming_image, circuit::BitgenCircuit, config_image::encode_config_image,
-    serialize_text_bitstream,
+    frame_bitstream::serialize_text_bitstream_with_programming,
 };
 use crate::resource::{Arch, load_arch};
 use anyhow::{Context, Result};
@@ -23,8 +23,13 @@ pub(super) fn prepare_artifacts(
         options.cil.as_ref(),
         arch.as_ref(),
     )?;
-    let text_bitstream =
-        build_text_bitstream(circuit, options, arch.as_ref(), config_image.as_ref())?;
+    let text_bitstream = build_text_bitstream(
+        circuit,
+        options,
+        arch.as_ref(),
+        programming_image.as_ref(),
+        config_image.as_ref(),
+    )?;
 
     Ok(PreparedArtifacts {
         programming_image,
@@ -76,17 +81,26 @@ fn build_text_bitstream(
     circuit: &BitgenCircuit,
     options: &BitgenOptions,
     arch: Option<&Arch>,
+    programming_image: Option<&ProgrammingImage>,
     config_image: Option<&ConfigImage>,
 ) -> Result<Option<SerializedTextBitstream>> {
     match (
         arch,
         options.arch_path.as_deref(),
         options.cil.as_ref(),
+        programming_image,
         config_image,
     ) {
-        (Some(arch), Some(arch_path), Some(cil), Some(config_image)) => {
-            serialize_text_bitstream(&circuit.design_name, arch, arch_path, cil, config_image)
-                .context("failed to serialize textual bitstream")
+        (Some(arch), Some(arch_path), Some(cil), programming_image, Some(config_image)) => {
+            serialize_text_bitstream_with_programming(
+                &circuit.design_name,
+                arch,
+                arch_path,
+                cil,
+                config_image,
+                programming_image,
+            )
+            .context("failed to serialize textual bitstream")
         }
         _ => Ok(None),
     }

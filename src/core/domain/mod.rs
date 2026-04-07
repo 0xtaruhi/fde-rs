@@ -1,4 +1,5 @@
 pub(crate) mod ascii;
+mod block_ram;
 mod cell;
 mod cluster;
 mod endpoint;
@@ -9,6 +10,7 @@ mod routing;
 mod site;
 mod timing;
 
+pub(crate) use block_ram::route_target as block_ram_route_target;
 pub use cell::CellKind;
 pub use cluster::ClusterKind;
 pub use endpoint::EndpointKind;

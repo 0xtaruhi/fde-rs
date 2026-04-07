@@ -26,6 +26,7 @@ pub(crate) struct SiteProgram {
 #[derive(Debug, Clone)]
 pub(crate) enum SiteProgramKind {
     LogicSlice(SliceProgram),
+    BlockRam(BlockRamProgram),
     Iob(IobProgram),
     Gclk,
     GclkIob,
@@ -91,6 +92,21 @@ pub(crate) struct IobProgram {
     pub(crate) output_used: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BlockRamProgram {
+    pub(crate) port_a_attr: Option<String>,
+    pub(crate) port_b_attr: Option<String>,
+    pub(crate) clka_used: bool,
+    pub(crate) clkb_used: bool,
+    pub(crate) ena_used: bool,
+    pub(crate) enb_used: bool,
+    pub(crate) wea_used: bool,
+    pub(crate) web_used: bool,
+    pub(crate) rsta_used: bool,
+    pub(crate) rstb_used: bool,
+    pub(crate) init_words: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestedConfig {
     pub(crate) cfg_name: String,
@@ -110,6 +126,7 @@ impl RequestedConfig {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProgrammingImage {
     pub(crate) sites: Vec<ProgrammedSite>,
+    pub(crate) memories: Vec<ProgrammedMemory>,
     pub(crate) routes: Vec<DeviceRoutePip>,
     pub(crate) notes: Vec<String>,
 }
@@ -123,6 +140,12 @@ pub(crate) struct ProgrammedSite {
     pub(crate) x: usize,
     pub(crate) y: usize,
     pub(crate) requests: Vec<RequestedConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProgrammedMemory {
+    pub(crate) tile_name: String,
+    pub(crate) init_words: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -144,6 +167,16 @@ impl ProgrammedSite {
             x,
             y,
             requests,
+        }
+    }
+}
+
+#[cfg(test)]
+impl ProgrammedMemory {
+    pub(crate) fn new(tile_name: impl Into<String>, init_words: Vec<(String, String)>) -> Self {
+        Self {
+            tile_name: tile_name.into(),
+            init_words,
         }
     }
 }

@@ -128,3 +128,27 @@ fn compacted_lut_inputs_expand_back_to_their_physical_pins() {
     assert_eq!(wires.resolve(routed[1]), "S0_F_B2");
     assert!(super::sink_requires_all_wires(&lut, &a0));
 }
+
+#[test]
+fn block_ram_endpoints_map_to_cpp_compatible_bram_wires() {
+    let mut wires = super::super::types::WireInterner::default();
+    let bram = DeviceCell::new("ram0", CellKind::BlockRam, "BLOCKRAM_2").placed(
+        SiteKind::BlockRam,
+        "BRAM",
+        "BRAM",
+        "LBRAMR12C0",
+        "LBRAMD",
+        (12, 5, 0),
+    );
+    let dia0 = DeviceEndpoint::new(EndpointKind::Cell, "ram0", "DIA0", (9, 5, 0));
+    let enb = DeviceEndpoint::new(EndpointKind::Cell, "ram0", "ENB", (11, 5, 0));
+    let dob15 = DeviceEndpoint::new(EndpointKind::Cell, "ram0", "DOB15", (12, 5, 0));
+
+    let input = endpoint_sink_nets(None, &bram, &dia0, &mut wires);
+    let enable = endpoint_sink_nets(None, &bram, &enb, &mut wires);
+    let output = endpoint_source_nets(&bram, &dob15, &mut wires);
+
+    assert_eq!(wires.resolve(input[0]), "BRAM_DIA0");
+    assert_eq!(wires.resolve(enable[0]), "BRAM_SELB");
+    assert_eq!(wires.resolve(output[0]), "BRAM_DOB15");
+}

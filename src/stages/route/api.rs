@@ -3,7 +3,6 @@ use crate::{
     constraints::{
         SharedConstraints, apply_constraints, ensure_cluster_positions, ensure_port_positions,
     },
-    domain::PrimitiveKind,
     ir::{Design, RoutePip, RouteSegment},
     report::{StageOutput, StageReport},
     resource::{Arch, SharedArch},
@@ -55,15 +54,6 @@ pub fn run_with_artifacts(
     ensure_port_positions(&mut design, &options.arch);
     if !design.clusters.is_empty() {
         ensure_cluster_positions(&design)?;
-    }
-    if design
-        .cells
-        .iter()
-        .any(|cell| matches!(cell.primitive_kind(), PrimitiveKind::BlockRam))
-    {
-        bail!(
-            "Block RAM cells are imported, packed, and placed, but BRAM macro routing/bitgen is not implemented yet."
-        );
     }
 
     let Some(device_design) = options.device_design.clone() else {
@@ -185,13 +175,14 @@ fn derive_segments_from_pips(pips: &[RoutePip]) -> Vec<RouteSegment> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cil::Cil,
+        cil::load_cil,
         domain::{CellKind, ClusterKind},
-        ir::{Cell, Cluster, Design, Endpoint, Net, RoutePip, RouteSegment},
-        resource::Arch,
+        ir::{Cell, Cluster, Design, Endpoint, Net, Port, RoutePip, RouteSegment},
+        resource::{ResourceBundle, load_arch},
     };
+    use std::path::PathBuf;
 
-    use super::{DeviceRouteImage, apply_route_image, derive_segments_from_pips};
+    use super::{DeviceRouteImage, RouteOptions, apply_route_image, derive_segments_from_pips};
 
     #[test]
     fn apply_route_image_merges_synthetic_gclk_pips_into_logical_clock_net() {
@@ -267,45 +258,113 @@ mod tests {
     }
 
     #[test]
-    fn route_stage_rejects_block_ram_until_macro_routing_exists() {
+    fn route_stage_routes_single_port_block_ram_data_pins() -> anyhow::Result<()> {
+        let Some(bundle) =
+            ResourceBundle::discover_from(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))).ok()
+        else {
+            return Ok(());
+        };
+        let arch_path = bundle.root.join("fdp3p7_arch.xml");
+        let cil_path = bundle.root.join("fdp3p7_cil.xml");
+        if !arch_path.exists() || !cil_path.exists() {
+            return Ok(());
+        }
+
+        let arch = load_arch(&arch_path)?;
+        let cil = load_cil(&cil_path)?;
+
+        let mut gnd = Cell::new("GND", CellKind::Lut, "LUT4")
+            .with_output("O", "GND_NET")
+            .in_cluster("clb_0001");
+        gnd.set_property("lut_init", "0x0000");
+
+        let mut ram = Cell::new("ram", CellKind::BlockRam, "BLOCKRAM_1")
+            .with_input("ADDR0", "GND_NET")
+            .with_input("ADDR1", "GND_NET")
+            .with_input("ADDR2", "GND_NET")
+            .with_input("ADDR3", "GND_NET")
+            .with_input("ADDR4", "GND_NET")
+            .with_input("ADDR5", "GND_NET")
+            .with_input("ADDR6", "GND_NET")
+            .with_input("ADDR7", "GND_NET")
+            .with_input("ADDR8", "GND_NET")
+            .with_input("ADDR9", "GND_NET")
+            .with_input("ADDR10", "GND_NET")
+            .with_input("ADDR11", "GND_NET")
+            .with_input("CLK", "GND_NET")
+            .with_input("DI", "GND_NET")
+            .with_input("EN", "GND_NET")
+            .with_input("RST", "GND_NET")
+            .with_input("WE", "GND_NET")
+            .with_output("DO", "q")
+            .in_cluster("bram_0000");
+        ram.set_property("PORT_ATTR", "4096X1");
+
+        let gnd_net = [
+            "ADDR0", "ADDR1", "ADDR2", "ADDR3", "ADDR4", "ADDR5", "ADDR6", "ADDR7", "ADDR8",
+            "ADDR9", "ADDR10", "ADDR11", "CLK", "DI", "EN", "RST", "WE",
+        ]
+        .into_iter()
+        .fold(
+            Net::new("GND_NET").with_driver(Endpoint::cell("GND", "O")),
+            |net, pin| net.with_sink(Endpoint::cell("ram", pin)),
+        );
+
         let design = Design {
-            cells: vec![
-                Cell::new("ram0", CellKind::BlockRam, "BLOCKRAM_SINGLE_PORT")
-                    .with_input("CLK", "clk")
-                    .with_output("DO0", "q")
-                    .in_cluster("bram0"),
-            ],
+            name: "bram-route".to_string(),
+            stage: "placed".to_string(),
+            ports: vec![Port::output("q")],
+            cells: vec![gnd, ram],
             nets: vec![
-                Net::new("clk")
-                    .with_driver(Endpoint::port("clk", "IN"))
-                    .with_sink(Endpoint::cell("ram0", "CLK")),
+                gnd_net,
+                Net::new("q")
+                    .with_driver(Endpoint::cell("ram", "DO"))
+                    .with_sink(Endpoint::port("q", "q")),
             ],
             clusters: vec![
-                Cluster::new("bram0", ClusterKind::BlockRam)
-                    .with_member("ram0")
+                Cluster::new("bram_0000", ClusterKind::BlockRam)
+                    .with_member("ram")
                     .with_capacity(1)
-                    .fixed_at_slot(1, 0, 0),
+                    .fixed_at_slot(4, 0, 0),
+                Cluster::logic("clb_0001")
+                    .with_member("GND")
+                    .with_capacity(4)
+                    .fixed_at_slot(4, 2, 0),
             ],
             ..Design::default()
         };
 
-        let err = super::run(
+        let device_design = crate::route::lower_design(design.clone(), &arch, Some(&cil), &[])?;
+        let result = super::run_with_artifacts(
             design,
-            &super::RouteOptions {
-                arch: Arch {
-                    name: "mini".to_string(),
-                    width: 4,
-                    height: 4,
-                    ..Arch::default()
-                }
-                .into(),
-                arch_path: std::path::PathBuf::new(),
+            &RouteOptions {
+                arch: std::sync::Arc::new(arch),
+                arch_path,
                 constraints: Vec::new().into(),
-                cil: Some(Cil::default()),
-                device_design: None,
+                cil: Some(cil),
+                device_design: Some(device_design),
             },
-        )
-        .expect_err("block RAM should fail before routing");
-        assert!(err.to_string().contains("Block RAM cells"));
+        )?;
+
+        assert!(
+            result
+                .value
+                .design
+                .nets
+                .iter()
+                .all(|net| !net.route_pips.is_empty()),
+            "every logical BRAM net should gain physical route pips"
+        );
+        assert!(
+            !result
+                .report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("route-source mapping")
+                    || warning.contains("route-sink mapping")
+                    || warning.contains("could not find a Rust route")),
+            "single-port BRAM data/control pins should route without BRAM-specific warnings"
+        );
+        Ok(())
     }
 }

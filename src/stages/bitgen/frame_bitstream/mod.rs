@@ -4,7 +4,7 @@ mod layout;
 mod model;
 
 use crate::{
-    bitgen::ConfigImage,
+    bitgen::{ConfigImage, ProgrammingImage},
     cil::Cil,
     resource::{Arch, routing},
 };
@@ -26,6 +26,17 @@ pub fn serialize_text_bitstream(
     cil: &Cil,
     config_image: &ConfigImage,
 ) -> Result<Option<SerializedTextBitstream>> {
+    serialize_text_bitstream_with_programming(design_name, arch, arch_path, cil, config_image, None)
+}
+
+pub(crate) fn serialize_text_bitstream_with_programming(
+    design_name: &str,
+    arch: &Arch,
+    arch_path: &Path,
+    cil: &Cil,
+    config_image: &ConfigImage,
+    programming_image: Option<&ProgrammingImage>,
+) -> Result<Option<SerializedTextBitstream>> {
     if cil.majors.is_empty() || cil.bitstream_commands.is_empty() {
         return Ok(None);
     }
@@ -37,8 +48,8 @@ pub fn serialize_text_bitstream(
         layout::build_tile_columns(arch, cil, config_image, &transmission_defaults, &mut notes);
     let major_payloads = encode::build_major_payloads(cil, &tile_columns)
         .context("failed to encode textual major frame payloads")?;
-    let memory_payloads =
-        encode::build_memory_payloads(cil).context("failed to encode textual memory payloads")?;
+    let memory_payloads = encode::build_memory_payloads(cil, arch, programming_image)
+        .context("failed to encode textual memory payloads")?;
     let text = emit::render_bitstream_text(
         design_name,
         &cil.device_name,

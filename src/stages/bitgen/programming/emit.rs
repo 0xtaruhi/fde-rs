@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use super::derive::derive_site_programs;
 use super::types::{
-    IobProgram, LutProgram, ProgrammedSite, ProgrammingImage, RequestedConfig, SequentialInitValue,
-    SequentialProgram, SiteProgram, SiteProgramKind, SliceClockEnableMode, SliceFfDataPath,
-    SliceLutOutputUsage, SliceProgram,
+    BlockRamProgram, IobProgram, LutProgram, ProgrammedMemory, ProgrammedSite, ProgrammingImage,
+    RequestedConfig, SequentialInitValue, SequentialProgram, SiteProgram, SiteProgramKind,
+    SliceClockEnableMode, SliceFfDataPath, SliceLutOutputUsage, SliceProgram,
 };
 use crate::{
     bitgen::DeviceDesign,
@@ -23,8 +23,18 @@ pub(crate) fn build_programming_image(
         .unwrap_or_default();
     let index = DeviceDesignIndex::build(device);
     let mut sites = Vec::new();
+    let mut memories = Vec::new();
 
     for site in derive_site_programs(device, &index) {
+        if let SiteProgramKind::BlockRam(program) = &site.kind
+            && !program.init_words.is_empty()
+        {
+            memories.push(ProgrammedMemory {
+                tile_name: site.tile_name.clone(),
+                init_words: program.init_words.clone(),
+            });
+        }
+
         let Some(site_def) = cil.site_def(site.site_kind) else {
             notes.push(format!(
                 "Missing CIL site definition for {} on tile {}.",
@@ -50,6 +60,7 @@ pub(crate) fn build_programming_image(
 
     ProgrammingImage {
         sites,
+        memories,
         routes: route_image
             .map(|image| image.pips.clone())
             .unwrap_or_default(),
@@ -60,6 +71,7 @@ pub(crate) fn build_programming_image(
 fn emit_site_requests(site: &SiteProgram, site_def: &SiteDef) -> Vec<RequestedConfig> {
     match &site.kind {
         SiteProgramKind::LogicSlice(program) => emit_slice_requests(program, site_def),
+        SiteProgramKind::BlockRam(program) => emit_block_ram_requests(program, site_def),
         SiteProgramKind::Iob(program) => emit_iob_requests(program),
         SiteProgramKind::Gclk => vec![
             RequestedConfig {
@@ -142,6 +154,83 @@ fn emit_slice_requests(program: &SliceProgram, site_def: &SiteDef) -> Vec<Reques
             cfg_name: "SYNC_ATTR".to_string(),
             function_name: "ASYNC".to_string(),
         });
+    }
+
+    dedup_requests(requests)
+}
+
+fn emit_block_ram_requests(program: &BlockRamProgram, site_def: &SiteDef) -> Vec<RequestedConfig> {
+    let mut requests = Vec::new();
+
+    if let Some(port_a_attr) = &program.port_a_attr {
+        requests.push(RequestedConfig {
+            cfg_name: "PORTA_ATTR".to_string(),
+            function_name: port_a_attr.clone(),
+        });
+    }
+    if let Some(port_b_attr) = &program.port_b_attr {
+        requests.push(RequestedConfig {
+            cfg_name: "PORTB_ATTR".to_string(),
+            function_name: port_b_attr.clone(),
+        });
+    }
+
+    if program.wea_used {
+        requests.push(RequestedConfig {
+            cfg_name: "WEAMUX".to_string(),
+            function_name: "WEA".to_string(),
+        });
+    }
+    if program.web_used {
+        requests.push(RequestedConfig {
+            cfg_name: "WEBMUX".to_string(),
+            function_name: "WEB".to_string(),
+        });
+    }
+    if program.ena_used {
+        requests.push(RequestedConfig {
+            cfg_name: "ENAMUX".to_string(),
+            function_name: "ENA".to_string(),
+        });
+    }
+    if program.enb_used {
+        requests.push(RequestedConfig {
+            cfg_name: "ENBMUX".to_string(),
+            function_name: "ENB".to_string(),
+        });
+    }
+    if program.rsta_used {
+        requests.push(RequestedConfig {
+            cfg_name: "RSTAMUX".to_string(),
+            function_name: "RSTA".to_string(),
+        });
+    }
+    if program.rstb_used {
+        requests.push(RequestedConfig {
+            cfg_name: "RSTBMUX".to_string(),
+            function_name: "RSTB".to_string(),
+        });
+    }
+    if program.clka_used {
+        requests.push(RequestedConfig {
+            cfg_name: "CLKAMUX".to_string(),
+            function_name: "CLK".to_string(),
+        });
+    }
+    if program.clkb_used {
+        requests.push(RequestedConfig {
+            cfg_name: "CLKBMUX".to_string(),
+            function_name: "CLK".to_string(),
+        });
+    }
+
+    for (cfg_name, function_name) in &program.init_words {
+        if site_def.config_element(cfg_name).is_some() {
+            requests.push(RequestedConfig {
+                cfg_name: cfg_name.clone(),
+                function_name: function_name.clone(),
+            });
+        }
     }
 
     dedup_requests(requests)
