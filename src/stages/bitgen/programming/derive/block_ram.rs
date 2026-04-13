@@ -2,7 +2,7 @@ use super::super::types::BlockRamProgram;
 use crate::{
     bitgen::{DeviceCell, DeviceDesign, DeviceDesignIndex, DeviceEndpoint, DeviceEndpointRef},
     domain::{
-        BlockRamControlSignal, BlockRamKind, BlockRamPin, BlockRamPortSide,
+        BlockRamConfigKey, BlockRamControlSignal, BlockRamKind, BlockRamPin, BlockRamPortSide,
         normalized_block_ram_init_property_key,
     },
 };
@@ -105,15 +105,18 @@ fn port_attr_value(
     side: BlockRamPortSide,
 ) -> Option<String> {
     match (kind, side) {
-        (BlockRamKind::SinglePort, BlockRamPortSide::A) => cell_property(cell, "PORTA_ATTR")
-            .or_else(|| cell_property(cell, "PORT_ATTR"))
-            .map(str::to_owned),
+        (BlockRamKind::SinglePort, BlockRamPortSide::A) => cell_property(
+            cell,
+            BlockRamConfigKey::PortAttr(BlockRamPortSide::A).as_str(),
+        )
+        .or_else(|| cell_property(cell, "PORT_ATTR"))
+        .map(str::to_owned),
         (BlockRamKind::SinglePort, BlockRamPortSide::B) => None,
         (BlockRamKind::DualPort, BlockRamPortSide::A) => {
-            cell_property(cell, "PORTA_ATTR").map(str::to_owned)
+            cell_property(cell, side.port_attr_key().as_str()).map(str::to_owned)
         }
         (BlockRamKind::DualPort, BlockRamPortSide::B) => {
-            cell_property(cell, "PORTB_ATTR").map(str::to_owned)
+            cell_property(cell, side.port_attr_key().as_str()).map(str::to_owned)
         }
     }
 }

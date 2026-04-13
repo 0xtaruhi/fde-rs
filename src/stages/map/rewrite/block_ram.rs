@@ -1,7 +1,7 @@
 use crate::{
     domain::{
-        BlockRamKind, BlockRamPin, block_ram_port_attr, parse_ramb4_dual_port_widths,
-        parse_ramb4_single_port_width,
+        BlockRamKind, BlockRamPin, BlockRamPortSide, block_ram_port_attr,
+        parse_ramb4_dual_port_widths, parse_ramb4_single_port_width,
     },
     ir::Cell,
 };
@@ -58,8 +58,14 @@ pub(super) fn block_ram_rewrite(cell: &Cell) -> Option<BlockRamRewrite> {
             width_b.trailing_zeros() as usize,
         ),
         property_writes: vec![
-            ("PORTA_ATTR", block_ram_port_attr(width_a)),
-            ("PORTB_ATTR", block_ram_port_attr(width_b)),
+            (
+                BlockRamPortSide::A.port_attr_key().as_str(),
+                block_ram_port_attr(width_a),
+            ),
+            (
+                BlockRamPortSide::B.port_attr_key().as_str(),
+                block_ram_port_attr(width_b),
+            ),
         ],
     })
 }

@@ -110,7 +110,7 @@ fn slice_instances_and_bindings(
         for (cell_name, binding) in &cells {
             cell_bindings.insert(cell_name.clone(), (instance_name.clone(), *binding));
         }
-        let configs = build_slice_configs(design, &cells);
+        let configs = build_slice_configs(design, index, &cells);
         slice_instances.push(PhysicalInstance {
             name: instance_name.clone(),
             module_ref: "slice",

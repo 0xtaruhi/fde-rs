@@ -1,6 +1,6 @@
 use crate::{
     domain::ConstantKind,
-    ir::{Cell, Design, Endpoint, Net},
+    ir::{Cell, Design, DesignIndex, Endpoint, Net},
 };
 use std::collections::BTreeMap;
 
@@ -26,11 +26,12 @@ pub(super) fn build_fde_mapped_design(design: &Design) -> Option<Design> {
     }
 
     let mut emitted = mapped_design_shell(design);
+    let index = design.index();
     let original_nets = design.nets.clone();
     let renamed_instances = renamed_instances(design);
     let (mapped_cells, constant_cells) = mapped_cells(design, &renamed_instances);
     let port_helpers = mapped_port_helpers(design);
-    let net_outputs = mapped_net_outputs(design, &original_nets, &renamed_instances);
+    let net_outputs = mapped_net_outputs(design, &index, &original_nets, &renamed_instances);
 
     emitted.cells.extend(mapped_cells);
     emitted.cells.extend(port_helpers.input_cells);
@@ -161,12 +162,13 @@ fn append_output_port_helpers(helpers: &mut PortHelpers, port_name: &str) {
 
 fn mapped_net_outputs(
     design: &Design,
+    index: &DesignIndex<'_>,
     original_nets: &[Net],
     renamed_instances: &BTreeMap<String, String>,
 ) -> NetOutputs {
     let mut outputs = NetOutputs::default();
     for net in original_nets {
-        append_mapped_net_outputs(&mut outputs, net, design, renamed_instances);
+        append_mapped_net_outputs(&mut outputs, net, design, index, renamed_instances);
     }
     outputs
 }
@@ -175,16 +177,17 @@ fn append_mapped_net_outputs(
     outputs: &mut NetOutputs,
     net: &Net,
     design: &Design,
+    index: &DesignIndex<'_>,
     renamed_instances: &BTreeMap<String, String>,
 ) {
     let mapped_driver = net
         .driver
         .as_ref()
-        .map(|endpoint| fde_mapped_endpoint(endpoint, design, renamed_instances));
+        .map(|endpoint| fde_mapped_endpoint(endpoint, design, index, renamed_instances));
     let mapped_sinks = net
         .sinks
         .iter()
-        .map(|endpoint| fde_mapped_endpoint(endpoint, design, renamed_instances))
+        .map(|endpoint| fde_mapped_endpoint(endpoint, design, index, renamed_instances))
         .collect::<Vec<_>>();
     let driver_port = net
         .driver
@@ -311,6 +314,7 @@ fn fde_mapped_cell(cell: &Cell, renamed_instances: &BTreeMap<String, String>) ->
 fn fde_mapped_endpoint(
     endpoint: &Endpoint,
     design: &Design,
+    index: &DesignIndex<'_>,
     renamed_instances: &BTreeMap<String, String>,
 ) -> Endpoint {
     if endpoint.kind != crate::domain::EndpointKind::Cell {
@@ -321,7 +325,10 @@ fn fde_mapped_endpoint(
         .get(&endpoint.name)
         .cloned()
         .unwrap_or_else(|| endpoint.name.clone());
-    if let Some(cell) = design.cells.iter().find(|cell| cell.name == endpoint.name) {
+    if let Some(cell) = index
+        .cell_id(&endpoint.name)
+        .map(|cell_id| index.cell(design, cell_id))
+    {
         match cell.constant_kind() {
             Some(ConstantKind::One) => mapped.pin = "LOGIC_1_PIN".to_string(),
             Some(ConstantKind::Zero) => mapped.pin = "LOGIC_0_PIN".to_string(),

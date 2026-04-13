@@ -36,6 +36,115 @@ pub(crate) enum BlockRamControlSignal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockRamConfigKey {
+    PortAttr(BlockRamPortSide),
+    ControlMux {
+        side: BlockRamPortSide,
+        signal: BlockRamControlSignal,
+    },
+}
+
+impl BlockRamPortSide {
+    pub(crate) const fn port_attr_key(self) -> BlockRamConfigKey {
+        BlockRamConfigKey::PortAttr(self)
+    }
+}
+
+impl BlockRamControlSignal {
+    pub(crate) const fn mux_config_key(self, side: BlockRamPortSide) -> BlockRamConfigKey {
+        BlockRamConfigKey::ControlMux { side, signal: self }
+    }
+
+    pub(crate) const fn single_port_map_name(self) -> &'static str {
+        match self {
+            Self::Clock => "CLK",
+            Self::WriteEnable => "WE",
+            Self::Reset => "RST",
+            Self::Enable => "EN",
+        }
+    }
+
+    pub(crate) const fn site_mux_function_name(self, side: BlockRamPortSide) -> &'static str {
+        match (side, self) {
+            (_, Self::Clock) => "CLK",
+            (BlockRamPortSide::A, Self::WriteEnable) => "WEA",
+            (BlockRamPortSide::A, Self::Reset) => "RSTA",
+            (BlockRamPortSide::A, Self::Enable) => "ENA",
+            (BlockRamPortSide::B, Self::WriteEnable) => "WEB",
+            (BlockRamPortSide::B, Self::Reset) => "RSTB",
+            (BlockRamPortSide::B, Self::Enable) => "ENB",
+        }
+    }
+
+    pub(crate) const fn physical_port_name(self, side: BlockRamPortSide) -> &'static str {
+        match (side, self) {
+            (BlockRamPortSide::A, Self::Clock) => "CKA",
+            (BlockRamPortSide::A, Self::WriteEnable) => "AWE",
+            (BlockRamPortSide::A, Self::Reset) => "RSTA",
+            (BlockRamPortSide::A, Self::Enable) => "AEN",
+            (BlockRamPortSide::B, Self::Clock) => "CKB",
+            (BlockRamPortSide::B, Self::WriteEnable) => "BWE",
+            (BlockRamPortSide::B, Self::Reset) => "RSTB",
+            (BlockRamPortSide::B, Self::Enable) => "BEN",
+        }
+    }
+
+    pub(crate) const fn route_pin_name(self, side: BlockRamPortSide) -> &'static str {
+        match (side, self) {
+            (BlockRamPortSide::A, Self::Clock) => "CLKA",
+            (BlockRamPortSide::A, Self::WriteEnable) => "WEA",
+            (BlockRamPortSide::A, Self::Reset) => "RSTA",
+            (BlockRamPortSide::A, Self::Enable) => "SELA",
+            (BlockRamPortSide::B, Self::Clock) => "CLKB",
+            (BlockRamPortSide::B, Self::WriteEnable) => "WEB",
+            (BlockRamPortSide::B, Self::Reset) => "RSTB",
+            (BlockRamPortSide::B, Self::Enable) => "SELB",
+        }
+    }
+}
+
+impl BlockRamConfigKey {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PortAttr(BlockRamPortSide::A) => "PORTA_ATTR",
+            Self::PortAttr(BlockRamPortSide::B) => "PORTB_ATTR",
+            Self::ControlMux {
+                side: BlockRamPortSide::A,
+                signal: BlockRamControlSignal::Clock,
+            } => "CLKAMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::A,
+                signal: BlockRamControlSignal::WriteEnable,
+            } => "WEAMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::A,
+                signal: BlockRamControlSignal::Reset,
+            } => "RSTAMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::A,
+                signal: BlockRamControlSignal::Enable,
+            } => "ENAMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::B,
+                signal: BlockRamControlSignal::Clock,
+            } => "CLKBMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::B,
+                signal: BlockRamControlSignal::WriteEnable,
+            } => "WEBMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::B,
+                signal: BlockRamControlSignal::Reset,
+            } => "RSTBMUX",
+            Self::ControlMux {
+                side: BlockRamPortSide::B,
+                signal: BlockRamControlSignal::Enable,
+            } => "ENBMUX",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockRamPin {
     Control {
         side: BlockRamPortSide,
@@ -196,6 +305,32 @@ impl BlockRamPin {
         })
     }
 
+    pub(crate) fn normalized_cell_pin_name(pin: &str) -> Option<String> {
+        let compact = pin
+            .trim()
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .map(|ch| ch.to_ascii_uppercase())
+            .collect::<String>();
+        if compact.is_empty() {
+            return None;
+        }
+
+        let normalized = if let Some(suffix) = compact.strip_prefix("DOUTA") {
+            format!("DOA{suffix}")
+        } else if let Some(suffix) = compact.strip_prefix("DOUTB") {
+            format!("DOB{suffix}")
+        } else if let Some(suffix) = compact.strip_prefix("DINA") {
+            format!("DIA{suffix}")
+        } else if let Some(suffix) = compact.strip_prefix("DINB") {
+            format!("DIB{suffix}")
+        } else {
+            compact
+        };
+
+        Self::parse(&normalized).map(|_| normalized)
+    }
+
     pub(crate) fn route_target(self) -> Option<BlockRamRouteTarget> {
         Some(BlockRamRouteTarget {
             wire_name: format!("BRAM_{}", self.route_pin_name()?),
@@ -216,15 +351,7 @@ impl BlockRamPin {
                     side: BlockRamPortSide::A,
                     signal,
                 },
-            ) => Some(
-                match signal {
-                    BlockRamControlSignal::Clock => "CLK",
-                    BlockRamControlSignal::WriteEnable => "WE",
-                    BlockRamControlSignal::Reset => "RST",
-                    BlockRamControlSignal::Enable => "EN",
-                }
-                .to_string(),
-            ),
+            ) => Some(signal.single_port_map_name().to_string()),
             (
                 BlockRamKind::SinglePort,
                 Self::DataIn {
@@ -248,7 +375,7 @@ impl BlockRamPin {
             ) => Some(format!("ADDR{}", index + addr_shift_a)),
             (BlockRamKind::SinglePort, _) => None,
             (BlockRamKind::DualPort, Self::Control { side, signal }) => {
-                Some(dual_port_control_name(side, signal).to_string())
+                Some(signal.site_mux_function_name(side).to_string())
             }
             (BlockRamKind::DualPort, Self::DataIn { side, index }) => Some(match side {
                 BlockRamPortSide::A => format!("DIA{index}"),
@@ -269,18 +396,38 @@ impl BlockRamPin {
         Self::Control { side, signal }
     }
 
+    pub(crate) fn physical_port_name(self) -> Option<String> {
+        Some(match self {
+            Self::Control { side, signal } => signal.physical_port_name(side).to_string(),
+            Self::DataIn { side, index } => match side {
+                BlockRamPortSide::A => format!("DINA{index}"),
+                BlockRamPortSide::B => format!("DINB{index}"),
+            },
+            Self::DataOut { side, index } => match side {
+                BlockRamPortSide::A => format!("DOUTA{index}"),
+                BlockRamPortSide::B => format!("DOUTB{index}"),
+            },
+            Self::Addr { side, index } => match side {
+                BlockRamPortSide::A => format!("ADDRA_{index}"),
+                BlockRamPortSide::B => format!("ADDRB_{index}"),
+            },
+        })
+    }
+
+    pub(crate) const fn control_signal(self) -> Option<BlockRamControlSignal> {
+        match self {
+            Self::Control { signal, .. } => Some(signal),
+            Self::DataIn { .. } | Self::DataOut { .. } | Self::Addr { .. } => None,
+        }
+    }
+
+    pub(crate) const fn is_data_output(self) -> bool {
+        matches!(self, Self::DataOut { .. })
+    }
+
     fn route_pin_name(self) -> Option<String> {
         Some(match self {
-            Self::Control { side, signal } => match (side, signal) {
-                (BlockRamPortSide::A, BlockRamControlSignal::Clock) => "CLKA".to_string(),
-                (BlockRamPortSide::A, BlockRamControlSignal::WriteEnable) => "WEA".to_string(),
-                (BlockRamPortSide::A, BlockRamControlSignal::Reset) => "RSTA".to_string(),
-                (BlockRamPortSide::A, BlockRamControlSignal::Enable) => "SELA".to_string(),
-                (BlockRamPortSide::B, BlockRamControlSignal::Clock) => "CLKB".to_string(),
-                (BlockRamPortSide::B, BlockRamControlSignal::WriteEnable) => "WEB".to_string(),
-                (BlockRamPortSide::B, BlockRamControlSignal::Reset) => "RSTB".to_string(),
-                (BlockRamPortSide::B, BlockRamControlSignal::Enable) => "SELB".to_string(),
-            },
+            Self::Control { side, signal } => signal.route_pin_name(side).to_string(),
             Self::DataIn { side, index } => match side {
                 BlockRamPortSide::A => format!("DIA{index}"),
                 BlockRamPortSide::B => format!("DIB{index}"),
@@ -350,19 +497,6 @@ pub(crate) fn normalized_init_property_key(key: &str) -> Option<String> {
         .map(|_| key.to_ascii_uppercase())
 }
 
-fn dual_port_control_name(side: BlockRamPortSide, signal: BlockRamControlSignal) -> &'static str {
-    match (side, signal) {
-        (BlockRamPortSide::A, BlockRamControlSignal::Clock) => "CLKA",
-        (BlockRamPortSide::A, BlockRamControlSignal::WriteEnable) => "WEA",
-        (BlockRamPortSide::A, BlockRamControlSignal::Reset) => "RSTA",
-        (BlockRamPortSide::A, BlockRamControlSignal::Enable) => "ENA",
-        (BlockRamPortSide::B, BlockRamControlSignal::Clock) => "CLKB",
-        (BlockRamPortSide::B, BlockRamControlSignal::WriteEnable) => "WEB",
-        (BlockRamPortSide::B, BlockRamControlSignal::Reset) => "RSTB",
-        (BlockRamPortSide::B, BlockRamControlSignal::Enable) => "ENB",
-    }
-}
-
 fn routed_addr_index(index: usize) -> Option<usize> {
     // The sibling C++ flow routes logical ADDR[i] pins onto BRAM_ADDRA/B[11-i]
     // site wires. C++ route XML shows, for example, ADDRA_1 -> BRAM_ADDRA10
@@ -396,8 +530,9 @@ fn parse_indexed_pin(pin: &str, prefix: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockRamKind, BlockRamPin, block_ram_port_attr, normalized_init_property_key,
-        parse_ramb4_dual_port_widths, parse_ramb4_single_port_width, route_target,
+        BlockRamConfigKey, BlockRamControlSignal, BlockRamKind, BlockRamPin, BlockRamPortSide,
+        block_ram_port_attr, normalized_init_property_key, parse_ramb4_dual_port_widths,
+        parse_ramb4_single_port_width, route_target,
     };
 
     #[test]
@@ -504,5 +639,41 @@ mod tests {
             Some("INIT_00".to_string())
         );
         assert_eq!(normalized_init_property_key("PORT_ATTR"), None);
+    }
+
+    #[test]
+    fn exposes_typed_config_keys_and_physical_ports() {
+        assert_eq!(BlockRamPortSide::A.port_attr_key().as_str(), "PORTA_ATTR");
+        assert_eq!(
+            BlockRamControlSignal::Enable
+                .mux_config_key(BlockRamPortSide::B)
+                .as_str(),
+            "ENBMUX"
+        );
+        assert_eq!(
+            BlockRamControlSignal::WriteEnable.site_mux_function_name(BlockRamPortSide::A),
+            "WEA"
+        );
+        assert_eq!(
+            BlockRamPin::parse("DOA[3]").and_then(BlockRamPin::physical_port_name),
+            Some("DOUTA3".to_string())
+        );
+        assert!(BlockRamPin::parse("DOB7").is_some_and(BlockRamPin::is_data_output));
+        assert_eq!(
+            BlockRamPin::parse("RSTA").and_then(BlockRamPin::control_signal),
+            Some(BlockRamControlSignal::Reset)
+        );
+        assert_eq!(
+            BlockRamPin::normalized_cell_pin_name(" DOUTA[3] "),
+            Some("DOA3".to_string())
+        );
+        assert_eq!(
+            BlockRamConfigKey::ControlMux {
+                side: BlockRamPortSide::A,
+                signal: BlockRamControlSignal::Clock,
+            }
+            .as_str(),
+            "CLKAMUX"
+        );
     }
 }

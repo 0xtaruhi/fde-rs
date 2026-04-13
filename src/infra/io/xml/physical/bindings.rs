@@ -35,6 +35,7 @@ pub(super) fn assign_cluster_cells(
 
 pub(super) fn build_slice_configs(
     design: &Design,
+    index: &DesignIndex<'_>,
     cells: &BTreeMap<String, SliceCellBinding>,
 ) -> Vec<(String, String)> {
     let mut configs = default_config_map(SLICE_DEFAULT_CONFIGS);
@@ -42,10 +43,9 @@ pub(super) fn build_slice_configs(
         let Some(slot) = SliceSlot::from_index(binding.slot.min(1)) else {
             continue;
         };
-        let Some(cell) = design
-            .cells
-            .iter()
-            .find(|candidate| candidate.name == *cell_name)
+        let Some(cell) = index
+            .cell_id(cell_name)
+            .map(|cell_id| index.cell(design, cell_id))
         else {
             continue;
         };
@@ -55,7 +55,7 @@ pub(super) fn build_slice_configs(
             let cfg_name = slot.lut_config_name();
             configs.insert(cfg_name.to_string(), function);
             configs.insert(slot.lut_mux_config_name().to_string(), cfg_name.to_string());
-            let used_value = if lut_has_routed_sink(design, cell, cells, binding.slot) {
+            let used_value = if lut_has_routed_sink(design, index, cell, cells, binding.slot) {
                 "0"
             } else {
                 "#OFF"
@@ -76,11 +76,13 @@ pub(super) fn build_slice_configs(
             );
             configs.insert(
                 SliceSequentialConfigKey::SyncAttr.as_str().to_string(),
-                cell.property("SYNC_ATTR").unwrap_or("ASYNC").to_string(),
+                cell.property(SliceSequentialConfigKey::SyncAttr.as_str())
+                    .unwrap_or("ASYNC")
+                    .to_string(),
             );
             configs.insert(
                 SliceSequentialConfigKey::ClockInvert.as_str().to_string(),
-                cell.property("CKINV")
+                cell.property(SliceSequentialConfigKey::ClockInvert.as_str())
                     .unwrap_or(if cell.register_clock_is_inverted() {
                         "1"
                     } else {
@@ -88,7 +90,10 @@ pub(super) fn build_slice_configs(
                     })
                     .to_string(),
             );
-            if let Some(value) = cell.property("CEMUX").filter(|value| *value != "#OFF") {
+            if let Some(value) = cell
+                .property(SliceSequentialConfigKey::ClockEnableMux.as_str())
+                .filter(|value| *value != "#OFF")
+            {
                 configs.insert(
                     SliceSequentialConfigKey::ClockEnableMux
                         .as_str()
@@ -103,19 +108,25 @@ pub(super) fn build_slice_configs(
                     "CE".to_string(),
                 );
             }
-            if let Some(value) = cell.property("SRMUX").filter(|value| *value != "#OFF") {
+            if let Some(value) = cell
+                .property(SliceSequentialConfigKey::SetResetMux.as_str())
+                .filter(|value| *value != "#OFF")
+            {
                 configs.insert(
                     SliceSequentialConfigKey::SetResetMux.as_str().to_string(),
                     value.to_string(),
                 );
             }
-            if let Some(value) = cell.property("SRFFMUX").filter(|value| *value != "#OFF") {
+            if let Some(value) = cell
+                .property(SliceSequentialConfigKey::SetResetFfMux.as_str())
+                .filter(|value| *value != "#OFF")
+            {
                 configs.insert(
                     SliceSequentialConfigKey::SetResetFfMux.as_str().to_string(),
                     value.to_string(),
                 );
             }
-            if ff_uses_site_bypass(design, cell, cells, binding.slot) {
+            if ff_uses_site_bypass(design, index, cell, cells, binding.slot) {
                 configs.insert(slot.data_mux_config_name().to_string(), "0".to_string());
                 configs.insert(
                     slot.bypass_mux_config_name().to_string(),
@@ -138,6 +149,7 @@ fn ff_uses_clock_enable(cell: &Cell) -> bool {
 
 fn ff_uses_site_bypass(
     design: &Design,
+    index: &DesignIndex<'_>,
     ff: &Cell,
     bindings: &BTreeMap<String, SliceCellBinding>,
     slot: usize,
@@ -150,7 +162,7 @@ fn ff_uses_site_bypass(
     else {
         return false;
     };
-    let Some(net) = design.nets.iter().find(|net| net.name == d_net) else {
+    let Some(net) = index.net_id(d_net).map(|net_id| index.net(design, net_id)) else {
         return false;
     };
     let Some(driver) = net.driver.as_ref() else {
@@ -159,7 +171,10 @@ fn ff_uses_site_bypass(
     let crate::domain::EndpointKind::Cell = driver.kind else {
         return true;
     };
-    let Some(driver_cell) = design.cells.iter().find(|cell| cell.name == driver.name) else {
+    let Some(driver_cell) = index
+        .cell_id(&driver.name)
+        .map(|cell_id| index.cell(design, cell_id))
+    else {
         return true;
     };
     let Some(binding) = bindings.get(driver_cell.name.as_str()) else {
@@ -170,6 +185,7 @@ fn ff_uses_site_bypass(
 
 fn lut_has_routed_sink(
     design: &Design,
+    index: &DesignIndex<'_>,
     lut: &Cell,
     bindings: &BTreeMap<String, SliceCellBinding>,
     slot: usize,
@@ -182,7 +198,9 @@ fn lut_has_routed_sink(
     design.nets.iter().any(|net| {
         output_nets.contains(net.name.as_str())
             && net.sinks.iter().any(|sink| {
-                let Some(sink_cell) = design.cells.iter().find(|cell| cell.name == sink.name)
+                let Some(sink_cell) = index
+                    .cell_id(&sink.name)
+                    .map(|cell_id| index.cell(design, cell_id))
                 else {
                     return true;
                 };
@@ -219,7 +237,7 @@ mod tests {
             },
         )]);
 
-        let configs = build_slice_configs(&design, &bindings);
+        let configs = build_slice_configs(&design, &design.index(), &bindings);
 
         assert!(
             configs
@@ -247,7 +265,7 @@ mod tests {
             },
         )]);
 
-        let configs = build_slice_configs(&design, &bindings);
+        let configs = build_slice_configs(&design, &design.index(), &bindings);
 
         assert!(
             configs
@@ -278,7 +296,7 @@ mod tests {
             },
         )]);
 
-        let configs = build_slice_configs(&design, &bindings);
+        let configs = build_slice_configs(&design, &design.index(), &bindings);
 
         assert!(
             configs

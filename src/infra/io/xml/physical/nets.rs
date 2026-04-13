@@ -1,5 +1,5 @@
 use crate::{
-    domain::{BlockRamControlSignal, BlockRamPin, BlockRamPortSide, PinRole, SliceSlot},
+    domain::{BlockRamPin, PinRole, SliceSlot},
     ir::{Design, DesignIndex, Endpoint},
 };
 use std::collections::BTreeMap;
@@ -11,6 +11,15 @@ use super::ports::split_clock_route_pips;
 
 type PortLookup<'a> = BTreeMap<&'a str, &'a PortInstanceBinding>;
 
+#[derive(Clone, Copy)]
+struct PhysicalNetContext<'a> {
+    design: &'a Design,
+    index: &'a DesignIndex<'a>,
+    cell_bindings: &'a BTreeMap<String, (String, SliceCellBinding)>,
+    block_ram_bindings: &'a BTreeMap<String, String>,
+    port_lookup: &'a PortLookup<'a>,
+}
+
 pub(super) fn build_physical_nets(
     design: &Design,
     index: &DesignIndex<'_>,
@@ -19,13 +28,14 @@ pub(super) fn build_physical_nets(
     port_bindings: &[PortInstanceBinding],
 ) -> Vec<PhysicalNet> {
     let port_lookup = port_lookup(port_bindings);
-    let mut nets = build_internal_physical_nets(
+    let context = PhysicalNetContext {
         design,
         index,
         cell_bindings,
         block_ram_bindings,
-        &port_lookup,
-    );
+        port_lookup: &port_lookup,
+    };
+    let mut nets = build_internal_physical_nets(context);
     nets.extend(build_port_physical_nets(design, port_bindings));
     nets
 }
@@ -37,57 +47,32 @@ fn port_lookup(port_bindings: &[PortInstanceBinding]) -> PortLookup<'_> {
         .collect()
 }
 
-fn build_internal_physical_nets(
-    design: &Design,
-    index: &DesignIndex<'_>,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
-    block_ram_bindings: &BTreeMap<String, String>,
-    port_lookup: &PortLookup<'_>,
-) -> Vec<PhysicalNet> {
-    design
+fn build_internal_physical_nets(context: PhysicalNetContext<'_>) -> Vec<PhysicalNet> {
+    context
+        .design
         .nets
         .iter()
-        .filter_map(|net| {
-            build_internal_physical_net(
-                net,
-                design,
-                index,
-                cell_bindings,
-                block_ram_bindings,
-                port_lookup,
-            )
-        })
+        .filter_map(|net| build_internal_physical_net(net, context))
         .collect()
 }
 
 fn build_internal_physical_net(
     net: &crate::ir::Net,
-    design: &Design,
-    index: &DesignIndex<'_>,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
-    block_ram_bindings: &BTreeMap<String, String>,
-    port_lookup: &PortLookup<'_>,
+    context: PhysicalNetContext<'_>,
 ) -> Option<PhysicalNet> {
     let driver_port_binding = net
         .driver
         .as_ref()
-        .and_then(|driver| resolved_port_binding(driver, design, index, port_lookup));
+        .and_then(|driver| resolved_port_binding(driver, context));
     let sink_port_binding = net
         .sinks
         .iter()
-        .find_map(|sink| resolved_port_binding(sink, design, index, port_lookup));
+        .find_map(|sink| resolved_port_binding(sink, context));
     let driver_slice_binding = net
         .driver
         .as_ref()
-        .and_then(|driver| resolved_slice_binding(driver, design, index, cell_bindings));
-    let endpoints = internal_net_endpoints(
-        net,
-        design,
-        cell_bindings,
-        block_ram_bindings,
-        port_lookup,
-        driver_slice_binding,
-    );
+        .and_then(|driver| resolved_slice_binding(driver, context));
+    let endpoints = internal_net_endpoints(net, context, driver_slice_binding);
     if endpoints.len() < 2 {
         return None;
     }
@@ -102,14 +87,12 @@ fn build_internal_physical_net(
 
 fn resolved_port_binding<'a>(
     endpoint: &Endpoint,
-    design: &Design,
-    index: &DesignIndex<'_>,
-    port_lookup: &'a PortLookup<'a>,
+    context: PhysicalNetContext<'a>,
 ) -> Option<&'a PortInstanceBinding> {
-    match index.resolve_endpoint(endpoint) {
+    match context.index.resolve_endpoint(endpoint) {
         crate::ir::EndpointTarget::Port(port_id) => {
-            let port = index.port(design, port_id);
-            port_lookup.get(port.name.as_str()).copied()
+            let port = context.index.port(context.design, port_id);
+            context.port_lookup.get(port.name.as_str()).copied()
         }
         crate::ir::EndpointTarget::Cell(_) | crate::ir::EndpointTarget::Unknown => None,
     }
@@ -117,14 +100,13 @@ fn resolved_port_binding<'a>(
 
 fn resolved_slice_binding(
     endpoint: &Endpoint,
-    design: &Design,
-    index: &DesignIndex<'_>,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
+    context: PhysicalNetContext<'_>,
 ) -> Option<SliceCellBinding> {
-    match index.resolve_endpoint(endpoint) {
+    match context.index.resolve_endpoint(endpoint) {
         crate::ir::EndpointTarget::Cell(cell_id) => {
-            let cell = index.cell(design, cell_id);
-            cell_bindings
+            let cell = context.index.cell(context.design, cell_id);
+            context
+                .cell_bindings
                 .get(cell.name.as_str())
                 .map(|(_, binding)| *binding)
         }
@@ -134,34 +116,19 @@ fn resolved_slice_binding(
 
 fn internal_net_endpoints(
     net: &crate::ir::Net,
-    design: &Design,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
-    block_ram_bindings: &BTreeMap<String, String>,
-    port_lookup: &PortLookup<'_>,
+    context: PhysicalNetContext<'_>,
     driver_slice_binding: Option<SliceCellBinding>,
 ) -> Vec<PhysicalEndpoint> {
     let mut endpoints = Vec::new();
     if let Some(driver) = &net.driver
-        && let Some(endpoint) = physical_driver_endpoint(
-            driver,
-            design,
-            cell_bindings,
-            block_ram_bindings,
-            port_lookup,
-        )
+        && let Some(endpoint) = physical_driver_endpoint(driver, context)
     {
         push_unique_endpoint(&mut endpoints, endpoint);
     }
     for sink in &net.sinks {
-        for endpoint in physical_sink_endpoints(
-            sink,
-            net.driver.as_ref(),
-            design,
-            cell_bindings,
-            block_ram_bindings,
-            port_lookup,
-            driver_slice_binding,
-        ) {
+        for endpoint in
+            physical_sink_endpoints(sink, net.driver.as_ref(), context, driver_slice_binding)
+        {
             push_unique_endpoint(&mut endpoints, endpoint);
         }
     }
@@ -299,18 +266,15 @@ fn physical_internal_net_name(
 
 fn physical_driver_endpoint(
     endpoint: &Endpoint,
-    design: &Design,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
-    block_ram_bindings: &BTreeMap<String, String>,
-    port_lookup: &BTreeMap<&str, &PortInstanceBinding>,
+    context: PhysicalNetContext<'_>,
 ) -> Option<PhysicalEndpoint> {
     match endpoint.kind {
         crate::domain::EndpointKind::Cell => {
-            let cell = design
-                .cells
-                .iter()
-                .find(|cell| cell.name == endpoint.name)?;
-            if let Some((instance_name, binding)) = cell_bindings.get(cell.name.as_str()) {
+            let cell = context
+                .index
+                .cell_id(&endpoint.name)
+                .map(|cell_id| context.index.cell(context.design, cell_id))?;
+            if let Some((instance_name, binding)) = context.cell_bindings.get(cell.name.as_str()) {
                 let slot = SliceSlot::from_index(binding.slot.min(1))?;
                 let pin = match PinRole::classify_output_pin(cell.primitive_kind(), &endpoint.pin) {
                     PinRole::RegisterOutput => slot.register_output_pin().to_string(),
@@ -322,7 +286,7 @@ fn physical_driver_endpoint(
                     instance_ref: Some(instance_name.clone()),
                 });
             }
-            let instance_name = block_ram_bindings.get(cell.name.as_str())?;
+            let instance_name = context.block_ram_bindings.get(cell.name.as_str())?;
             let pin = physical_block_ram_pin_name(&endpoint.pin)?;
             Some(PhysicalEndpoint {
                 pin,
@@ -330,7 +294,7 @@ fn physical_driver_endpoint(
             })
         }
         crate::domain::EndpointKind::Port => {
-            let binding = port_lookup.get(endpoint.name.as_str())?;
+            let binding = context.port_lookup.get(endpoint.name.as_str())?;
             if let Some(gclk_instance_name) = binding.gclk_instance_name.as_ref() {
                 Some(PhysicalEndpoint {
                     pin: "OUT".to_string(),
@@ -350,18 +314,19 @@ fn physical_driver_endpoint(
 fn physical_sink_endpoints(
     endpoint: &Endpoint,
     driver: Option<&Endpoint>,
-    design: &Design,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
-    block_ram_bindings: &BTreeMap<String, String>,
-    port_lookup: &BTreeMap<&str, &PortInstanceBinding>,
+    context: PhysicalNetContext<'_>,
     driver_slice_binding: Option<SliceCellBinding>,
 ) -> Vec<PhysicalEndpoint> {
     match endpoint.kind {
         crate::domain::EndpointKind::Cell => {
-            let Some(cell) = design.cells.iter().find(|cell| cell.name == endpoint.name) else {
+            let Some(cell) = context
+                .index
+                .cell_id(&endpoint.name)
+                .map(|cell_id| context.index.cell(context.design, cell_id))
+            else {
                 return Vec::new();
             };
-            if let Some((instance_name, binding)) = cell_bindings.get(cell.name.as_str()) {
+            if let Some((instance_name, binding)) = context.cell_bindings.get(cell.name.as_str()) {
                 let Some(slot) = SliceSlot::from_index(binding.slot.min(1)) else {
                     return Vec::new();
                 };
@@ -386,13 +351,8 @@ fn physical_sink_endpoints(
                         instance_ref: Some(instance_name.clone()),
                     }],
                     PinRole::RegisterData => {
-                        if register_uses_local_lut(
-                            driver,
-                            design,
-                            cell_bindings,
-                            *binding,
-                            driver_slice_binding,
-                        ) {
+                        if register_uses_local_lut(driver, context, *binding, driver_slice_binding)
+                        {
                             Vec::new()
                         } else {
                             vec![PhysicalEndpoint {
@@ -404,7 +364,7 @@ fn physical_sink_endpoints(
                     _ => Vec::new(),
                 };
             }
-            let Some(instance_name) = block_ram_bindings.get(cell.name.as_str()) else {
+            let Some(instance_name) = context.block_ram_bindings.get(cell.name.as_str()) else {
                 return Vec::new();
             };
             physical_block_ram_pin_name(&endpoint.pin)
@@ -415,7 +375,8 @@ fn physical_sink_endpoints(
                 .into_iter()
                 .collect()
         }
-        crate::domain::EndpointKind::Port => port_lookup
+        crate::domain::EndpointKind::Port => context
+            .port_lookup
             .get(endpoint.name.as_str())
             .map(|binding| PhysicalEndpoint {
                 pin: "OUT".to_string(),
@@ -429,8 +390,7 @@ fn physical_sink_endpoints(
 
 fn register_uses_local_lut(
     driver: Option<&Endpoint>,
-    design: &Design,
-    cell_bindings: &BTreeMap<String, (String, SliceCellBinding)>,
+    context: PhysicalNetContext<'_>,
     sink_binding: SliceCellBinding,
     driver_binding: Option<SliceCellBinding>,
 ) -> bool {
@@ -440,10 +400,14 @@ fn register_uses_local_lut(
     let crate::domain::EndpointKind::Cell = driver.kind else {
         return false;
     };
-    let Some(driver_cell) = design.cells.iter().find(|cell| cell.name == driver.name) else {
+    let Some(driver_cell) = context
+        .index
+        .cell_id(&driver.name)
+        .map(|cell_id| context.index.cell(context.design, cell_id))
+    else {
         return false;
     };
-    let Some((_, binding)) = cell_bindings.get(driver_cell.name.as_str()) else {
+    let Some((_, binding)) = context.cell_bindings.get(driver_cell.name.as_str()) else {
         return driver_binding.is_some_and(|binding| {
             driver_cell.is_lut() && binding.slot.min(1) == sink_binding.slot.min(1)
         });
@@ -452,30 +416,7 @@ fn register_uses_local_lut(
 }
 
 fn physical_block_ram_pin_name(pin: &str) -> Option<String> {
-    match BlockRamPin::parse(pin)? {
-        BlockRamPin::Control { side, signal } => Some(match (side, signal) {
-            (BlockRamPortSide::A, BlockRamControlSignal::Clock) => "CKA".to_string(),
-            (BlockRamPortSide::A, BlockRamControlSignal::WriteEnable) => "AWE".to_string(),
-            (BlockRamPortSide::A, BlockRamControlSignal::Enable) => "AEN".to_string(),
-            (BlockRamPortSide::A, BlockRamControlSignal::Reset) => "RSTA".to_string(),
-            (BlockRamPortSide::B, BlockRamControlSignal::Clock) => "CKB".to_string(),
-            (BlockRamPortSide::B, BlockRamControlSignal::WriteEnable) => "BWE".to_string(),
-            (BlockRamPortSide::B, BlockRamControlSignal::Enable) => "BEN".to_string(),
-            (BlockRamPortSide::B, BlockRamControlSignal::Reset) => "RSTB".to_string(),
-        }),
-        BlockRamPin::DataIn { side, index } => Some(match side {
-            BlockRamPortSide::A => format!("DINA{index}"),
-            BlockRamPortSide::B => format!("DINB{index}"),
-        }),
-        BlockRamPin::DataOut { side, index } => Some(match side {
-            BlockRamPortSide::A => format!("DOUTA{index}"),
-            BlockRamPortSide::B => format!("DOUTB{index}"),
-        }),
-        BlockRamPin::Addr { side, index } => Some(match side {
-            BlockRamPortSide::A => format!("ADDRA_{index}"),
-            BlockRamPortSide::B => format!("ADDRB_{index}"),
-        }),
-    }
+    BlockRamPin::parse(pin)?.physical_port_name()
 }
 
 fn push_unique_endpoint(endpoints: &mut Vec<PhysicalEndpoint>, endpoint: PhysicalEndpoint) {

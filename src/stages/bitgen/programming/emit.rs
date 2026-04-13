@@ -10,7 +10,7 @@ use crate::{
     bitgen::DeviceDesign,
     bitgen::{DeviceDesignIndex, literal::address_count},
     cil::{Cil, SiteDef},
-    domain::{SliceSequentialConfigKey, SliceSlot},
+    domain::{BlockRamControlSignal, BlockRamPortSide, SliceSequentialConfigKey, SliceSlot},
     route::DeviceRouteImage,
 };
 
@@ -175,63 +175,103 @@ fn emit_block_ram_requests(program: &BlockRamProgram, site_def: &SiteDef) -> Vec
 
     if let Some(port_a_attr) = &program.port_a_attr {
         requests.push(RequestedConfig {
-            cfg_name: "PORTA_ATTR".to_string(),
+            cfg_name: BlockRamPortSide::A.port_attr_key().as_str().to_string(),
             function_name: port_a_attr.clone(),
         });
     }
     if let Some(port_b_attr) = &program.port_b_attr {
         requests.push(RequestedConfig {
-            cfg_name: "PORTB_ATTR".to_string(),
+            cfg_name: BlockRamPortSide::B.port_attr_key().as_str().to_string(),
             function_name: port_b_attr.clone(),
         });
     }
 
     if program.wea_used {
         requests.push(RequestedConfig {
-            cfg_name: "WEAMUX".to_string(),
-            function_name: "WEA".to_string(),
+            cfg_name: BlockRamControlSignal::WriteEnable
+                .mux_config_key(BlockRamPortSide::A)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::WriteEnable
+                .site_mux_function_name(BlockRamPortSide::A)
+                .to_string(),
         });
     }
     if program.web_used {
         requests.push(RequestedConfig {
-            cfg_name: "WEBMUX".to_string(),
-            function_name: "WEB".to_string(),
+            cfg_name: BlockRamControlSignal::WriteEnable
+                .mux_config_key(BlockRamPortSide::B)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::WriteEnable
+                .site_mux_function_name(BlockRamPortSide::B)
+                .to_string(),
         });
     }
     if program.ena_used {
         requests.push(RequestedConfig {
-            cfg_name: "ENAMUX".to_string(),
-            function_name: "ENA".to_string(),
+            cfg_name: BlockRamControlSignal::Enable
+                .mux_config_key(BlockRamPortSide::A)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::Enable
+                .site_mux_function_name(BlockRamPortSide::A)
+                .to_string(),
         });
     }
     if program.enb_used {
         requests.push(RequestedConfig {
-            cfg_name: "ENBMUX".to_string(),
-            function_name: "ENB".to_string(),
+            cfg_name: BlockRamControlSignal::Enable
+                .mux_config_key(BlockRamPortSide::B)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::Enable
+                .site_mux_function_name(BlockRamPortSide::B)
+                .to_string(),
         });
     }
     if program.rsta_used {
         requests.push(RequestedConfig {
-            cfg_name: "RSTAMUX".to_string(),
-            function_name: "RSTA".to_string(),
+            cfg_name: BlockRamControlSignal::Reset
+                .mux_config_key(BlockRamPortSide::A)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::Reset
+                .site_mux_function_name(BlockRamPortSide::A)
+                .to_string(),
         });
     }
     if program.rstb_used {
         requests.push(RequestedConfig {
-            cfg_name: "RSTBMUX".to_string(),
-            function_name: "RSTB".to_string(),
+            cfg_name: BlockRamControlSignal::Reset
+                .mux_config_key(BlockRamPortSide::B)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::Reset
+                .site_mux_function_name(BlockRamPortSide::B)
+                .to_string(),
         });
     }
     if program.clka_used {
         requests.push(RequestedConfig {
-            cfg_name: "CLKAMUX".to_string(),
-            function_name: "CLK".to_string(),
+            cfg_name: BlockRamControlSignal::Clock
+                .mux_config_key(BlockRamPortSide::A)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::Clock
+                .site_mux_function_name(BlockRamPortSide::A)
+                .to_string(),
         });
     }
     if program.clkb_used {
         requests.push(RequestedConfig {
-            cfg_name: "CLKBMUX".to_string(),
-            function_name: "CLK".to_string(),
+            cfg_name: BlockRamControlSignal::Clock
+                .mux_config_key(BlockRamPortSide::B)
+                .as_str()
+                .to_string(),
+            function_name: BlockRamControlSignal::Clock
+                .site_mux_function_name(BlockRamPortSide::B)
+                .to_string(),
         });
     }
 

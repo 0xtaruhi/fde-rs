@@ -1,5 +1,5 @@
 use super::{
-    CellKind,
+    BlockRamControlSignal, BlockRamPin, CellKind,
     ascii::{
         trimmed_contains_ignore_ascii_case, trimmed_eq_ignore_ascii_case,
         trimmed_starts_with_ignore_ascii_case, trimmed_strip_prefix_ignore_ascii_case,
@@ -165,20 +165,16 @@ impl PrimitiveKind {
                 || trimmed_eq_ignore_ascii_case(pin, "CKN")
                 || trimmed_eq_ignore_ascii_case(pin, "CLKN")))
             || (self.is_block_ram()
-                && matches!(
-                    normalized_block_ram_pin(pin).as_str(),
-                    "CKA" | "CKB" | "CLKA" | "CLKB" | "CLK"
-                ))
+                && BlockRamPin::parse(pin).and_then(BlockRamPin::control_signal)
+                    == Some(BlockRamControlSignal::Clock))
     }
 
     pub fn is_clock_enable_pin(self, pin: &str) -> bool {
         (self.is_sequential()
             && (trimmed_eq_ignore_ascii_case(pin, "CE") || trimmed_eq_ignore_ascii_case(pin, "E")))
             || (self.is_block_ram()
-                && matches!(
-                    normalized_block_ram_pin(pin).as_str(),
-                    "AEN" | "BEN" | "ENA" | "ENB" | "EN"
-                ))
+                && BlockRamPin::parse(pin).and_then(BlockRamPin::control_signal)
+                    == Some(BlockRamControlSignal::Enable))
     }
 
     pub fn is_set_reset_pin(self, pin: &str) -> bool {
@@ -194,10 +190,8 @@ impl PrimitiveKind {
                 || trimmed_eq_ignore_ascii_case(pin, "CLR")
                 || trimmed_eq_ignore_ascii_case(pin, "CLEAR")))
             || (self.is_block_ram()
-                && matches!(
-                    normalized_block_ram_pin(pin).as_str(),
-                    "RSTA" | "RSTB" | "RST"
-                ))
+                && BlockRamPin::parse(pin).and_then(BlockRamPin::control_signal)
+                    == Some(BlockRamControlSignal::Reset))
     }
 
     pub fn is_register_data_pin(self, pin: &str) -> bool {
@@ -205,12 +199,9 @@ impl PrimitiveKind {
     }
 
     pub fn is_block_ram_output_pin(self, pin: &str) -> bool {
-        self.is_block_ram() && {
-            let normalized = normalized_block_ram_pin(pin);
-            normalized.starts_with("DO")
-                || normalized.starts_with("DOUT")
-                || normalized.starts_with("Q")
-        }
+        self.is_block_ram()
+            && (BlockRamPin::parse(pin).is_some_and(BlockRamPin::is_data_output)
+                || trimmed_eq_ignore_ascii_case(pin, "Q"))
     }
 }
 
@@ -221,14 +212,6 @@ fn parse_lut_inputs(type_name: &str) -> Option<usize> {
         .find(|(_, ch)| ch.is_ascii_digit())
         .map(|(index, _)| index)?;
     type_name.trim().get(digit_offset..)?.parse().ok()
-}
-
-fn normalized_block_ram_pin(pin: &str) -> String {
-    pin.trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .map(|ch| ch.to_ascii_uppercase())
-        .collect()
 }
 
 #[cfg(test)]

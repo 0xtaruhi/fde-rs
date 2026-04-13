@@ -7,7 +7,8 @@ use super::{
     },
 };
 use crate::domain::{
-    BlockRamKind, BlockRamPin, SequentialInitValue, SliceSequentialConfigKey, SliceSlot,
+    BlockRamConfigKey, BlockRamControlSignal, BlockRamKind, BlockRamPin, BlockRamPortSide,
+    SequentialInitValue, SliceSequentialConfigKey, SliceSlot,
 };
 use crate::ir::{
     Cell, CellKind, Cluster, ClusterKind, Design, Endpoint, Net, Port, PortDirection, Property,
@@ -187,15 +188,20 @@ fn import_block_ram_clusters(instances: &[PhysicalInstance]) -> (Vec<Cluster>, V
 }
 
 fn infer_block_ram_kind(instance: &PhysicalInstance) -> BlockRamKind {
-    if ["CLKBMUX", "ENBMUX", "WEBMUX", "RSTBMUX", "PORTB_ATTR"]
-        .into_iter()
-        .any(|key| {
-            instance
-                .configs
-                .get(key)
-                .is_some_and(|value| value != "#OFF")
-        })
-    {
+    if [
+        BlockRamControlSignal::Clock.mux_config_key(BlockRamPortSide::B),
+        BlockRamControlSignal::Enable.mux_config_key(BlockRamPortSide::B),
+        BlockRamControlSignal::WriteEnable.mux_config_key(BlockRamPortSide::B),
+        BlockRamControlSignal::Reset.mux_config_key(BlockRamPortSide::B),
+        BlockRamConfigKey::PortAttr(BlockRamPortSide::B),
+    ]
+    .into_iter()
+    .any(|key| {
+        instance
+            .configs
+            .get(key.as_str())
+            .is_some_and(|value| value != "#OFF")
+    }) {
         BlockRamKind::DualPort
     } else {
         BlockRamKind::SinglePort
@@ -582,45 +588,18 @@ fn block_ram_logical_endpoints(
     instance: &PhysicalInstance,
     pin: &str,
 ) -> Vec<(Endpoint, PhysicalEndpointRole)> {
-    let Some(pin) = normalize_block_ram_pin(pin) else {
+    let Some(pin) = BlockRamPin::normalized_cell_pin_name(pin) else {
         return Vec::new();
     };
     let Some(parsed) = BlockRamPin::parse(&pin) else {
         return Vec::new();
     };
-    let role = match parsed {
-        BlockRamPin::DataOut { .. } => PhysicalEndpointRole::Driver,
-        BlockRamPin::Control { .. } | BlockRamPin::DataIn { .. } | BlockRamPin::Addr { .. } => {
-            PhysicalEndpointRole::Sink
-        }
+    let role = if parsed.is_data_output() {
+        PhysicalEndpointRole::Driver
+    } else {
+        PhysicalEndpointRole::Sink
     };
     vec![(Endpoint::cell(instance.name.clone(), pin), role)]
-}
-
-fn normalize_block_ram_pin(pin: &str) -> Option<String> {
-    let compact = pin
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .map(|ch| ch.to_ascii_uppercase())
-        .collect::<String>();
-    if compact.is_empty() {
-        return None;
-    }
-
-    let canonical = if let Some(suffix) = compact.strip_prefix("DOUTA") {
-        format!("DOA{suffix}")
-    } else if let Some(suffix) = compact.strip_prefix("DOUTB") {
-        format!("DOB{suffix}")
-    } else if let Some(suffix) = compact.strip_prefix("DINA") {
-        format!("DIA{suffix}")
-    } else if let Some(suffix) = compact.strip_prefix("DINB") {
-        format!("DIB{suffix}")
-    } else {
-        compact
-    };
-
-    BlockRamPin::parse(&canonical).map(|_| canonical)
 }
 
 fn slice_logical_endpoints(
