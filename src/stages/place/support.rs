@@ -9,6 +9,13 @@ use super::{
     model::{PlacementModel, Point},
 };
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct FocusSampler {
+    weights: Vec<(ClusterId, f64)>,
+    cumulative: Vec<f64>,
+    total: f64,
+}
+
 pub(super) type ClusterUpdates = SmallVec<[(ClusterId, Point); 2]>;
 pub(super) type PlacementBackups = SmallVec<[(ClusterId, Option<Point>); 2]>;
 pub(super) type CandidateTargets = SmallVec<[Point; 16]>;
@@ -17,22 +24,40 @@ pub(super) type RankedNeighbors = SmallVec<[(ClusterId, f64); 3]>;
 pub(super) type SiteOccupancy = SmallVec<[ClusterId; 2]>;
 pub(super) type OccupancyMap = Vec<SiteOccupancy>;
 
-pub(super) fn choose_focus(
-    focus_weights: &[(ClusterId, f64)],
-    rng: &mut ChaCha8Rng,
-) -> Option<ClusterId> {
-    let total = focus_weights.iter().map(|(_, weight)| *weight).sum::<f64>();
-    if total <= 0.0 {
-        return focus_weights.first().map(|(cluster_id, _)| *cluster_id);
-    }
-    let mut needle = rng.random::<f64>() * total;
-    for (cluster_id, weight) in focus_weights {
-        needle -= *weight;
-        if needle <= 0.0 {
-            return Some(*cluster_id);
+impl FocusSampler {
+    pub(super) fn new(weights: Vec<(ClusterId, f64)>) -> Self {
+        let mut cumulative = Vec::with_capacity(weights.len());
+        let mut total = 0.0;
+        for &(_, weight) in &weights {
+            total += weight;
+            cumulative.push(total);
+        }
+
+        Self {
+            weights,
+            cumulative,
+            total,
         }
     }
-    focus_weights.last().map(|(cluster_id, _)| *cluster_id)
+
+    pub(super) fn choose(&self, rng: &mut ChaCha8Rng) -> Option<ClusterId> {
+        if self.total <= 0.0 {
+            return self.weights.first().map(|(cluster_id, _)| *cluster_id);
+        }
+
+        let needle = rng.random::<f64>() * self.total;
+        let index = self.cumulative.partition_point(|&prefix| prefix < needle);
+        self.weights
+            .get(index.min(self.weights.len().saturating_sub(1)))
+            .map(|(cluster_id, _)| *cluster_id)
+    }
+}
+
+pub(super) fn choose_focus(
+    focus_sampler: &FocusSampler,
+    rng: &mut ChaCha8Rng,
+) -> Option<ClusterId> {
+    focus_sampler.choose(rng)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -477,8 +502,13 @@ pub(super) fn grid_index(point: Point, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{Point, SiteOccupancy, TargetUpdateContext, plan_target_updates, site_mask};
+    use super::{
+        FocusSampler, Point, SiteOccupancy, TargetUpdateContext, choose_focus, plan_target_updates,
+        site_mask,
+    };
     use crate::ir::ClusterId;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn target_updates_reject_non_logic_sites() {
@@ -505,5 +535,19 @@ mod tests {
         );
 
         assert!(updates.is_none());
+    }
+
+    #[test]
+    fn focus_sampler_returns_only_known_clusters() {
+        let sampler = FocusSampler::new(vec![
+            (ClusterId::new(1), 1.0),
+            (ClusterId::new(3), 2.0),
+            (ClusterId::new(5), 4.0),
+        ]);
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        for _ in 0..64 {
+            let chosen = choose_focus(&sampler, &mut rng).expect("focus");
+            assert!(matches!(chosen.index(), 1 | 3 | 5));
+        }
     }
 }

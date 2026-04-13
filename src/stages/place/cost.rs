@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use super::{
     graph::ClusterGraph,
-    model::{PlacementModel, Point, PreparedNet},
+    model::{PlacementEndpoint, PlacementModel, Point, PreparedNet},
 };
 
 const CONGESTION_THRESHOLD: f64 = 1.35;
@@ -104,6 +104,52 @@ struct CandidateNetMetrics {
     congestion_score_raw: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct OverrideLookup {
+    first: Option<(ClusterId, Point)>,
+    second: Option<(ClusterId, Point)>,
+}
+
+impl OverrideLookup {
+    fn from_updates(updates: &ClusterUpdates) -> Self {
+        let first = updates.first().copied();
+        let second = updates.get(1).copied();
+        Self { first, second }
+    }
+
+    fn point_for_endpoint(
+        self,
+        endpoint: PlacementEndpoint,
+        model: &PlacementModel,
+        placements: &[Option<Point>],
+    ) -> Option<Point> {
+        match endpoint {
+            PlacementEndpoint::Cluster(cluster_id) => self
+                .point_for_cluster(cluster_id, placements)
+                .or_else(|| model.fixed_point(cluster_id)),
+            PlacementEndpoint::Port(point) => Some(point),
+        }
+    }
+
+    fn point_for_cluster(
+        self,
+        cluster_id: ClusterId,
+        placements: &[Option<Point>],
+    ) -> Option<Point> {
+        if let Some((candidate, point)) = self.second
+            && candidate == cluster_id
+        {
+            return Some(point);
+        }
+        if let Some((candidate, point)) = self.first
+            && candidate == cluster_id
+        {
+            return Some(point);
+        }
+        placements.get(cluster_id.index()).copied().flatten()
+    }
+}
+
 impl<'a> PlacementEvaluator<'a> {
     pub(crate) fn new_from_positions(
         model: &'a PlacementModel,
@@ -140,11 +186,19 @@ impl<'a> PlacementEvaluator<'a> {
         &self.metrics
     }
 
+    #[cfg(test)]
     pub(crate) fn evaluate_candidate<P>(&mut self, updates: &[(ClusterId, P)]) -> PlacementCandidate
     where
         P: Copy + Into<Point>,
     {
         let updates = normalize_candidate_updates(updates);
+        self.evaluate_prepared_candidate(updates)
+    }
+
+    pub(crate) fn evaluate_prepared_candidate(
+        &mut self,
+        updates: ClusterUpdates,
+    ) -> PlacementCandidate {
         if updates.is_empty() {
             return self.empty_candidate();
         }
@@ -170,21 +224,17 @@ impl<'a> PlacementEvaluator<'a> {
         }
     }
 
-    pub(crate) fn evaluate_candidate_metrics<P>(
+    pub(crate) fn evaluate_prepared_candidate_metrics(
         &mut self,
-        updates: &[(ClusterId, P)],
-    ) -> PlacementMetrics
-    where
-        P: Copy + Into<Point>,
-    {
-        let updates = normalize_candidate_updates(updates);
+        updates: &ClusterUpdates,
+    ) -> PlacementMetrics {
         if updates.is_empty() {
             return self.metrics.clone();
         }
 
-        let moved_clusters = moved_clusters(&updates);
-        let net_metrics = self.candidate_net_metrics(&updates, &moved_clusters);
-        let locality_cost = self.candidate_locality_cost(&updates, &moved_clusters);
+        let moved_clusters = moved_clusters(updates);
+        let net_metrics = self.candidate_net_metrics(updates, &moved_clusters);
+        let locality_cost = self.candidate_locality_cost(updates, &moved_clusters);
         compose_metrics(
             self.mode,
             net_metrics.wire_cost,
@@ -239,6 +289,7 @@ impl<'a> PlacementEvaluator<'a> {
         moved_clusters: &[ClusterId],
     ) -> CandidateNetEffects {
         self.collect_affected_nets(moved_clusters);
+        let override_lookup = OverrideLookup::from_updates(updates);
         let mut wire_cost = self.metrics.wire_cost;
         let mut timing_cost = self.metrics.timing_cost;
         let mut congestion_score_raw = self.congestion_score_raw;
@@ -265,7 +316,7 @@ impl<'a> PlacementEvaluator<'a> {
                     net,
                     self.model,
                     &self.placements,
-                    updates,
+                    override_lookup,
                     self.delay,
                     self.mode,
                 )
@@ -319,6 +370,7 @@ impl<'a> PlacementEvaluator<'a> {
         moved_clusters: &[ClusterId],
     ) -> CandidateNetMetrics {
         self.collect_affected_nets(moved_clusters);
+        let override_lookup = OverrideLookup::from_updates(updates);
         let mut wire_cost = self.metrics.wire_cost;
         let mut timing_cost = self.metrics.timing_cost;
         let mut congestion_score_raw = self.congestion_score_raw;
@@ -344,7 +396,7 @@ impl<'a> PlacementEvaluator<'a> {
                     net,
                     self.model,
                     &self.placements,
-                    updates,
+                    override_lookup,
                     self.delay,
                     self.mode,
                 )
@@ -384,6 +436,7 @@ impl<'a> PlacementEvaluator<'a> {
         moved_clusters: &[ClusterId],
     ) -> CandidateLocalityEffects {
         self.collect_affected_locality_clusters(moved_clusters);
+        let override_lookup = OverrideLookup::from_updates(updates);
         let mut cost = self.metrics.locality_cost;
         let affected_locality_len = self.scratch.affected_locality.len();
         let mut updates_out = Vec::with_capacity(affected_locality_len);
@@ -399,7 +452,7 @@ impl<'a> PlacementEvaluator<'a> {
                 cluster_id,
                 self.graph,
                 &self.placements,
-                updates,
+                override_lookup,
                 &self.locality_weights,
             )
             .unwrap_or(0.0);
@@ -421,6 +474,7 @@ impl<'a> PlacementEvaluator<'a> {
         moved_clusters: &[ClusterId],
     ) -> f64 {
         self.collect_affected_locality_clusters(moved_clusters);
+        let override_lookup = OverrideLookup::from_updates(updates);
         let mut cost = self.metrics.locality_cost;
 
         for affected_index in 0..self.scratch.affected_locality.len() {
@@ -434,7 +488,7 @@ impl<'a> PlacementEvaluator<'a> {
                 cluster_id,
                 self.graph,
                 &self.placements,
-                updates,
+                override_lookup,
                 &self.locality_weights,
             )
             .unwrap_or(0.0);
@@ -530,6 +584,7 @@ pub(crate) fn evaluate_positions(
         .clone()
 }
 
+#[cfg(test)]
 fn normalize_candidate_updates<P>(updates: &[(ClusterId, P)]) -> ClusterUpdates
 where
     P: Copy + Into<Point>,
@@ -573,7 +628,7 @@ fn build_evaluation_state(
                 ClusterId::new(index),
                 graph,
                 placements,
-                &[],
+                OverrideLookup::default(),
                 &locality_weights,
             )
             .unwrap_or(0.0)
@@ -623,7 +678,7 @@ fn locality_term(
     cluster_id: ClusterId,
     graph: &ClusterGraph,
     placements: &[Option<Point>],
-    overrides: &[(ClusterId, Point)],
+    overrides: OverrideLookup,
     locality_weights: &[f64],
 ) -> Option<f64> {
     let position = lookup_position(cluster_id, placements, overrides)?;
@@ -639,7 +694,7 @@ fn weighted_centroid_with_overrides(
     cluster_id: ClusterId,
     graph: &ClusterGraph,
     placements: &[Option<Point>],
-    overrides: &[(ClusterId, Point)],
+    overrides: OverrideLookup,
 ) -> Option<Point> {
     let mut x_total = 0.0;
     let mut y_total = 0.0;
@@ -665,14 +720,9 @@ fn weighted_centroid_with_overrides(
 fn lookup_position(
     cluster_id: ClusterId,
     placements: &[Option<Point>],
-    overrides: &[(ClusterId, Point)],
+    overrides: OverrideLookup,
 ) -> Option<Point> {
-    overrides
-        .iter()
-        .rev()
-        .find(|(candidate, _)| *candidate == cluster_id)
-        .map(|(_, point)| *point)
-        .or_else(|| placements.get(cluster_id.index()).copied().flatten())
+    overrides.point_for_cluster(cluster_id, placements)
 }
 
 fn compose_metrics(
@@ -713,26 +763,29 @@ fn accumulate_load_delta(
     touched_mask: &mut [bool],
 ) {
     let cell_load = net_model.cell_load() * scale;
-    for x in net_model.min_x..=net_model.max_x {
-        for y in net_model.min_y..=net_model.max_y {
-            let index = y * arch.width + x;
+    let span_width = net_model.max_x - net_model.min_x + 1;
+    for y in net_model.min_y..=net_model.max_y {
+        let row_start = y * arch.width + net_model.min_x;
+        let row_end = row_start + span_width;
+        for (offset, delta) in deltas[row_start..row_end].iter_mut().enumerate() {
+            let index = row_start + offset;
             if !touched_mask[index] {
                 touched_mask[index] = true;
                 touched.push(index);
             }
-            deltas[index] += cell_load;
+            *delta += cell_load;
         }
     }
 }
 
 fn apply_net_load(net_model: &NetModel, arch: &Arch, scale: f64, loads: &mut [f64]) {
     let cell_load = net_model.cell_load() * scale;
-    for x in net_model.min_x..=net_model.max_x {
-        for y in net_model.min_y..=net_model.max_y {
-            let index = y * arch.width + x;
-            if let Some(load) = loads.get_mut(index) {
-                *load += cell_load;
-            }
+    let span_width = net_model.max_x - net_model.min_x + 1;
+    for y in net_model.min_y..=net_model.max_y {
+        let row_start = y * arch.width + net_model.min_x;
+        let row_end = row_start + span_width;
+        for load in &mut loads[row_start..row_end] {
+            *load += cell_load;
         }
     }
 }
@@ -744,19 +797,26 @@ fn build_net_model(
     delay: Option<&DelayModel>,
     mode: PlaceMode,
 ) -> Option<NetModel> {
-    build_net_model_with_overrides(net, model, placements, &[], delay, mode)
+    build_net_model_with_overrides(
+        net,
+        model,
+        placements,
+        OverrideLookup::default(),
+        delay,
+        mode,
+    )
 }
 
 fn build_net_model_with_overrides(
     net: &PreparedNet,
     model: &PlacementModel,
     placements: &[Option<Point>],
-    overrides: &[(ClusterId, Point)],
+    overrides: OverrideLookup,
     delay: Option<&DelayModel>,
     mode: PlaceMode,
 ) -> Option<NetModel> {
     let driver = net.driver?;
-    let src = model.point_for_overrides(driver, placements, overrides)?;
+    let src = overrides.point_for_endpoint(driver, model, placements)?;
     let mut min_x = src.x;
     let mut max_x = src.x;
     let mut min_y = src.y;
@@ -765,7 +825,7 @@ fn build_net_model_with_overrides(
     let mut driver_span = 0.0_f64;
 
     for sink in &net.sinks {
-        if let Some(point) = model.point_for_overrides(*sink, placements, overrides) {
+        if let Some(point) = overrides.point_for_endpoint(*sink, model, placements) {
             min_x = min_x.min(point.x);
             max_x = max_x.max(point.x);
             min_y = min_y.min(point.y);

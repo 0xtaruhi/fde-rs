@@ -123,6 +123,13 @@ impl PlacementModel {
         self.fixed_clusters.clone()
     }
 
+    pub(crate) fn fixed_point(&self, cluster_id: ClusterId) -> Option<Point> {
+        self.fixed_clusters
+            .get(cluster_id.index())
+            .copied()
+            .flatten()
+    }
+
     pub(crate) fn point_for_overrides(
         &self,
         endpoint: PlacementEndpoint,
@@ -136,12 +143,7 @@ impl PlacementModel {
                 .find(|(candidate, _)| *candidate == cluster_id)
                 .map(|(_, point)| *point)
                 .or_else(|| placements.get(cluster_id.index()).copied().flatten())
-                .or_else(|| {
-                    self.fixed_clusters
-                        .get(cluster_id.index())
-                        .copied()
-                        .flatten()
-                }),
+                .or_else(|| self.fixed_point(cluster_id)),
             PlacementEndpoint::Port(point) => Some(point),
         }
     }

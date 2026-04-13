@@ -13,14 +13,19 @@ use super::{
     graph::{ClusterGraph, build_cluster_graph, cluster_incident_criticality},
     model::{PlacementModel, Point},
     support::{
-        CandidateTargets, ClusterUpdates, OccupancyMap, SiteOccupancy, TargetUpdateContext,
-        apply_updates_in_place, best_neighbors, candidate_targets, choose_focus, extend_best_sites,
-        initial_placement, nearby_sites, occupancy_map, plan_target_updates, push_unique,
-        random_swap_updates, restore_updates, site_mask,
+        CandidateTargets, ClusterUpdates, FocusSampler, OccupancyMap, SiteOccupancy,
+        TargetUpdateContext, apply_updates_in_place, best_neighbors, candidate_targets,
+        choose_focus, extend_best_sites, initial_placement, nearby_sites, occupancy_map,
+        plan_target_updates, push_unique, random_swap_updates, restore_updates, site_mask,
     },
 };
 
 const INCREMENTAL_EVALUATOR_NET_THRESHOLD: usize = 128;
+const ANNEAL_TEMPERATURE_FLOOR: f64 = 0.02;
+const PLATEAU_EARLY_EXIT_MIN_ITERATIONS: usize = 50_000;
+const PLATEAU_EARLY_EXIT_MIN_MOVABLE_CLUSTERS: usize = 512;
+const PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO: f64 = 0.60;
+const PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT: f64 = 0.0005;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlacementSolution {
@@ -54,6 +59,15 @@ struct FullAnnealState {
     trial: Vec<Option<Point>>,
     occupancy: OccupancyMap,
     metrics: PlacementMetrics,
+}
+
+#[derive(Debug, Clone)]
+struct PlateauExitState {
+    enabled: bool,
+    min_completion_step: usize,
+    window: usize,
+    window_start_step: Option<usize>,
+    window_start_best_total: f64,
 }
 
 pub(crate) fn solve(
@@ -238,20 +252,67 @@ fn cool_temperature(temperature: f64, step: usize) -> f64 {
         } else {
             0.9985
         };
-    cooled.max(0.02)
+    cooled.max(ANNEAL_TEMPERATURE_FLOOR)
 }
 
 fn stall_limit(context: &SolveContext<'_>) -> usize {
     context.movable.len() * 3
 }
 
+impl PlateauExitState {
+    fn new(iterations: usize, movable_count: usize, best_total: f64) -> Self {
+        let enabled = iterations >= PLATEAU_EARLY_EXIT_MIN_ITERATIONS
+            && movable_count >= PLATEAU_EARLY_EXIT_MIN_MOVABLE_CLUSTERS;
+        let min_completion_step =
+            ((iterations as f64) * PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO).ceil() as usize;
+        let window = (iterations / 20)
+            .max(movable_count * 2)
+            .min(iterations.max(1));
+        Self {
+            enabled,
+            min_completion_step,
+            window,
+            window_start_step: None,
+            window_start_best_total: best_total,
+        }
+    }
+
+    fn should_stop(&mut self, step: usize, temperature: f64, best_total: f64) -> bool {
+        if !self.enabled
+            || step + 1 < self.min_completion_step
+            || temperature > ANNEAL_TEMPERATURE_FLOOR + f64::EPSILON
+        {
+            self.window_start_step = None;
+            self.window_start_best_total = best_total;
+            return false;
+        }
+
+        let Some(window_start_step) = self.window_start_step else {
+            self.window_start_step = Some(step + 1);
+            self.window_start_best_total = best_total;
+            return false;
+        };
+
+        if step + 1 - window_start_step < self.window {
+            return false;
+        }
+
+        let baseline = self.window_start_best_total.max(1.0);
+        let relative_improvement =
+            ((self.window_start_best_total - best_total).max(0.0)) / baseline;
+        self.window_start_step = Some(step + 1);
+        self.window_start_best_total = best_total;
+        relative_improvement < PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT
+    }
+}
+
 fn choose_focus_and_targets(
     context: &SolveContext<'_>,
     placements: &[Option<Point>],
-    focus_weights: &[(ClusterId, f64)],
+    focus_sampler: &FocusSampler,
     rng: &mut ChaCha8Rng,
 ) -> Result<(ClusterId, CandidateTargets)> {
-    let focus = choose_focus(focus_weights, rng)
+    let focus = choose_focus(focus_sampler, rng)
         .ok_or_else(|| anyhow!("missing movable cluster during placement"))?;
     let (sites, site_mask, _) = site_resources(context, focus);
     let targets = candidate_targets(
@@ -370,14 +431,14 @@ fn best_incremental_trial(
         ) else {
             continue;
         };
-        let metrics = evaluator.evaluate_candidate_metrics(&changes);
+        let metrics = evaluator.evaluate_prepared_candidate_metrics(&changes);
         if metrics.total < best_total {
             best_total = metrics.total;
             best_updates = Some(changes);
         }
     }
 
-    best_updates.map(|changes| evaluator.evaluate_candidate(&changes))
+    best_updates.map(|changes| evaluator.evaluate_prepared_candidate(changes))
 }
 
 fn maybe_apply_incremental_swap(
@@ -392,9 +453,11 @@ fn maybe_apply_incremental_swap(
         context.movable,
         rng,
     ) {
-        let swap_metrics = state.evaluator.evaluate_candidate_metrics(&swapped);
+        let swap_metrics = state
+            .evaluator
+            .evaluate_prepared_candidate_metrics(&swapped);
         if swap_metrics.total < state.metrics.total {
-            let swap_candidate = state.evaluator.evaluate_candidate(&swapped);
+            let swap_candidate = state.evaluator.evaluate_prepared_candidate(swapped);
             state.evaluator.apply_candidate(swap_candidate);
             state.occupancy = occupancy_map(
                 state.evaluator.placements(),
@@ -417,11 +480,13 @@ fn solve_incremental(
         placements: state.evaluator.placements().to_vec(),
         metrics: state.evaluator.metrics().clone(),
     };
-    let focus_weights = focus_weights(context);
+    let focus_sampler = FocusSampler::new(focus_weights(context));
 
     let iterations = anneal_iterations(context);
     let mut temperature = anneal_temperature(state.metrics.total, context.movable.len());
     let mut stall = 0usize;
+    let mut plateau_exit =
+        PlateauExitState::new(iterations, context.movable.len(), best.metrics.total);
     emit_stage_info(
         reporter,
         "place",
@@ -446,7 +511,7 @@ fn solve_incremental(
         let (focus, candidates) = choose_focus_and_targets(
             context,
             state.evaluator.placements(),
-            &focus_weights,
+            &focus_sampler,
             &mut rng,
         )?;
         let best_trial = best_incremental_trial(
@@ -491,6 +556,19 @@ fn solve_incremental(
         }
 
         temperature = cool_temperature(temperature, step);
+        if plateau_exit.should_stop(step, temperature, best.metrics.total) {
+            emit_stage_info(
+                reporter,
+                "place",
+                format!(
+                    "stopping incremental anneal early at {}/{} after plateau at temperature floor; best cost {:.3}",
+                    step + 1,
+                    iterations,
+                    best.metrics.total
+                ),
+            );
+            break;
+        }
     }
 
     emit_stage_info(
@@ -597,11 +675,13 @@ fn solve_full(
         placements: state.current.clone(),
         metrics: state.metrics.clone(),
     };
-    let focus_weights = focus_weights(context);
+    let focus_sampler = FocusSampler::new(focus_weights(context));
 
     let iterations = anneal_iterations(context);
     let mut temperature = anneal_temperature(state.metrics.total, context.movable.len());
     let mut stall = 0usize;
+    let mut plateau_exit =
+        PlateauExitState::new(iterations, context.movable.len(), best.metrics.total);
     emit_stage_info(
         reporter,
         "place",
@@ -624,7 +704,7 @@ fn solve_full(
             );
         }
         let (focus, candidates) =
-            choose_focus_and_targets(context, &state.current, &focus_weights, &mut rng)?;
+            choose_focus_and_targets(context, &state.current, &focus_sampler, &mut rng)?;
         let best_trial = best_full_trial(
             context,
             &state.current,
@@ -668,6 +748,19 @@ fn solve_full(
         }
 
         temperature = cool_temperature(temperature, step);
+        if plateau_exit.should_stop(step, temperature, best.metrics.total) {
+            emit_stage_info(
+                reporter,
+                "place",
+                format!(
+                    "stopping full anneal early at {}/{} after plateau at temperature floor; best cost {:.3}",
+                    step + 1,
+                    iterations,
+                    best.metrics.total
+                ),
+            );
+            break;
+        }
     }
 
     emit_stage_info(
@@ -749,11 +842,11 @@ fn refine_solution(
                 if changes.is_empty() {
                     continue;
                 }
-                let trial_metrics = evaluator.evaluate_candidate_metrics(&changes);
+                let trial_metrics = evaluator.evaluate_prepared_candidate_metrics(&changes);
                 if trial_metrics.total + 1e-9 >= evaluator.metrics().total {
                     continue;
                 }
-                let trial = evaluator.evaluate_candidate(&changes);
+                let trial = evaluator.evaluate_prepared_candidate(changes);
                 if best_trial
                     .as_ref()
                     .is_none_or(|best| trial.metrics().total + 1e-9 < best.metrics().total)
@@ -911,5 +1004,42 @@ fn site_resources<'a>(
             context.logic_site_mask,
             context.logic_site_capacity,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ANNEAL_TEMPERATURE_FLOOR, PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO,
+        PLATEAU_EARLY_EXIT_MIN_ITERATIONS, PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT,
+        PlateauExitState,
+    };
+
+    #[test]
+    fn plateau_exit_stays_disabled_for_small_runs() {
+        let mut plateau = PlateauExitState::new(10_000, 256, 100.0);
+        for step in 0..10_000 {
+            assert!(!plateau.should_stop(step, ANNEAL_TEMPERATURE_FLOOR, 100.0));
+        }
+    }
+
+    #[test]
+    fn plateau_exit_triggers_after_large_window_with_tiny_improvement() {
+        let iterations = PLATEAU_EARLY_EXIT_MIN_ITERATIONS;
+        let mut plateau = PlateauExitState::new(iterations, 1_024, 10_000.0);
+        let start_step =
+            ((iterations as f64) * PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO).ceil() as usize;
+        for step in 0..start_step {
+            assert!(!plateau.should_stop(step, ANNEAL_TEMPERATURE_FLOOR, 10_000.0));
+        }
+        let tiny_improvement = 10_000.0 * (PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT * 0.5);
+        let mut triggered = false;
+        for step in start_step..iterations {
+            if plateau.should_stop(step, ANNEAL_TEMPERATURE_FLOOR, 10_000.0 - tiny_improvement) {
+                triggered = true;
+                break;
+            }
+        }
+        assert!(triggered);
     }
 }
