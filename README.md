@@ -340,7 +340,7 @@ udevadm monitor --property --udev
 
 Lastly, if everything fails, you can confirm that the program can be uploaded by running as root user in the folder: (change debug to release if you compiled it in release mode)
 ```bash
-sudo tools/wave_probe/target/debug/wave_probe /build/blinky-run/06-output.bit
+sudo tools/wave_probe/target/debug/wave_probe build/blinky-run/06-output.bit
 ```
 
 ## Repository Scope
