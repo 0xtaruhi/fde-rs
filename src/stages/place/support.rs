@@ -1,6 +1,6 @@
 use crate::{domain::ClusterKind, ir::ClusterId, place::manhattan};
 use anyhow::{Result, anyhow, bail};
-use rand::Rng;
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use smallvec::SmallVec;
 

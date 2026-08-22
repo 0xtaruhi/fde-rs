@@ -5,7 +5,8 @@ use crate::{
     report::{StageReporter, emit_stage_info, emit_stage_progress},
 };
 use anyhow::{Result, anyhow};
-use rand::{Rng, SeedableRng};
+use rand::RngExt;
+use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use super::{
