@@ -103,6 +103,58 @@ Verification status:
 - Rust live-board outputs match the C++ probe logs for all four cases.
 - `examples/board-e2e/manifest.json` has been updated to those confirmed sequences.
 
+### Update (2026-08-22) - MAJOR REFRAMING: the narrow-LUT theory is dead
+
+A full-day live-board investigation (board reconnected) overturned the April
+hypothesis chain. Read this before continuing any bitgen-side debugging.
+
+#### What was done
+
+1. Regenerated 5 random cases (`build/random-regen-20260822/`, seed derivation
+   changed since April - today's case names differ from April's).
+2. ALL FIVE fail on live board under current Rust flow. Reconstructed the full
+   current C++ chain (`../FDE-Source/build/bin/{map,pack,place,route,bitgen}`;
+   pack takes `mapped.xml fdp3_cell.xml fdp3_dcplib.xml -g fdp3_config.xml`;
+   place `-c` consumes the SAME constraints.xml format we emit) and ran it on
+   case 000: C++ produces the SAME wrong board sequence as Rust, segment for
+   segment.
+3. Built a minimal probe family `build/lutprobe/` (lutprobe.v + probe_lut*.py
+   golden drivers) to isolate sequential-element behavior.
+
+#### Confirmed facts
+
+- Fabric flops WORK. A controlled experiment (lutprobe6: two flops fed from a
+  pad through gate LUTs) showed perfect registered behavior.
+- ff-data-check & friends pass VACUOUSLY: raw waveforms show their outputs are
+  combinational functions of CURRENT inputs (~din). Their manifests coincide
+  with settled behavior, so they do NOT validate sequential semantics.
+- Random-case failures are NOT explained by any LUT-programming error: both
+  toolchains agree everywhere; settle-immune designs behave identically.
+
+#### Open problem: fixture clocking semantics are unknown
+
+The fixture delivers clock edges at an unconfirmed granularity ("one input =
+one clock edge" per the board owner). Neither one-edge-per-segment nor
+per-word edge models predict random-case outputs. Absolute golden comparison
+is therefore impossible until the fixture's vericomm timing is documented or
+reverse-engineered (see tools/vlfd-rs).
+
+#### Consequences
+
+- Do NOT resume the narrow-LUT / lut_expr / physical_import debugging thread;
+  it chased a protocol artifact shared by both toolchains.
+- Board-vs-board differential (Rust vs C++) remains a valid oracle; absolute
+  golden-model comparison does not.
+- The checked-in board-e2e manifests are self-consistent recordings, not
+  RTL-semantics proofs.
+
+#### Landed change
+
+Map stage now inserts clock-gated LUT2 helpers (`ADR0=data, ADR1=clk`,
+INIT=0xA) on register data paths lacking them, replicating the April EDIF
+convention (`examples/board-e2e/**.edf` carry clk@ADR1 explicitly). The old
+LUT1 buffers omitted the clock connection entirely.
+
 ### Update (2026-04-03) - random board diff `01352633`
 
 The current random failing case under focused investigation is:

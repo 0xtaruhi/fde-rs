@@ -98,7 +98,7 @@ fn run_internal(
     report.metric("normalized_lut_count", summary.normalized_luts);
     report.metric("normalized_block_ram_count", summary.normalized_block_rams);
     report.metric("lowered_constant_count", summary.lowered_constants);
-    report.metric("buffered_ff_input_count", summary.buffered_ff_inputs);
+    report.metric("gated_ff_input_count", summary.gated_ff_inputs);
     report.push(format!(
         "Mapped {} cells and {} nets.",
         design.cells.len(),
@@ -122,10 +122,10 @@ fn run_internal(
             summary.lowered_constants
         ));
     }
-    if summary.buffered_ff_inputs > 0 {
+    if summary.gated_ff_inputs > 0 {
         report.push(format!(
-            "Inserted {} LUT buffers on non-LUT FF data inputs.",
-            summary.buffered_ff_inputs
+            "Inserted {} clock-gated LUT2 helpers on register data inputs.",
+            summary.gated_ff_inputs
         ));
     }
 
