@@ -19,7 +19,7 @@ pub(super) struct RewriteSummary {
     pub(super) normalized_luts: usize,
     pub(super) normalized_block_rams: usize,
     pub(super) lowered_constants: usize,
-    pub(super) buffered_ff_inputs: usize,
+    pub(super) gated_ff_inputs: usize,
 }
 
 pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Result<RewriteSummary> {
@@ -40,14 +40,14 @@ pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Resul
 
     let normalized_luts = normalize_repeated_lut_inputs(design);
     let lowered_constants = lower_constant_sources(design, options.lut_size.max(1));
-    let buffered_ff_inputs = buffer_non_lut_ff_inputs(design);
+    let gated_ff_inputs = gate_ff_data_inputs_with_clock(design);
     prune_disconnected_nets(design);
 
     Ok(RewriteSummary {
         normalized_luts,
         normalized_block_rams,
         lowered_constants,
-        buffered_ff_inputs,
+        gated_ff_inputs,
     })
 }
 
@@ -339,39 +339,60 @@ fn lower_constant_sources(design: &mut Design, lut_size: usize) -> usize {
     lowered.len()
 }
 
-fn buffer_non_lut_ff_inputs(design: &mut Design) -> usize {
-    let drivers = {
+/// Ensure every register data input is driven by a LUT that has the register
+/// clock on one of its address inputs.
+///
+/// The board-proven FDE convention (see examples/board-e2e EDIF netlists)
+/// wires the clock into a spare LUT address pin and widens the truth table so
+/// the clock bit is a don't-care: the gate passes data through unchanged while
+/// giving the physical sequential cell the clocked data path it expects.
+fn gate_ff_data_inputs_with_clock(design: &mut Design) -> usize {
+    struct PendingGate {
+        ff_id: CellId,
+        d_port: String,
+        source_net: String,
+        clock_net: String,
+    }
+
+    let pending = {
         let index = design.index();
         design
             .cells
             .iter()
             .enumerate()
             .filter_map(|(cell_index, cell)| {
+                if !cell.is_sequential() {
+                    return None;
+                }
+                let clock_net = cell.register_clock_net()?.to_string();
                 let d_pin = cell
-                    .is_sequential()
-                    .then(|| {
-                        cell.inputs
-                            .iter()
-                            .find(|pin| cell.primitive_kind().is_register_data_pin(&pin.port))
-                    })
-                    .flatten()?;
+                    .inputs
+                    .iter()
+                    .find(|pin| cell.primitive_kind().is_register_data_pin(&pin.port))?;
                 let net_id = index.net_id(&d_pin.net)?;
-                let driver = index.net(design, net_id).driver.as_ref()?;
-                let driver_is_lut = index
-                    .cell_for_endpoint(driver)
-                    .is_some_and(|driver_cell_id| index.cell(design, driver_cell_id).is_lut());
-                (!driver_is_lut).then(|| {
-                    (
-                        CellId::new(cell_index),
-                        d_pin.port.clone(),
-                        d_pin.net.clone(),
-                    )
+                let driver_is_gated_lut =
+                    index
+                        .net(design, net_id)
+                        .driver
+                        .as_ref()
+                        .is_some_and(|driver| {
+                            index.cell_for_endpoint(driver).is_some_and(|driver_id| {
+                                let driver_cell = index.cell(design, driver_id);
+                                driver_cell.is_lut()
+                                    && driver_cell.inputs.iter().any(|pin| pin.net == clock_net)
+                            })
+                        });
+                (!driver_is_gated_lut).then(|| PendingGate {
+                    ff_id: CellId::new(cell_index),
+                    d_port: d_pin.port.clone(),
+                    source_net: d_pin.net.clone(),
+                    clock_net,
                 })
             })
             .collect::<Vec<_>>()
     };
 
-    if drivers.is_empty() {
+    if pending.is_empty() {
         return 0;
     }
 
@@ -380,30 +401,34 @@ fn buffer_non_lut_ff_inputs(design: &mut Design) -> usize {
         .iter()
         .map(|cell| cell.name.clone())
         .chain(design.nets.iter().map(|net| net.name.clone()))
-        .collect::<BTreeSet<_>>();
+        .collect::<BTreeSet<String>>();
 
-    for (ff_id, d_port, source_net) in &drivers {
-        let ff_name = design.cells[ff_id.index()].name.clone();
-        let lut_name = unique_name(&mut used_names, format!("{ff_name}__d_buf_lut"));
-        let buffered_net = unique_name(&mut used_names, format!("{ff_name}__d_buf_net"));
+    for gate in &pending {
+        let ff_name = design.cells[gate.ff_id.index()].name.clone();
+        let lut_name = unique_name(&mut used_names, format!("{ff_name}__d_gate_lut"));
+        let gated_net = unique_name(&mut used_names, format!("{ff_name}__d_gate_net"));
 
-        let mut buffer = Cell::lut(lut_name.clone(), "LUT1")
-            .with_input("ADR0", source_net.clone())
-            .with_output("O", buffered_net.clone());
-        buffer.set_property("lut_init", format_lut_init_hex(0b10, 1));
-        design.cells.push(buffer);
-        if let Some(cell) = design.cells.get_mut(ff_id.index())
-            && let Some(d_pin) = cell.inputs.iter_mut().find(|pin| pin.port == *d_port)
+        // ADR0 carries the data, ADR1 carries the clock; INIT 0b1010 makes
+        // the output equal ADR0 for either clock level.
+        let mut gate_lut = Cell::lut(lut_name.clone(), "LUT2")
+            .with_input("ADR0", gate.source_net.clone())
+            .with_input("ADR1", gate.clock_net.clone())
+            .with_output("O", gated_net.clone());
+        gate_lut.set_property("lut_init", format_lut_init_hex(0b1010, 2));
+        design.cells.push(gate_lut);
+
+        if let Some(cell) = design.cells.get_mut(gate.ff_id.index())
+            && let Some(d_pin) = cell.inputs.iter_mut().find(|pin| pin.port == gate.d_port)
         {
-            d_pin.net = buffered_net.clone();
+            d_pin.net = gated_net.clone();
         }
         design
             .nets
-            .push(crate::ir::Net::new(buffered_net).with_driver(Endpoint::cell(lut_name, "O")));
+            .push(crate::ir::Net::new(gated_net).with_driver(Endpoint::cell(lut_name, "O")));
     }
 
     sync_cell_input_sinks(design);
-    drivers.len()
+    pending.len()
 }
 
 fn unique_name(used: &mut BTreeSet<String>, base: String) -> String {

@@ -208,7 +208,7 @@ fn normalize_repeated_lut_inputs_rebuilds_inputs_and_pin_map() {
 }
 
 #[test]
-fn map_buffers_ff_data_inputs_that_are_not_lut_driven() -> Result<()> {
+fn map_gates_ff_data_inputs_with_the_register_clock() -> Result<()> {
     let design = Design {
         name: "ff-buf".to_string(),
         ports: vec![Port::input("din"), Port::input("clk"), Port::output("q")],
@@ -233,52 +233,83 @@ fn map_buffers_ff_data_inputs_that_are_not_lut_driven() -> Result<()> {
     };
 
     let artifact = run(design, &MapOptions::default())?.value;
-    let buffer = artifact
+    let gate = artifact
         .design
         .cells
         .iter()
-        .find(|cell| cell.name == "ff0__d_buf_lut")
-        .expect("buffer LUT");
+        .find(|cell| cell.name == "ff0__d_gate_lut")
+        .expect("clock-gated data LUT");
     let ff = artifact
         .design
         .cells
         .iter()
         .find(|cell| cell.name == "ff0")
         .expect("ff0");
-    let buffered_net = artifact
+    let gated_net = artifact
         .design
         .nets
         .iter()
-        .find(|net| net.name == "ff0__d_buf_net")
-        .expect("buffered net");
+        .find(|net| net.name == "ff0__d_gate_net")
+        .expect("gated net");
     let source_net = artifact
         .design
         .nets
         .iter()
         .find(|net| net.name == "din")
         .expect("source net");
+    let clk_net = artifact
+        .design
+        .nets
+        .iter()
+        .find(|net| net.name == "clk")
+        .expect("clk net");
 
-    assert_eq!(buffer.type_name, "LUT1");
-    assert_eq!(buffer.property("lut_init"), Some("0x2"));
+    assert_eq!(gate.type_name, "LUT2");
+    assert_eq!(gate.property("lut_init"), Some("0xA"));
+    let gate_inputs = gate
+        .inputs
+        .iter()
+        .map(|pin| pin.port.as_str())
+        .collect::<Vec<_>>();
+    assert!(gate_inputs.contains(&"ADR0") && gate_inputs.contains(&"ADR1"));
+    assert!(
+        gate.inputs
+            .iter()
+            .any(|pin| pin.net == "din" && pin.port == "ADR0")
+    );
+    assert!(
+        gate.inputs
+            .iter()
+            .any(|pin| pin.net == "clk" && pin.port == "ADR1")
+    );
     assert_eq!(
         ff.inputs
             .iter()
             .find(|pin| pin.port == "D")
             .map(|pin| pin.net.as_str()),
-        Some("ff0__d_buf_net")
+        Some("ff0__d_gate_net"),
+        "FF data input must be driven by the gated net"
     );
     assert_eq!(
-        buffered_net
+        gated_net
             .driver
             .as_ref()
             .map(|driver| (driver.name.as_str(), driver.pin.as_str())),
-        Some(("ff0__d_buf_lut", "O"))
+        Some(("ff0__d_gate_lut", "O"))
     );
     assert!(
-        !source_net
+        source_net
             .sinks
             .iter()
-            .any(|sink| sink.name == "ff0" && sink.pin == "D")
+            .any(|sink| sink.name == "ff0__d_gate_lut" && sink.pin == "ADR0"),
+        "source net must feed the gate LUT"
+    );
+    assert!(
+        clk_net
+            .sinks
+            .iter()
+            .any(|sink| sink.name == "ff0__d_gate_lut" && sink.pin == "ADR1"),
+        "clock net must feed the gate LUT address input"
     );
 
     Ok(())
@@ -584,7 +615,7 @@ fn map_normalizes_ramb4_dual_port_cells_into_canonical_blockram_2() -> Result<()
 }
 
 #[test]
-fn mapped_xml_roundtrip_preserves_inserted_lut1_helpers() -> Result<()> {
+fn mapped_xml_roundtrip_preserves_clock_gated_ff_data_luts() -> Result<()> {
     let design = Design {
         name: "ff-buf-roundtrip".to_string(),
         ports: vec![Port::input("din"), Port::input("clk"), Port::output("q")],
@@ -614,13 +645,13 @@ fn mapped_xml_roundtrip_preserves_inserted_lut1_helpers() -> Result<()> {
     save_design(&artifact.design, &path)?;
     let roundtripped = load_design(&path)?;
 
-    let buffer = roundtripped
+    let gate = roundtripped
         .cells
         .iter()
-        .find(|cell| cell.type_name == "LUT1")
-        .expect("buffer LUT after mapped XML roundtrip");
-    assert_eq!(buffer.type_name, "LUT1");
-    assert_eq!(buffer.property("lut_init"), Some("0x2"));
+        .find(|cell| cell.type_name == "LUT2" && cell.property("lut_init") == Some("0xA"))
+        .expect("clock-gated LUT2 after mapped XML roundtrip");
+    assert_eq!(gate.type_name, "LUT2");
+    assert_eq!(gate.property("lut_init"), Some("0xA"));
 
     Ok(())
 }
