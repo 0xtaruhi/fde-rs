@@ -230,6 +230,52 @@ fn end_to_end_impl_generates_artifacts() {
 }
 
 #[test]
+fn impl_flow_is_deterministic_for_fixed_seed() {
+    const DETERMINISTIC_ARTIFACTS: [&str; 8] = [
+        "map",
+        "pack",
+        "place",
+        "route",
+        "device",
+        "sta",
+        "sta_report",
+        "bitstream",
+    ];
+
+    let run = |out_dir: PathBuf, name: &'static str| {
+        run_implementation(&ImplementationOptions {
+            input: fixture("tests/fixtures/simple.edf"),
+            out_dir,
+            resource_root: Some(fixture("tests/fixtures/hw_lib")),
+            constraints: Some(fixture("tests/fixtures/constraints.xml")),
+            ..ImplementationOptions::default()
+        })
+        .unwrap_or_else(|err| panic!("{name} implementation run failed: {err:#}"))
+    };
+
+    let (_temp_a, out_dir_a) = temp_out("impl-determinism-a");
+    let (_temp_b, out_dir_b) = temp_out("impl-determinism-b");
+    let report_a = run(out_dir_a, "first");
+    let report_b = run(out_dir_b, "second");
+
+    assert_eq!(
+        report_a.bitstream_sha256, report_b.bitstream_sha256,
+        "bitstream sha256 differs between runs with the same seed"
+    );
+
+    for key in DETERMINISTIC_ARTIFACTS {
+        let path_a = PathBuf::from(report_a.artifacts.get(key).expect("artifact path"));
+        let path_b = PathBuf::from(report_b.artifacts.get(key).expect("artifact path"));
+        let bytes_a = fs::read(&path_a).expect("read first-run artifact");
+        let bytes_b = fs::read(&path_b).expect("read second-run artifact");
+        assert_eq!(
+            bytes_a, bytes_b,
+            "artifact {key} differs between runs with the same seed"
+        );
+    }
+}
+
+#[test]
 fn end_to_end_impl_report_records_pipeline_stage_order() {
     let (_temp, out_dir) = temp_out("impl-stage-order");
     let report = run_implementation(&ImplementationOptions {
