@@ -280,6 +280,26 @@ pub fn pin_map_property_name(logical_index: usize) -> String {
     format!("pin_map_ADR{logical_index}")
 }
 
+/// Parse a `pin_map_ADR*` property value into physical LUT input indices.
+///
+/// Shared by the XML writer and the device router, which look the property up
+/// on different cell types but must agree on its semantics.
+pub fn parse_pin_map_indices(value: Option<&str>, logical_index: usize) -> Vec<usize> {
+    let Some(value) = value else {
+        return vec![logical_index];
+    };
+    let mut indices = value
+        .split(',')
+        .filter_map(|entry| entry.trim().parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        indices.push(logical_index);
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
 fn slice_half(slot: usize) -> SliceHalf {
     if slot == 0 {
         SliceHalf::X

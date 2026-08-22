@@ -27,8 +27,7 @@ pub(super) fn build_report(byte_count: usize, artifacts: &PreparedArtifacts) -> 
         let routed_pips = artifacts
             .programming_image
             .as_ref()
-            .map(|image| image.routes.len())
-            .unwrap_or(0);
+            .map_or(0, |image| image.routes.len());
         report.metric("config_bit_count", set_bits);
         report.metric("tile_image_count", config_image.tiles.len());
         report.metric("routed_pip_count", routed_pips);

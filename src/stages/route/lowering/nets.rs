@@ -140,15 +140,13 @@ fn port_endpoint(port: &DevicePort) -> DeviceEndpoint {
 
 fn cell_endpoint(cell: &DeviceCell, pin: &str) -> DeviceEndpoint {
     let (x, y, z) = if cell.site_kind_class() == SiteKind::BlockRam {
-        block_ram_route_target(pin)
-            .map(|target| {
-                (
-                    cell.x.saturating_add_signed(target.row_offset),
-                    cell.y,
-                    cell.z,
-                )
-            })
-            .unwrap_or((cell.x, cell.y, cell.z))
+        block_ram_route_target(pin).map_or((cell.x, cell.y, cell.z), |target| {
+            (
+                cell.x.saturating_add_signed(target.row_offset),
+                cell.y,
+                cell.z,
+            )
+        })
     } else {
         (cell.x, cell.y, cell.z)
     };

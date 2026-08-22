@@ -1,6 +1,6 @@
 use crate::{
     bitgen::literal::{parse_bit_literal, parse_compact_hex_digit_literal},
-    domain::{CellKind, PrimitiveKind, pin_map_property_name},
+    domain::{CellKind, PrimitiveKind, parse_pin_map_indices, pin_map_property_name},
     ir::{Cell, Design, Endpoint, Net, Port, PortDirection, RoutePip, RouteSegment},
 };
 use anyhow::Result;
@@ -669,19 +669,7 @@ fn format_truth_table_literal(bits: &[u8]) -> String {
 
 pub(super) fn pin_map_indices(cell: &Cell, logical_index: usize) -> Vec<usize> {
     let key = pin_map_property_name(logical_index);
-    let Some(value) = cell.property(&key) else {
-        return vec![logical_index];
-    };
-    let mut indices = value
-        .split(',')
-        .filter_map(|entry| entry.trim().parse::<usize>().ok())
-        .collect::<Vec<_>>();
-    if indices.is_empty() {
-        indices.push(logical_index);
-    }
-    indices.sort_unstable();
-    indices.dedup();
-    indices
+    parse_pin_map_indices(cell.property(&key), logical_index)
 }
 
 #[cfg(test)]

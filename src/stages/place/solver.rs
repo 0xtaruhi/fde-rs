@@ -1120,8 +1120,7 @@ fn cluster_kind(context: &SolveContext<'_>, cluster_id: ClusterId) -> ClusterKin
         .design
         .clusters
         .get(cluster_id.index())
-        .map(|cluster| cluster.kind)
-        .unwrap_or(ClusterKind::Unknown)
+        .map_or(ClusterKind::Unknown, |cluster| cluster.kind)
 }
 
 fn site_resources<'a>(

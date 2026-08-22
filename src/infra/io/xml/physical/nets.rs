@@ -145,8 +145,10 @@ fn internal_net_pips(
 ) -> Vec<crate::ir::RoutePip> {
     driver_port_binding
         .filter(|binding| is_clock_buffer_binding(Some(binding)))
-        .map(|binding| split_clock_route_pips(&net.route_pips, binding).0)
-        .unwrap_or_else(|| net.route_pips.clone())
+        .map_or_else(
+            || net.route_pips.clone(),
+            |binding| split_clock_route_pips(&net.route_pips, binding).0,
+        )
 }
 
 fn build_port_physical_nets(

@@ -19,6 +19,7 @@ pub use endpoint::{Endpoint, EndpointKey};
 pub use id::{CellId, ClusterId, NetId, PortId};
 pub use index::{DesignIndex, EndpointTarget};
 pub use net::{Net, RoutePip, RouteSegment};
+pub(crate) use net::{estimate_pip_count_delay_ns, estimate_segment_delay_ns};
 pub use placement::{Cluster, Placement, PlacementSite};
 pub use port::{Port, PortDirection};
 pub use property::{CellPin, Property};

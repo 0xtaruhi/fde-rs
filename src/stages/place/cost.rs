@@ -956,9 +956,7 @@ fn build_net_model_with_overrides(
     let dx = max_x - min_x;
     let dy = max_y - min_y;
     let hpwl = (dx + dy) as f64;
-    let route_delay = delay
-        .map(|table| table.lookup(dx, dy))
-        .unwrap_or(hpwl * 0.08);
+    let route_delay = delay.map_or(hpwl * 0.08, |table| table.lookup(dx, dy));
     let fanout = net.fanout as f64;
     let base_weight = 1.0 + 0.12 * fanout.min(8.0);
     let weight = match mode {

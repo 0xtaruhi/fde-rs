@@ -27,15 +27,12 @@ pub(super) fn route_sink_is_available(
     let Some(_) = local_arc else {
         return true;
     };
-    occupied_route_sinks
-        .get(neighbor)
-        .map(|owner| {
-            owner.net_index == net_index
-                || (owner.from == current.wire
-                    && (owner.origin == NetOrigin::SyntheticGclk
-                        || net_origin == NetOrigin::SyntheticGclk))
-        })
-        .unwrap_or(true)
+    occupied_route_sinks.get(neighbor).is_none_or(|owner| {
+        owner.net_index == net_index
+            || (owner.from == current.wire
+                && (owner.origin == NetOrigin::SyntheticGclk
+                    || net_origin == NetOrigin::SyntheticGclk))
+    })
 }
 
 #[inline(always)]
@@ -52,8 +49,7 @@ pub(super) fn route_node_is_available(
 
     occupied_route_nodes
         .get(&stitched_components.occupancy_key(neighbor))
-        .map(|owner| *owner == net_index)
-        .unwrap_or(true)
+        .is_none_or(|owner| *owner == net_index)
 }
 
 pub(super) fn reserve_route_sinks(

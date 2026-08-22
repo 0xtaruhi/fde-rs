@@ -299,8 +299,7 @@ impl Arch {
     fn side_capacity(&self, point: (usize, usize), side: TileSide) -> usize {
         self.tile_at(point.0, point.1)
             .and_then(|tile| self.tile_side_capacities.get(&tile.tile_type))
-            .map(|capacity| capacity.side(side))
-            .unwrap_or(0)
+            .map_or(0, |capacity| capacity.side(side))
     }
 }
 

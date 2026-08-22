@@ -42,9 +42,7 @@ fn lower_original_cells(
         let z = cluster.z.unwrap_or(0);
         let tile = arch.tile_at(x, y);
         let tile_name = tile.map(|tile| tile.name.clone()).unwrap_or_default();
-        let tile_type = tile
-            .map(|tile| tile.tile_type.clone())
-            .unwrap_or_else(|| "CENTER".to_string());
+        let tile_type = tile.map_or_else(|| "CENTER".to_string(), |tile| tile.tile_type.clone());
         let (site_kind, site_name, bels) = match cluster.kind {
             ClusterKind::Logic => (
                 SiteKind::LogicSlice,

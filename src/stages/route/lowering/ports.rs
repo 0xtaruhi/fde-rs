@@ -51,7 +51,7 @@ impl<'a> DeviceLowering<'a> {
             .pin
             .clone()
             .or_else(|| pad.map(|pad| pad.name.clone()))?;
-        let pad_kind = pad.map(|pad| pad.site_kind).unwrap_or(PadSiteKind::Iob);
+        let pad_kind = pad.map_or(PadSiteKind::Iob, |pad| pad.site_kind);
         let x = port.x.or_else(|| pad.map(|pad| pad.x)).unwrap_or(0);
         let y = port.y.or_else(|| pad.map(|pad| pad.y)).unwrap_or(0);
         let z = port.z.or_else(|| pad.map(|pad| pad.z)).unwrap_or(0);

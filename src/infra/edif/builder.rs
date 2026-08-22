@@ -193,12 +193,10 @@ fn split_endpoints(
         let is_source = match endpoint.kind {
             EndpointKind::Port => port_dirs
                 .get(&endpoint.name)
-                .map(PortDirection::is_input_like)
-                .unwrap_or(false),
+                .is_some_and(PortDirection::is_input_like),
             EndpointKind::Cell => cell_types
                 .get(&endpoint.name)
-                .map(|type_name| is_output_pin(type_name, &endpoint.pin))
-                .unwrap_or(false),
+                .is_some_and(|type_name| is_output_pin(type_name, &endpoint.pin)),
             EndpointKind::Unknown => false,
         };
         if is_source {

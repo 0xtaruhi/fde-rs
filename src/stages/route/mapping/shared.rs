@@ -1,4 +1,4 @@
-use crate::{DeviceCell, domain::pin_map_property_name};
+use crate::{DeviceCell, domain::parse_pin_map_indices, domain::pin_map_property_name};
 use smallvec::SmallVec;
 
 use super::super::types::WireId;
@@ -15,23 +15,10 @@ pub(super) fn bel_slot(bel: &str) -> Option<usize> {
 
 pub(super) fn pin_map_indices(cell: &DeviceCell, logical_index: usize) -> Vec<usize> {
     let key = pin_map_property_name(logical_index);
-    let Some(value) = cell
+    let value = cell
         .properties
         .iter()
         .find(|property| property.key.eq_ignore_ascii_case(&key))
-        .map(|property| property.value.as_str())
-    else {
-        return vec![logical_index];
-    };
-
-    let mut indices = value
-        .split(',')
-        .filter_map(|entry| entry.trim().parse::<usize>().ok())
-        .collect::<Vec<_>>();
-    if indices.is_empty() {
-        indices.push(logical_index);
-    }
-    indices.sort_unstable();
-    indices.dedup();
-    indices
+        .map(|property| property.value.as_str());
+    parse_pin_map_indices(value, logical_index)
 }

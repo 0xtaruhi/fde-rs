@@ -152,12 +152,10 @@ impl<'a> DesignIndex<'a> {
         match endpoint.kind {
             EndpointKind::Cell => self
                 .cell_id(&endpoint.name)
-                .map(EndpointTarget::Cell)
-                .unwrap_or(EndpointTarget::Unknown),
+                .map_or(EndpointTarget::Unknown, EndpointTarget::Cell),
             EndpointKind::Port => self
                 .port_id(&endpoint.name)
-                .map(EndpointTarget::Port)
-                .unwrap_or(EndpointTarget::Unknown),
+                .map_or(EndpointTarget::Unknown, EndpointTarget::Port),
             EndpointKind::Unknown => EndpointTarget::Unknown,
         }
     }

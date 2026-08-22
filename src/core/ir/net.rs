@@ -25,6 +25,30 @@ impl RouteSegment {
     }
 }
 
+/// Board-calibrated per-wire delay term shared by STA estimation and route
+/// costing; both must agree or timing reports drift away from route decisions.
+pub(crate) const WIRE_DELAY_CONSTANT_NS: f64 = 0.02;
+pub(crate) const BEND_DELAY_NS: f64 = 0.05;
+
+/// Estimate the routed wire delay of a segment chain from wire resistance and
+/// capacitance, plus a fixed penalty for every direction bend.
+pub(crate) fn estimate_segment_delay_ns(route: &[RouteSegment], wire_r: f64, wire_c: f64) -> f64 {
+    let length = route.iter().map(RouteSegment::length).sum::<usize>() as f64;
+    let bends = route
+        .windows(2)
+        .filter(|window| match window {
+            [lhs, rhs] => (lhs.x0 == lhs.x1) != (rhs.x0 == rhs.x1),
+            _ => false,
+        })
+        .count() as f64;
+    length * (wire_r + wire_c + WIRE_DELAY_CONSTANT_NS) + bends * BEND_DELAY_NS
+}
+
+/// Estimate the routed wire delay of a pip chain from its pip count.
+pub(crate) fn estimate_pip_count_delay_ns(pip_count: usize, wire_r: f64, wire_c: f64) -> f64 {
+    pip_count as f64 * (wire_r + wire_c + WIRE_DELAY_CONSTANT_NS)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RoutePip {
     pub x: usize,

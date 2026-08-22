@@ -83,8 +83,7 @@ impl Parser<'_> {
                             .unwrap_or_default();
                         let display = self
                             .parse_name_expr()?
-                            .map(|name| name.display)
-                            .unwrap_or_else(|| stable_name.clone());
+                            .map_or_else(|| stable_name.clone(), |name| name.display);
                         while !self.peek_is_rparen()? {
                             self.skip_value()?;
                         }

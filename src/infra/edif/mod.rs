@@ -42,8 +42,7 @@ impl<'a> Parser<'a> {
         self.expect_head("edif")?;
         let top_name = self
             .parse_name_expr()?
-            .map(|name| name.display)
-            .unwrap_or_else(|| "design".to_string());
+            .map_or_else(|| "design".to_string(), |name| name.display);
         let mut builder = DesignBuilder::new(top_name);
 
         while !self.peek_is_rparen()? {
@@ -284,8 +283,7 @@ impl<'a> Parser<'a> {
     fn parse_direction(&mut self) -> Result<PortDirection> {
         let value = self
             .parse_name_expr()?
-            .map(|name| name.display)
-            .unwrap_or_else(|| "INPUT".to_string());
+            .map_or_else(|| "INPUT".to_string(), |name| name.display);
         while !self.peek_is_rparen()? {
             self.skip_value()?;
         }

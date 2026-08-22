@@ -13,15 +13,15 @@ pub(crate) fn net_delay_ns(
     if !net.route.is_empty() {
         return estimate_route_delay(
             &net.route,
-            arch.map(|arch| arch.wire_r).unwrap_or(0.04),
-            arch.map(|arch| arch.wire_c).unwrap_or(0.03),
+            arch.map_or(0.04, |arch| arch.wire_r),
+            arch.map_or(0.03, |arch| arch.wire_c),
         );
     }
     if !net.route_pips.is_empty() {
         return estimate_pip_delay(
             &net.route_pips,
-            arch.map(|arch| arch.wire_r).unwrap_or(0.04),
-            arch.map(|arch| arch.wire_c).unwrap_or(0.03),
+            arch.map_or(0.04, |arch| arch.wire_r),
+            arch.map_or(0.03, |arch| arch.wire_c),
         );
     }
     let Some(driver) = &net.driver else {
@@ -51,20 +51,11 @@ pub(crate) fn intrinsic_cell_delay_ns(cell: &Cell) -> f64 {
 }
 
 pub(crate) fn estimate_route_delay(route: &[RouteSegment], wire_r: f64, wire_c: f64) -> f64 {
-    let length = route.iter().map(|segment| segment.length()).sum::<usize>() as f64;
-    let bends = route
-        .windows(2)
-        .filter(|window| {
-            let a = &window[0];
-            let b = &window[1];
-            (a.x0 == a.x1) != (b.x0 == b.x1)
-        })
-        .count() as f64;
-    length * (wire_r + wire_c + 0.02) + bends * 0.05
+    crate::core::ir::estimate_segment_delay_ns(route, wire_r, wire_c)
 }
 
 pub(crate) fn estimate_pip_delay(route_pips: &[RoutePip], wire_r: f64, wire_c: f64) -> f64 {
-    route_pips.len() as f64 * (wire_r + wire_c + 0.02)
+    crate::core::ir::estimate_pip_count_delay_ns(route_pips.len(), wire_r, wire_c)
 }
 
 fn endpoint_distance(

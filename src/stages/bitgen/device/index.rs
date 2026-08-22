@@ -71,12 +71,10 @@ impl<'a> DeviceDesignIndex<'a> {
         match endpoint.kind {
             EndpointKind::Cell => self
                 .cell_id(&endpoint.name)
-                .map(DeviceEndpointTarget::Cell)
-                .unwrap_or(DeviceEndpointTarget::Unknown),
+                .map_or(DeviceEndpointTarget::Unknown, DeviceEndpointTarget::Cell),
             EndpointKind::Port => self
                 .port_id(&endpoint.name)
-                .map(DeviceEndpointTarget::Port)
-                .unwrap_or(DeviceEndpointTarget::Unknown),
+                .map_or(DeviceEndpointTarget::Unknown, DeviceEndpointTarget::Port),
             EndpointKind::Unknown => DeviceEndpointTarget::Unknown,
         }
     }
