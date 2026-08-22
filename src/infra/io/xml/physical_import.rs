@@ -707,11 +707,10 @@ fn slice_logical_endpoints(
                 .as_ref()
                 .map(|name| Endpoint::cell(name.clone(), "RN"))
         }),
-        pin if SliceSlot::from_bypass_function_name(pin).is_some() => {
-            let slot = SliceSlot::from_bypass_function_name(pin).expect("validated slot pin");
-            ff_bypass_endpoint(&state.slots[slot.index()])
-        }
-        _ => lut_input_endpoint(&state.slots, pin),
+        pin => match SliceSlot::from_bypass_function_name(pin) {
+            Some(slot) => ff_bypass_endpoint(&state.slots[slot.index()]),
+            None => lut_input_endpoint(&state.slots, pin),
+        },
     }
 }
 

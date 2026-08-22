@@ -15,7 +15,10 @@ pub(super) fn generate_bitstream(
         Some(serialized) => serialized.text.as_bytes().to_vec(),
         None => build_deterministic_payload(circuit, options, artifacts.config_image.as_ref()),
     };
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let sidecar = build_sidecar(circuit, options, &artifacts, &sha256);
     let report = build_report(bytes.len(), &artifacts);
 

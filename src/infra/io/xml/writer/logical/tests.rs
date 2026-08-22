@@ -1,8 +1,26 @@
-use super::{mapped_external_modules, ordered_cells_for_write, packed_lut_function_name};
+use super::{
+    mapped_external_module_specs, mapped_external_modules, ordered_cells_for_write,
+    packed_lut_function_name,
+};
 use crate::{
     infra::io::xml::writer::{XmlWriteContext, save_design_xml},
     ir::{Cell, Design, Endpoint, Net, Port, Property},
 };
+
+#[test]
+fn mapped_module_spec_directions_all_parse() {
+    for spec in mapped_external_module_specs() {
+        for (port_name, direction, _) in spec.ports {
+            let parsed: Result<crate::ir::PortDirection, _> = direction.parse();
+            assert!(
+                parsed.is_ok(),
+                "module {} port {} has unparsable direction {direction:?}",
+                spec.name,
+                port_name
+            );
+        }
+    }
+}
 
 #[test]
 fn packed_lut_function_preserves_raw_init_width_for_lut3() {
