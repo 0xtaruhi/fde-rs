@@ -40,6 +40,22 @@ fn report_json(path: &PathBuf) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("read report")).expect("parse report")
 }
 
+fn report_stage_names(report: &Value) -> Vec<String> {
+    report
+        .get("stages")
+        .and_then(Value::as_array)
+        .expect("report stages")
+        .iter()
+        .map(|stage| {
+            stage
+                .get("stage")
+                .and_then(Value::as_str)
+                .expect("stage name")
+                .to_string()
+        })
+        .collect()
+}
+
 fn xml_port_pins(path: &Path) -> BTreeMap<String, String> {
     let text = fs::read_to_string(path).expect("read xml");
     let doc = Document::parse(&text).expect("parse xml");
@@ -180,11 +196,25 @@ fn end_to_end_impl_generates_artifacts() {
         "sta",
         "sta_report",
         "bitstream",
+        "summary",
+        "log",
         "report",
     ] {
         let path = PathBuf::from(report.artifacts.get(key).expect("artifact path"));
         assert!(path.exists(), "missing artifact {key}: {}", path.display());
     }
+
+    let summary = fs::read_to_string(report.artifacts.get("summary").expect("summary artifact"))
+        .expect("read summary report");
+    let log = fs::read_to_string(report.artifacts.get("log").expect("log artifact"))
+        .expect("read runtime log");
+    assert!(
+        !summary.trim().is_empty(),
+        "summary report should not be empty"
+    );
+    assert!(summary.contains("Implementation Summary"));
+    assert!(!log.trim().is_empty(), "runtime log should not be empty");
+    assert!(log.contains("FDE Runtime Log"));
 
     assert!(
         !report.artifacts.contains_key("bitstream_sidecar"),
@@ -197,6 +227,26 @@ fn end_to_end_impl_generates_artifacts() {
 
     assert!(report.timing.is_some());
     assert!(report.bitstream_sha256.is_some());
+}
+
+#[test]
+fn end_to_end_impl_report_records_pipeline_stage_order() {
+    let (_temp, out_dir) = temp_out("impl-stage-order");
+    let report = run_implementation(&ImplementationOptions {
+        input: fixture("tests/fixtures/simple.edf"),
+        out_dir,
+        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        constraints: Some(fixture("tests/fixtures/constraints.xml")),
+        ..ImplementationOptions::default()
+    })
+    .expect("implementation run");
+
+    let report_path = PathBuf::from(report.artifacts.get("report").expect("report artifact"));
+    let report_json = report_json(&report_path);
+    assert_eq!(
+        report_stage_names(&report_json),
+        vec!["map", "pack", "place", "route", "sta", "bitgen"]
+    );
 }
 
 #[test]

@@ -4,6 +4,292 @@ use crate::infra::io::xml::lut_expr::PHYSICAL_LUT_FUNCTION_PROPERTY;
 use crate::ir::{CellKind, RoutePip, RouteSegment};
 
 #[test]
+fn physical_import_infers_stage_from_positions_and_pips() {
+    let packed_xml = r##"
+<design name="stage_packed">
+  <external name="template_work_lib">
+    <module name="slice" type="SLICE">
+      <port name="Y" direction="output" capacitance="0.00000"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="stage_packed" type="GENERIC">
+      <contents>
+        <instance name="iSlice__0__" moduleRef="slice" libraryRef="template_work_lib">
+          <config name="G" value="#LUT:D=1"/>
+          <config name="GYMUX" value="G"/>
+          <config name="YUSED" value="0"/>
+        </instance>
+        <net name="q">
+          <portRef name="Y" instanceRef="iSlice__0__"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule libraryRef="work_lib" name="stage_packed"/>
+</design>
+"##;
+    let placed_xml = packed_xml.replace(
+        "<instance name=\"iSlice__0__\" moduleRef=\"slice\" libraryRef=\"template_work_lib\">",
+        "<instance name=\"iSlice__0__\" moduleRef=\"slice\" libraryRef=\"template_work_lib\"><property name=\"position\" type=\"point\" value=\"1,2,0\"/>",
+    );
+    let routed_xml = placed_xml.replace(
+        "<net name=\"q\">\n          <portRef name=\"Y\" instanceRef=\"iSlice__0__\"/>\n        </net>",
+        "<net name=\"q\">\n          <portRef name=\"Y\" instanceRef=\"iSlice__0__\"/>\n          <pip from=\"S0_Y\" to=\"OUT3\" position=\"1,2\" dir=\"-&gt;\"/>\n        </net>",
+    );
+
+    for (xml, expected_stage) in [
+        (packed_xml, "packed"),
+        (placed_xml.as_str(), "placed"),
+        (routed_xml.as_str(), "routed"),
+    ] {
+        let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
+        let design = load_fde_physical_design_xml(document.root_element())
+            .expect("physical import should succeed");
+        assert_eq!(design.stage, expected_stage);
+    }
+}
+
+#[test]
+fn physical_import_injects_local_lut_to_ff_net_for_same_slot_pair() {
+    let xml = r##"
+<design name="local_lut_ff_net">
+  <external name="template_work_lib">
+    <module name="slice" type="SLICE">
+      <port name="X" direction="output" capacitance="0.00000"/>
+      <port name="CLK" direction="input" capacitance="0.00000"/>
+      <port name="XQ" direction="output" capacitance="0.00000"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="local_lut_ff_net" type="GENERIC">
+      <contents>
+        <instance name="iSlice__0__" moduleRef="slice" libraryRef="template_work_lib">
+          <property name="position" type="point" value="10,10,0"/>
+          <config name="F" value="#LUT:D=1"/>
+          <config name="FXMUX" value="F"/>
+          <config name="XUSED" value="0"/>
+          <config name="FFX" value="#FF"/>
+          <config name="DXMUX" value="1"/>
+        </instance>
+        <net name="clk">
+          <portRef name="CLK" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="q">
+          <portRef name="XQ" instanceRef="iSlice__0__"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule libraryRef="work_lib" name="local_lut_ff_net"/>
+</design>
+"##;
+
+    let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
+    let design = load_fde_physical_design_xml(document.root_element())
+        .expect("physical import should succeed");
+
+    let local_net = design
+        .nets
+        .iter()
+        .find(|net| net.name == "iSlice__0__::lut0_to_ff0")
+        .expect("local LUT to FF net");
+    assert_eq!(
+        local_net
+            .driver
+            .as_ref()
+            .map(|endpoint| (endpoint.name.as_str(), endpoint.pin.as_str())),
+        Some(("iSlice__0__::lut0", "O"))
+    );
+    assert!(
+        local_net
+            .sinks
+            .iter()
+            .any(|endpoint| endpoint.name == "iSlice__0__::ff0" && endpoint.pin == "D")
+    );
+}
+
+#[test]
+fn physical_import_maps_clock_enable_and_inverted_clock_to_ff_endpoints() {
+    let xml = r##"
+<design name="ff_endpoint_import">
+  <external name="template_work_lib">
+    <module name="slice" type="SLICE">
+      <port name="CLK" direction="input" capacitance="0.00000"/>
+      <port name="CE" direction="input" capacitance="0.00000"/>
+      <port name="XQ" direction="output" capacitance="0.00000"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="ff_endpoint_import" type="GENERIC">
+      <contents>
+        <instance name="iSlice__0__" moduleRef="slice" libraryRef="template_work_lib">
+          <property name="position" type="point" value="10,10,0"/>
+          <config name="CKINV" value="1"/>
+          <config name="CEMUX" value="CE"/>
+          <config name="DXMUX" value="1"/>
+          <config name="FFX" value="#FF"/>
+        </instance>
+        <net name="clk">
+          <portRef name="CLK" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="ce">
+          <portRef name="CE" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="q">
+          <portRef name="XQ" instanceRef="iSlice__0__"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule libraryRef="work_lib" name="ff_endpoint_import"/>
+</design>
+"##;
+
+    let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
+    let design = load_fde_physical_design_xml(document.root_element())
+        .expect("physical import should succeed");
+
+    let clk_net = design
+        .nets
+        .iter()
+        .find(|net| net.name == "clk")
+        .expect("clock net");
+    assert!(
+        clk_net
+            .sinks
+            .iter()
+            .any(|endpoint| endpoint.name == "iSlice__0__::ff0" && endpoint.pin == "CKN")
+    );
+
+    let ce_net = design
+        .nets
+        .iter()
+        .find(|net| net.name == "ce")
+        .expect("clock-enable net");
+    assert!(
+        ce_net
+            .sinks
+            .iter()
+            .any(|endpoint| endpoint.name == "iSlice__0__::ff0" && endpoint.pin == "E")
+    );
+}
+
+#[test]
+fn physical_import_maps_reverse_slice_lut_pins_to_logical_addresses() {
+    let xml = r##"
+<design name="slice_pin_import">
+  <external name="template_work_lib">
+    <module name="slice" type="SLICE">
+      <port name="f1" direction="input" capacitance="0.00000"/>
+      <port name="g4" direction="input" capacitance="0.00000"/>
+      <port name="Y" direction="output" capacitance="0.00000"/>
+      <port name="YQ" direction="output" capacitance="0.00000"/>
+      <port name="BY" direction="input" capacitance="0.00000"/>
+    </module>
+  </external>
+  <library name="work_lib">
+    <module name="slice_pin_import" type="GENERIC">
+      <contents>
+        <instance name="iSlice__0__" moduleRef="slice" libraryRef="template_work_lib">
+          <property name="position" type="point" value="10,10,0"/>
+          <config name="F" value="#LUT:D=0"/>
+          <config name="G" value="#LUT:D=1"/>
+          <config name="GYMUX" value="G"/>
+          <config name="YUSED" value="0"/>
+          <config name="FFY" value="#FF"/>
+          <config name="DYMUX" value="0"/>
+        </instance>
+        <net name="a">
+          <portRef name="f1" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="b">
+          <portRef name="g4" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="comb_y">
+          <portRef name="Y" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="seq_y">
+          <portRef name="YQ" instanceRef="iSlice__0__"/>
+        </net>
+        <net name="bypass_y">
+          <portRef name="BY" instanceRef="iSlice__0__"/>
+        </net>
+      </contents>
+    </module>
+  </library>
+  <topModule libraryRef="work_lib" name="slice_pin_import"/>
+</design>
+"##;
+
+    let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
+    let design = load_fde_physical_design_xml(document.root_element())
+        .expect("physical import should succeed");
+
+    let a_net = design
+        .nets
+        .iter()
+        .find(|net| net.name == "a")
+        .expect("a net");
+    assert!(
+        a_net
+            .sinks
+            .iter()
+            .any(|endpoint| endpoint.name == "iSlice__0__::lut0" && endpoint.pin == "ADR0")
+    );
+
+    let b_net = design
+        .nets
+        .iter()
+        .find(|net| net.name == "b")
+        .expect("b net");
+    assert!(
+        b_net
+            .sinks
+            .iter()
+            .any(|endpoint| endpoint.name == "iSlice__0__::lut1" && endpoint.pin == "ADR3")
+    );
+
+    let comb_y = design
+        .nets
+        .iter()
+        .find(|net| net.name == "comb_y")
+        .expect("comb y net");
+    assert_eq!(
+        comb_y
+            .driver
+            .as_ref()
+            .map(|endpoint| (endpoint.name.as_str(), endpoint.pin.as_str())),
+        Some(("iSlice__0__::lut1", "O"))
+    );
+
+    let seq_y = design
+        .nets
+        .iter()
+        .find(|net| net.name == "seq_y")
+        .expect("seq y net");
+    assert_eq!(
+        seq_y
+            .driver
+            .as_ref()
+            .map(|endpoint| (endpoint.name.as_str(), endpoint.pin.as_str())),
+        Some(("iSlice__0__::ff1", "Q"))
+    );
+
+    let bypass_y = design
+        .nets
+        .iter()
+        .find(|net| net.name == "bypass_y")
+        .expect("bypass y net");
+    assert!(
+        bypass_y
+            .sinks
+            .iter()
+            .any(|endpoint| endpoint.name == "iSlice__0__::ff1" && endpoint.pin == "D")
+    );
+}
+
+#[test]
 fn physical_import_merges_clock_bridge_pips_back_into_clock_net() {
     let xml = r##"
 <design name="clock_import">

@@ -1,4 +1,4 @@
-use super::ascii::trimmed_eq_ignore_ascii_case;
+use super::ascii::{trimmed_eq_ignore_ascii_case, trimmed_strip_prefix_ignore_ascii_case};
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
@@ -187,10 +187,52 @@ impl SliceSlot {
         }
     }
 
+    pub fn from_lut_output_pin(pin: &str) -> Option<Self> {
+        if trimmed_eq_ignore_ascii_case(pin, "X") {
+            Some(Self::X)
+        } else if trimmed_eq_ignore_ascii_case(pin, "Y") {
+            Some(Self::Y)
+        } else {
+            None
+        }
+    }
+
+    pub fn from_register_output_pin(pin: &str) -> Option<Self> {
+        if trimmed_eq_ignore_ascii_case(pin, "XQ") {
+            Some(Self::X)
+        } else if trimmed_eq_ignore_ascii_case(pin, "YQ") {
+            Some(Self::Y)
+        } else {
+            None
+        }
+    }
+
     pub fn lut_input_pin(self, physical_index: usize) -> String {
         match self {
             Self::X => format!("F{}", physical_index + 1),
             Self::Y => format!("G{}", physical_index + 1),
+        }
+    }
+
+    pub fn from_lut_input_pin(pin: &str) -> Option<(Self, usize)> {
+        let (slot, suffix) = trimmed_strip_prefix_ignore_ascii_case(pin, "F")
+            .map(|value| (Self::X, value))
+            .or_else(|| {
+                trimmed_strip_prefix_ignore_ascii_case(pin, "G").map(|value| (Self::Y, value))
+            })?;
+        let physical_index = suffix.parse::<usize>().ok()?;
+        (1..=4)
+            .contains(&physical_index)
+            .then_some((slot, physical_index - 1))
+    }
+
+    pub fn from_bypass_function_name(pin: &str) -> Option<Self> {
+        if trimmed_eq_ignore_ascii_case(pin, "BX") {
+            Some(Self::X)
+        } else if trimmed_eq_ignore_ascii_case(pin, "BY") {
+            Some(Self::Y)
+        } else {
+            None
         }
     }
 }
@@ -235,6 +277,22 @@ mod tests {
         assert_eq!(SliceSlot::Y.init_config_name(), "INITY");
         assert_eq!(SliceSlot::X.bypass_function_name(), "BX");
         assert_eq!(SliceSlot::Y.lut_input_pin(2), "G3");
+    }
+
+    #[test]
+    fn slice_slot_parses_physical_pin_names_back_to_slots() {
+        assert_eq!(SliceSlot::from_lut_output_pin("x"), Some(SliceSlot::X));
+        assert_eq!(
+            SliceSlot::from_register_output_pin("YQ"),
+            Some(SliceSlot::Y)
+        );
+        assert_eq!(
+            SliceSlot::from_bypass_function_name("bx"),
+            Some(SliceSlot::X)
+        );
+        assert_eq!(SliceSlot::from_lut_input_pin("F1"), Some((SliceSlot::X, 0)));
+        assert_eq!(SliceSlot::from_lut_input_pin("g4"), Some((SliceSlot::Y, 3)));
+        assert_eq!(SliceSlot::from_lut_input_pin("G5"), None);
     }
 
     #[test]

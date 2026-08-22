@@ -15,7 +15,7 @@ pub(crate) fn annotate_net_criticality(design: &mut Design) {
     for (net, (depth, remaining)) in design
         .nets
         .iter_mut()
-        .zip(forward.into_iter().zip(backward.into_iter()))
+        .zip(forward.into_iter().zip(backward))
     {
         let depth = depth as f64;
         let remaining = remaining as f64;
