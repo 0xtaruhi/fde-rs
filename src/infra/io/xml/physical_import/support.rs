@@ -1,7 +1,11 @@
 use super::{PhysicalInstance, SliceState};
+use crate::domain::SiteKind;
 use crate::ir::{Cell, Endpoint, Net, RoutePip, RouteSegment};
 use roxmltree::Node;
 use std::collections::{BTreeMap, BTreeSet};
+
+const PAD_BUFFER_NET_PREFIX: &str = "net_Buf-pad-";
+const CLOCK_PAD_BUFFER_NET_PREFIX: &str = "net_IBuf-clkpad-";
 
 pub(super) fn physical_stage_note(stage: &str) -> &'static str {
     match stage {
@@ -19,26 +23,54 @@ pub(super) fn is_clock_bridge_net(
     name: &str,
     clock_buffer_ports: &BTreeMap<String, String>,
 ) -> bool {
-    name.strip_prefix("net_Buf-pad-").is_some_and(|port_name| {
+    port_name_from_pad_buffer_net(name).is_some_and(|port_name| {
         clock_buffer_ports
             .values()
             .any(|candidate| candidate == port_name)
     })
 }
 
+pub(super) fn port_name_from_pad_buffer_net(name: &str) -> Option<&str> {
+    name.strip_prefix(PAD_BUFFER_NET_PREFIX)
+}
+
+pub(super) fn port_name_from_clock_pad_buffer_net(name: &str) -> Option<&str> {
+    name.strip_prefix(CLOCK_PAD_BUFFER_NET_PREFIX)
+}
+
 pub(super) fn logical_net_name<'a>(
     physical_name: &'a str,
     port_names: &BTreeSet<String>,
 ) -> &'a str {
-    physical_name
-        .strip_prefix("net_IBuf-clkpad-")
+    port_name_from_clock_pad_buffer_net(physical_name)
         .filter(|name| port_names.contains(*name))
         .or_else(|| {
-            physical_name
-                .strip_prefix("net_Buf-pad-")
-                .filter(|name| port_names.contains(*name))
+            port_name_from_pad_buffer_net(physical_name).filter(|name| port_names.contains(*name))
         })
         .unwrap_or(physical_name)
+}
+
+pub(super) fn physical_module_site_kind(module_ref: &str) -> SiteKind {
+    super::super::helpers::physical_site_kind(module_ref).unwrap_or(SiteKind::Unknown)
+}
+
+pub(super) fn is_logic_slice_module(module_ref: &str) -> bool {
+    physical_module_site_kind(module_ref).is_logic_slice()
+}
+
+pub(super) fn is_block_ram_module(module_ref: &str) -> bool {
+    physical_module_site_kind(module_ref) == SiteKind::BlockRam
+}
+
+pub(super) fn is_port_site_module(module_ref: &str) -> bool {
+    matches!(
+        physical_module_site_kind(module_ref),
+        SiteKind::Iob | SiteKind::GclkIob
+    )
+}
+
+pub(super) fn is_global_clock_module(module_ref: &str) -> bool {
+    physical_module_site_kind(module_ref) == SiteKind::Gclk
 }
 
 pub(super) fn inject_local_lut_ff_nets(

@@ -1,3 +1,4 @@
+use crate::domain::SiteKind;
 use anyhow::{Result, anyhow};
 use roxmltree::Node;
 
@@ -57,11 +58,30 @@ pub(super) fn parse_point(value: &str) -> Option<(usize, usize, usize)> {
     Some((x, y, z))
 }
 
+pub(super) fn physical_site_kind(module_ref: &str) -> Option<SiteKind> {
+    match SiteKind::classify(module_ref) {
+        SiteKind::LogicSlice
+        | SiteKind::BlockRam
+        | SiteKind::Iob
+        | SiteKind::GclkIob
+        | SiteKind::Gclk => Some(SiteKind::classify(module_ref)),
+        _ => None,
+    }
+}
+
+pub(super) fn is_physical_site_module_ref(module_ref: &str) -> bool {
+    physical_site_kind(module_ref).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use roxmltree::Document;
 
-    use super::{expand_bus_port_names, parse_point, top_module_node};
+    use super::{
+        expand_bus_port_names, is_physical_site_module_ref, parse_point, physical_site_kind,
+        top_module_node,
+    };
+    use crate::domain::SiteKind;
 
     #[test]
     fn expands_bus_port_names_for_descending_and_ascending_ranges() {
@@ -101,5 +121,16 @@ mod tests {
         let module = top_module_node(doc.root_element()).expect("top module");
         assert_eq!(module.tag_name().name(), "module");
         assert_eq!(module.attribute("name"), Some("demo"));
+    }
+
+    #[test]
+    fn recognizes_only_real_physical_site_module_refs() {
+        assert_eq!(physical_site_kind("slice"), Some(SiteKind::LogicSlice));
+        assert_eq!(physical_site_kind("blockram"), Some(SiteKind::BlockRam));
+        assert!(is_physical_site_module_ref("gclk"));
+        assert!(is_physical_site_module_ref("gclkiob"));
+        assert!(!is_physical_site_module_ref("BLOCKRAM_1"));
+        assert!(!is_physical_site_module_ref("LOGIC_0"));
+        assert!(!is_physical_site_module_ref("UNPLACED"));
     }
 }

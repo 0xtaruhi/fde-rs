@@ -1,4 +1,4 @@
-use super::helpers::{attr, expand_bus_port_names, top_module_node};
+use super::helpers::{attr, expand_bus_port_names, is_physical_site_module_ref, top_module_node};
 use crate::ir::{
     Cell, CellKind, CellPin, Design, Endpoint, EndpointKind, Net, Port, PortDirection, Property,
 };
@@ -410,7 +410,7 @@ fn mapped_cell(name: String, module_ref: &str, module: &MappedXmlModule) -> Cell
 }
 
 fn is_physical_site_instance(module_ref: &str) -> bool {
-    matches!(module_ref, "slice" | "iob" | "gclk" | "gclkiob")
+    is_physical_site_module_ref(module_ref)
 }
 
 fn mapped_net_name(

@@ -91,6 +91,46 @@ fn assert_supported_slice_shapes(packed: &Design) {
 }
 
 #[test]
+fn pack_orders_lut_lanes_by_primitive_lut_input_count() -> Result<()> {
+    let design = Design {
+        name: "pack-lut-rank".to_string(),
+        cells: vec![
+            Cell::lut("lut4", "LUT4"),
+            Cell::lut("lut2", "LUT2"),
+            Cell::lut("lut1", "LUT1"),
+            Cell::lut("lut3", "LUT3"),
+        ],
+        ..Design::default()
+    };
+
+    let packed = run(
+        design,
+        &PackOptions {
+            capacity: 2,
+            ..PackOptions::default()
+        },
+    )?
+    .value;
+
+    let packed_members = packed
+        .clusters
+        .iter()
+        .map(|cluster| cluster.members.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(packed_members.len(), 2);
+    assert_eq!(
+        packed_members[0],
+        vec!["lut1".to_string(), "lut2".to_string()]
+    );
+    assert_eq!(
+        packed_members[1],
+        vec!["lut3".to_string(), "lut4".to_string()]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn pack_pairs_lut_with_sequential_d_input_and_respects_capacity() -> Result<()> {
     let packed = run(
         pack_design(),

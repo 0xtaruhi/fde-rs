@@ -98,7 +98,7 @@ pub(crate) fn build_cluster_graph(design: &Design) -> ClusterGraph {
     };
     for (cluster_index, neighbors) in adjacency.into_iter().enumerate() {
         let mut ordered = neighbors.into_iter().collect::<Vec<_>>();
-        ordered.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        ordered.sort_by_key(|entry| entry.0);
         graph.adjacency[cluster_index] = ordered;
     }
 

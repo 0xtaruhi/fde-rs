@@ -1,16 +1,20 @@
 use anyhow::{Context, Result};
-use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
+use serde::Serialize;
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Instant};
 
 use crate::{
+    app::support::{
+        load_constraints_or_empty, place_write_context, prepare_route_device_design,
+        route_write_context, sta_write_context,
+    },
     bitgen::{self, BitgenOptions},
     cil::load_cil,
-    constraints::load_constraints,
     io::{DesignWriteContext, save_design, save_design_with_context},
     map::{self, MapOptions},
     pack::{self, PackOptions},
     place::{self, PlaceOptions},
     report::{
-        ImplementationReport, StageEvent, StageReporter, format_stage_event_line,
+        ImplementationReport, StageEvent, StageReport, StageReporter, format_stage_event_line,
         run_stage_with_reporter,
     },
     resource::{load_arch, load_delay_model},
@@ -53,10 +57,7 @@ fn run_internal(
     let inputs = report_inputs(options);
     let resource_paths = report_resources(options, &resources);
 
-    let constraints = match options.constraints.as_deref() {
-        Some(path) => Arc::<[_]>::from(load_constraints(path)?),
-        None => Arc::from([]),
-    };
+    let constraints = load_constraints_or_empty(options.constraints.as_deref())?;
     let arch = Arc::new(load_arch(&resources.arch)?);
     let delay_model = load_delay_model(resources.delay.as_deref())?.map(Arc::new);
     let loaded_cil = match resources.cil.as_ref() {
@@ -91,8 +92,12 @@ fn run_internal(
             )
         },
     )?;
-    save_design(&map_result.value.design, &artifacts.map)?;
-    map_result.report.artifact("design", &artifacts.map);
+    save_design_stage_artifact(
+        &mut map_result.report,
+        "design",
+        &map_result.value.design,
+        &artifacts.map,
+    )?;
 
     let mut pack_result = run_stage_with_reporter(
         "pack",
@@ -123,8 +128,12 @@ fn run_internal(
             )
         },
     )?;
-    save_design(&pack_result.value, &artifacts.pack)?;
-    pack_result.report.artifact("design", &artifacts.pack);
+    save_design_stage_artifact(
+        &mut pack_result.report,
+        "design",
+        &pack_result.value,
+        &artifacts.pack,
+    )?;
 
     let mut place_result = run_stage_with_reporter(
         "place",
@@ -155,28 +164,20 @@ fn run_internal(
             )
         },
     )?;
-    save_design_with_context(
+    save_design_stage_artifact_with_context(
+        &mut place_result.report,
+        "design",
         &place_result.value,
         &artifacts.place,
-        &DesignWriteContext {
-            arch: Some(arch.as_ref()),
-            constraints: constraints.as_ref(),
-            ..DesignWriteContext::default()
-        },
+        &place_write_context(arch.as_ref(), constraints.as_ref()),
     )?;
-    place_result.report.artifact("design", &artifacts.place);
 
-    let route_device_design = loaded_cil
-        .as_ref()
-        .map(|cil| {
-            route::lower_design(
-                place_result.value.clone(),
-                arch.as_ref(),
-                Some(cil),
-                constraints.as_ref(),
-            )
-        })
-        .transpose()?;
+    let route_device_design = prepare_route_device_design(
+        &place_result.value,
+        arch.as_ref(),
+        loaded_cil.as_ref(),
+        constraints.as_ref(),
+    )?;
     let mut route_result = run_stage_with_reporter(
         "route",
         &mut runtime_reporter_option,
@@ -206,28 +207,30 @@ fn run_internal(
             )
         },
     )?;
-    route_result.report.artifact("design", &artifacts.route);
-    if let Some(device_path) = artifacts.device.as_ref() {
-        route_result.report.artifact("device_design", device_path);
-    }
     let route::RouteStageArtifacts {
         design: routed_design,
         device_design,
         route_image,
     } = route_result.value;
-    save_design_with_context(
+    save_design_stage_artifact_with_context(
+        &mut route_result.report,
+        "design",
         &routed_design,
         &artifacts.route,
-        &DesignWriteContext {
-            arch: Some(arch.as_ref()),
-            cil: loaded_cil.as_ref(),
-            constraints: constraints.as_ref(),
-            cil_path: resources.cil.as_deref(),
-        },
+        &route_write_context(
+            arch.as_ref(),
+            loaded_cil.as_ref(),
+            constraints.as_ref(),
+            resources.cil.as_deref(),
+        ),
     )?;
     if let Some(device_path) = artifacts.device.as_ref() {
-        fs::write(device_path, serde_json::to_string_pretty(&device_design)?)
-            .with_context(|| format!("failed to write {}", device_path.display()))?;
+        write_json_stage_artifact(
+            &mut route_result.report,
+            "device_design",
+            device_path,
+            &device_design,
+        )?;
     }
 
     let mut sta_result = run_stage_with_reporter(
@@ -258,20 +261,19 @@ fn run_internal(
             .report
             .push(format!("Referenced timing library {}", sta_lib.display()));
     }
-    save_design_with_context(
+    save_design_stage_artifact_with_context(
+        &mut sta_result.report,
+        "design",
         &sta_result.value.design,
         &artifacts.sta,
-        &DesignWriteContext {
-            arch: Some(arch.as_ref()),
-            ..DesignWriteContext::default()
-        },
+        &sta_write_context(Some(arch.as_ref())),
     )?;
-    sta_result.report.artifact("design", &artifacts.sta);
-    fs::write(&artifacts.sta_report, &sta_result.value.report_text)
-        .with_context(|| format!("failed to write {}", artifacts.sta_report.display()))?;
-    sta_result
-        .report
-        .artifact("timing_report", &artifacts.sta_report);
+    write_text_stage_artifact(
+        &mut sta_result.report,
+        "timing_report",
+        &artifacts.sta_report,
+        &sta_result.value.report_text,
+    )?;
 
     let mut bitgen_result = run_stage_with_reporter(
         "bitgen",
@@ -304,18 +306,22 @@ fn run_internal(
             )
         },
     )?;
-    fs::write(&artifacts.bitstream, &bitgen_result.value.bytes)
-        .with_context(|| format!("failed to write {}", artifacts.bitstream.display()))?;
+    write_bytes_stage_artifact(
+        &mut bitgen_result.report,
+        "bitstream",
+        &artifacts.bitstream,
+        &bitgen_result.value.bytes,
+    )?;
     bitgen_result
         .report
         .metric("bitstream_sha256", bitgen_result.value.sha256.clone());
-    bitgen_result
-        .report
-        .artifact("bitstream", &artifacts.bitstream);
     if let Some(sidecar_path) = artifacts.bitstream_sidecar.as_ref() {
-        fs::write(sidecar_path, &bitgen_result.value.sidecar_text)
-            .with_context(|| format!("failed to write {}", sidecar_path.display()))?;
-        bitgen_result.report.artifact("sidecar", sidecar_path);
+        write_text_stage_artifact(
+            &mut bitgen_result.report,
+            "sidecar",
+            sidecar_path,
+            &bitgen_result.value.sidecar_text,
+        )?;
     }
 
     let stages = vec![
@@ -427,4 +433,61 @@ fn report_resources(
         resolved.insert("family".to_string(), family.clone());
     }
     resolved
+}
+
+fn save_design_stage_artifact(
+    report: &mut StageReport,
+    key: &str,
+    design: &crate::ir::Design,
+    path: &Path,
+) -> Result<()> {
+    save_design(design, path)?;
+    report.artifact(key, path);
+    Ok(())
+}
+
+fn save_design_stage_artifact_with_context(
+    report: &mut StageReport,
+    key: &str,
+    design: &crate::ir::Design,
+    path: &Path,
+    context: &DesignWriteContext<'_>,
+) -> Result<()> {
+    save_design_with_context(design, path, context)?;
+    report.artifact(key, path);
+    Ok(())
+}
+
+fn write_text_stage_artifact(
+    report: &mut StageReport,
+    key: &str,
+    path: &Path,
+    text: &str,
+) -> Result<()> {
+    fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
+    report.artifact(key, path);
+    Ok(())
+}
+
+fn write_bytes_stage_artifact(
+    report: &mut StageReport,
+    key: &str,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+    report.artifact(key, path);
+    Ok(())
+}
+
+fn write_json_stage_artifact<T: Serialize>(
+    report: &mut StageReport,
+    key: &str,
+    path: &Path,
+    value: &T,
+) -> Result<()> {
+    fs::write(path, serde_json::to_string_pretty(value)?)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    report.artifact(key, path);
+    Ok(())
 }

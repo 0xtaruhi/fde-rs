@@ -1,6 +1,6 @@
 use super::DEFAULT_PACK_CAPACITY;
 use crate::{
-    domain::{ClusterKind, SequentialCellType},
+    domain::{ClusterKind, PrimitiveKind, SequentialCellType},
     ir::{CellId, Cluster, Design, DesignIndex},
     report::{StageOutput, StageReport, StageReporter, emit_stage_info},
 };
@@ -607,11 +607,11 @@ fn pack_rule_rank(cell: &crate::ir::Cell) -> u16 {
 }
 
 fn lut_rule_rank(type_name: &str) -> u16 {
-    match type_name {
-        "LUT1" => 0,
-        "LUT2" => 1,
-        "LUT3" => 2,
-        "LUT4" => 3,
+    match PrimitiveKind::classify("lut", type_name) {
+        PrimitiveKind::Lut { inputs: Some(1) } => 0,
+        PrimitiveKind::Lut { inputs: Some(2) } => 1,
+        PrimitiveKind::Lut { inputs: Some(3) } => 2,
+        PrimitiveKind::Lut { inputs: Some(4) } => 3,
         _ => u16::MAX,
     }
 }
