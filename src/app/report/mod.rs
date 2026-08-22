@@ -284,8 +284,7 @@ pub struct ImplementationReport {
 pub fn print_stage_report(report: &StageReport) {
     let elapsed = report
         .elapsed_ms
-        .map(format_elapsed_ms)
-        .unwrap_or_else(|| "-".to_string());
+        .map_or_else(|| "-".to_string(), format_elapsed_ms);
     let metrics = format_metric_pairs(&report.metrics);
     if metrics.is_empty() {
         println!(
@@ -394,8 +393,7 @@ pub fn render_summary_report(report: &ImplementationReport) -> String {
     for stage in &report.stages {
         let elapsed = stage
             .elapsed_ms
-            .map(format_elapsed_ms)
-            .unwrap_or_else(|| "-".to_string());
+            .map_or_else(|| "-".to_string(), format_elapsed_ms);
         out.push_str(&format!("{:14}: {}\n", stage.stage, elapsed));
     }
 
@@ -471,8 +469,7 @@ pub fn render_detailed_log(report: &ImplementationReport) -> String {
     for stage in &report.stages {
         let elapsed = stage
             .elapsed_ms
-            .map(format_elapsed_ms)
-            .unwrap_or_else(|| "-".to_string());
+            .map_or_else(|| "-".to_string(), format_elapsed_ms);
         out.push_str(&format!(
             "{} [{}] elapsed={}\n",
             stage.stage,

@@ -55,11 +55,10 @@ pub(crate) fn compute_arrivals(
                     continue;
                 };
                 let net = index.net(design, net_id);
-                let driver_key = net
-                    .driver
-                    .as_ref()
-                    .map(|endpoint| endpoint_arrival_key(&index, endpoint))
-                    .unwrap_or_else(|| net_arrival_key(net_id));
+                let driver_key = net.driver.as_ref().map_or_else(
+                    || net_arrival_key(net_id),
+                    |endpoint| endpoint_arrival_key(&index, endpoint),
+                );
                 let src_arrival = arrival.get(&driver_key).copied().unwrap_or(0.0);
                 let net_delay = net_delay_ns(design, &index, net, arch, delay);
                 input_arrival = input_arrival.max(src_arrival + net_delay);

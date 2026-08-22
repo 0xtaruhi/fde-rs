@@ -167,9 +167,7 @@ fn normalize_lut_cell_inputs(cell: &mut Cell) -> bool {
     for new_address in 0..new_truth_table_bits {
         let mut old_address = 0usize;
         for (old_index, maybe_new_index) in old_to_new.iter().enumerate() {
-            let bit = maybe_new_index
-                .map(|new_index| (new_address >> new_index) & 1)
-                .unwrap_or(0);
+            let bit = maybe_new_index.map_or(0, |new_index| (new_address >> new_index) & 1);
             old_address |= bit << old_index;
         }
         if ((old_value >> old_address) & 1) != 0 {

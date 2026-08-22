@@ -93,9 +93,9 @@ pub(crate) fn route_node_class_for_wire(
         return RouteNodeClass::Clock;
     }
 
-    let length = bounds
-        .map(|bounds| bounds.max_x - bounds.min_x + bounds.max_y - bounds.min_y)
-        .unwrap_or(0);
+    let length = bounds.map_or(0, |bounds| {
+        bounds.max_x - bounds.min_x + bounds.max_y - bounds.min_y
+    });
     if metadata.is_long() && length != 0 {
         return RouteNodeClass::Long;
     }
@@ -192,40 +192,62 @@ fn centered_span_bounds(
     radius: usize,
     horizontal: bool,
 ) -> WireBounds {
+    // Clamp the center to the grid first: an out-of-range wire coordinate
+    // must not produce min > max, which would underflow span arithmetic.
+    let max_x = arch.width.saturating_sub(1);
+    let max_y = arch.height.saturating_sub(1);
+    let center_x = x.min(max_x);
+    let center_y = y.min(max_y);
     if horizontal {
         WireBounds {
-            min_x: x.min(arch.width.saturating_sub(1)),
-            max_x: x.min(arch.width.saturating_sub(1)),
-            min_y: y.saturating_sub(radius),
-            max_y: y.saturating_add(radius).min(arch.height.saturating_sub(1)),
+            min_x: center_x,
+            max_x: center_x,
+            min_y: center_y.saturating_sub(radius),
+            max_y: center_y.saturating_add(radius).min(max_y),
         }
     } else {
         WireBounds {
-            min_x: x.saturating_sub(radius),
-            max_x: x.saturating_add(radius).min(arch.width.saturating_sub(1)),
-            min_y: y.min(arch.height.saturating_sub(1)),
-            max_y: y.min(arch.height.saturating_sub(1)),
+            min_x: center_x.saturating_sub(radius),
+            max_x: center_x.saturating_add(radius).min(max_x),
+            min_y: center_y,
+            max_y: center_y,
         }
     }
 }
 
 fn offset_clamped(origin: usize, delta: isize, max: usize) -> usize {
-    if delta.is_negative() {
-        origin.saturating_sub(delta.unsigned_abs())
-    } else {
-        origin.saturating_add(delta as usize).min(max)
-    }
+    origin.saturating_add_signed(delta).min(max)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         RouteNodeClass, WireBounds, canonical_indexed_wire, is_exclusive_site_output_wire,
-        route_node_base_cost, route_node_class, wire_bounds,
+        route_node_base_cost, route_node_class, wire_bounds, wire_bounds_for_family,
     };
     use crate::domain::CanonicalWireFamily;
     use crate::resource::Arch;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn centered_wire_bounds_survive_out_of_grid_coordinates() {
+        let arch = Arch {
+            name: "mini".to_string(),
+            width: 8,
+            height: 8,
+            ..Arch::default()
+        };
+
+        // A wire coordinate beyond the grid must not produce min > max,
+        // which would underflow the span subtraction downstream.
+        let horizontal = wire_bounds_for_family(&arch, 3, 64, CanonicalWireFamily::H6M);
+        assert!(horizontal.max_y >= horizontal.min_y);
+        assert!(horizontal.max_y <= 7);
+
+        let vertical = wire_bounds_for_family(&arch, 64, 3, CanonicalWireFamily::V6M);
+        assert!(vertical.max_x >= vertical.min_x);
+        assert!(vertical.max_x <= 7);
+    }
 
     fn mini_arch() -> Arch {
         Arch {

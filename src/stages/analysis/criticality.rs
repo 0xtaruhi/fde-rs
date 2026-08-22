@@ -69,8 +69,7 @@ fn backward_levels(design: &Design, index: &DesignIndex<'_>) -> Vec<usize> {
         if net.sinks.iter().any(|sink| {
             index
                 .port_for_endpoint(sink)
-                .map(|port_id| index.port(design, port_id).direction.is_output_like())
-                .unwrap_or(false)
+                .is_some_and(|port_id| index.port(design, port_id).direction.is_output_like())
         }) {
             levels[net_index] = 0;
         }

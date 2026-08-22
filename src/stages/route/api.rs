@@ -199,19 +199,11 @@ fn logical_route_net_name(device_net_name: &str) -> &str {
 }
 
 fn estimate_pip_delay(route_pips: &[RoutePip], arch: &Arch) -> f64 {
-    route_pips.len() as f64 * (arch.wire_r + arch.wire_c + 0.02)
+    crate::core::ir::estimate_pip_count_delay_ns(route_pips.len(), arch.wire_r, arch.wire_c)
 }
 
 fn estimate_segment_delay(route: &[RouteSegment], arch: &Arch) -> f64 {
-    let length = route.iter().map(RouteSegment::length).sum::<usize>() as f64;
-    let bends = route
-        .windows(2)
-        .filter(|window| match window {
-            [lhs, rhs] => (lhs.x0 == lhs.x1) != (rhs.x0 == rhs.x1),
-            _ => false,
-        })
-        .count() as f64;
-    length * (arch.wire_r + arch.wire_c + 0.02) + bends * 0.05
+    crate::core::ir::estimate_segment_delay_ns(route, arch.wire_r, arch.wire_c)
 }
 
 fn derive_segments_from_pips(pips: &[RoutePip]) -> Vec<RouteSegment> {

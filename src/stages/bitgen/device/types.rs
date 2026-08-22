@@ -253,8 +253,7 @@ impl DeviceNet {
         self.sink_guides
             .iter()
             .find(|guide| guide.sink == *sink && !guide.tiles.is_empty())
-            .map(|guide| guide.tiles.as_slice())
-            .unwrap_or(self.guide_tiles.as_slice())
+            .map_or(self.guide_tiles.as_slice(), |guide| guide.tiles.as_slice())
     }
 }
 

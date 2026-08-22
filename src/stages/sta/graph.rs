@@ -207,11 +207,7 @@ fn trace_path(
                     .copied()
                     .unwrap_or(0.0);
                 let candidate = input_driver.clone();
-                if best_input
-                    .as_ref()
-                    .map(|(_, best)| score > *best)
-                    .unwrap_or(true)
-                {
+                if best_input.as_ref().is_none_or(|(_, best)| score > *best) {
                     best_input = Some((candidate, score));
                 }
             }
