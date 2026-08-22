@@ -139,6 +139,37 @@ per-word edge models predict random-case outputs. Absolute golden comparison
 is therefore impossible until the fixture's vericomm timing is documented or
 reverse-engineered (see tools/vlfd-rs).
 
+### Update (2026-08-22, later) - fixture mystery SOLVED: VeriComm clock runs continuously
+
+Reading the vendored vlfd-rs source (`~/.cargo/registry/.../vlfd-rs-1.0.0`)
+plus a live counter experiment (`tools/wave_probe/src/bin/edge_probe.rs`,
+target design `build/lutprobe/edgecnt.v`) settled it:
+
+- `Config::vericomm_clock_continues()` reports `true` on our board: the SMIMS
+  interface generates a CONTINUOUS free-running fabric clock while in
+  VeriComm I/O mode (configurable high/low delays only - there is no
+  single-step mode exposed by vlfd-rs 1.0).
+- rx words are asynchronous snapshots of an always-running circuit. The
+  per-word trace of a resettable counter shows strobe/alias patterns, not
+  deterministic per-word state.
+
+Consequences (final):
+
+1. Fabric flops and both toolchains' flows are functionally correct. There is
+   no narrow-LUT bug and no FF-programming bug.
+2. Deterministic absolute golden comparison is IMPOSSIBLE in VeriComm mode:
+   history-dependent designs free-run between samples. Only designs whose
+   outputs converge to a pure function of CURRENT input levels can be
+   validated absolutely.
+3. Valid oracles going forward:
+   - settling-immune test designs (outputs = f(current inputs) after
+     convergence), or
+   - board-vs-board differential (Rust vs C++), which stays exact because
+     both bitstreams run under the same continuous clock.
+4. `random_board_diff.py` goldens assume one edge per segment; they cannot be
+   satisfied by this fixture. Any future "random case fails" report must first
+   re-check protocol assumptions before touching the flow.
+
 #### Consequences
 
 - Do NOT resume the narrow-LUT / lut_expr / physical_import debugging thread;
