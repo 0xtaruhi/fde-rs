@@ -26,7 +26,7 @@ use super::{
 use crate::{
     DeviceCell, DeviceDesign, DeviceDesignIndex, DeviceEndpoint, DeviceNet,
     cil::Cil,
-    domain::{NetOrigin, is_clock_sink_wire_name},
+    domain::NetOrigin,
     report::{StageReporter, emit_stage_info, emit_stage_progress, emit_stage_warning},
     resource::{
         Arch,
@@ -433,7 +433,7 @@ fn route_net_sink(
             strict_clock_sink: prepared.net_kind == RouteNetKind::DedicatedClock
                 && sink_wires
                     .iter()
-                    .all(|wire| is_clock_sink_wire_name(context.wires.resolve(*wire))),
+                    .all(|wire| context.wires.metadata(*wire).is_clock_sink()),
             ordered_guide: &ordered_guide,
             guide_distances: &guide_distances,
             roots: &prepared.roots,
