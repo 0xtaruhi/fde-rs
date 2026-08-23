@@ -49,11 +49,12 @@ struct RoutingState {
     pips: Vec<DeviceRoutePip>,
     notes: Vec<String>,
     guide_usage: GuideUsageStats,
-    occupied_route_sinks: HashMap<RouteNode, ResourceClaims>,
+    occupied_route_sinks: HashMap<RouteNode, occupancy::SinkClaims>,
     occupied_route_nodes: HashMap<RouteNode, ResourceClaims>,
     node_history: occupancy::HistoryTable,
     sink_history: occupancy::HistoryTable,
     present_factor: usize,
+    hard_block: bool,
     policy_search: SearchScratch<RouteNode, WireId>,
     guided_search: SearchScratch<GuidedRouteNode, (usize, WireId)>,
 }
@@ -77,6 +78,7 @@ impl RoutingState {
             node_history: occupancy::HistoryTable::default(),
             sink_history: occupancy::HistoryTable::default(),
             present_factor: PRESENT_FACTOR_INITIAL,
+            hard_block: false,
             policy_search: SearchScratch::default(),
             guided_search: SearchScratch::default(),
         }
@@ -229,6 +231,29 @@ fn route_device_design_internal(
             .collect();
         contested_total = contested_nodes.len() + contested_sinks.len();
 
+        if pass == MAX_NEGOTIATION_PASSES {
+            for key in &contested_nodes {
+                let wire_name = context.wires.resolve(key.wire);
+                let node_key = resources.stitched_components.occupancy_key(key);
+                if let Some(c) = state.occupied_route_nodes.get(&node_key) {
+                    emit_stage_info(
+                        reporter,
+                        "route",
+                        format!(
+                            "DEBUG node ({}, {}) {} claimed_by={} origin={:?} others={} history={}",
+                            key.x,
+                            key.y,
+                            wire_name,
+                            c.owner,
+                            c.owner_origin,
+                            c.others,
+                            state.node_history.get(&node_key).unwrap_or(&0)
+                        ),
+                    );
+                }
+            }
+        }
+
         if contested_total == 0 {
             converged = true;
             emit_stage_info(
@@ -249,18 +274,36 @@ fn route_device_design_internal(
             (state.present_factor * PRESENT_FACTOR_GROWTH).min(PRESENT_FACTOR_CAP);
     }
 
+    let _ = routed_net_count;
+
     if !converged {
         push_route_note(
             &mut state.notes,
             reporter,
             format!(
                 "Negotiated routing did not fully converge after \
-                 {MAX_NEGOTIATION_PASSES} passes; {contested_total} resources \
-                 remain shared and the design may be unroutable at this density."
+                 {MAX_NEGOTIATION_PASSES} passes ({contested_total} contended); \
+                 falling back to hard-blocking final pass."
             ),
         );
+        // Legalization pass: clear all claims and re-route every net with
+        // hard blocking so no two nets share a physical resource in the
+        // final result. Nets that cannot find exclusive paths fail here
+        // just as they would have under the old single-pass router.
+        state.begin_negotiation_pass();
+        state.hard_block = true;
+        for &net_index in &net_order {
+            route_net(
+                &mut context,
+                device,
+                &index,
+                net_index,
+                &mut state,
+                reporter,
+            );
+        }
+        state.hard_block = false;
     }
-    let _ = routed_net_count;
 
     state.notes.push(state.guide_usage.summary());
     emit_stage_info(reporter, "route", state.guide_usage.summary());
@@ -528,6 +571,8 @@ fn route_net_sink(
             sink_history: &state.sink_history,
             present_factor: state.present_factor,
             net_index: prepared.net_index,
+            net_origin: prepared.net.origin,
+            hard_block: state.hard_block,
         };
         let Some((path, guide_mode)) = route_sink(
             context,
@@ -588,6 +633,7 @@ fn commit_routed_path(
         context.stitched_components,
         &mut state.occupied_route_nodes,
         prepared.net_index,
+        prepared.net.origin,
         &path.nodes,
     );
     update_tree_state(prepared, &path.nodes);
@@ -890,7 +936,16 @@ fn route_sink_following_guide(
                     node: neighbor,
                     guide_index: next_guide_index,
                 };
-                let congestion = neighbor_congestion_cost(&availability, &neighbor, local_arc);
+                let congestion = match neighbor_congestion_cost(
+                    &availability,
+                    &state.node.node,
+                    &neighbor,
+                    local_arc,
+                ) {
+                    super::policy::NeighborCost::Blocked => continue,
+                    super::policy::NeighborCost::Free => 0,
+                    super::policy::NeighborCost::Contended(c) => c,
+                };
                 let next_cost = state.cost
                     + route_transition_cost(context, spec, &state.node.node, &neighbor, local_arc)
                     + congestion;
@@ -947,7 +1002,16 @@ fn route_sink_with_policy(
                     continue;
                 }
 
-                let congestion = neighbor_congestion_cost(&availability, &neighbor, local_arc);
+                let congestion = match neighbor_congestion_cost(
+                    &availability,
+                    &state.node,
+                    &neighbor,
+                    local_arc,
+                ) {
+                    super::policy::NeighborCost::Blocked => continue,
+                    super::policy::NeighborCost::Free => 0,
+                    super::policy::NeighborCost::Contended(c) => c,
+                };
                 let next_cost = state.cost
                     + route_transition_cost(context, spec, &state.node, &neighbor, local_arc)
                     + guide_penalty(&state.node, &neighbor, spec.guide_distances)

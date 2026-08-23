@@ -13,7 +13,10 @@ use crate::{
     route::types::{SiteRouteArc, WireInterner},
 };
 
-use super::router::{RouteNetKind, RouteSinkContext};
+use super::{
+    occupancy::history_of,
+    router::{RouteNetKind, RouteSinkContext},
+};
 
 /// Per-neighbor evaluation inputs: the device graph adapter plus a view of
 /// the shared [`NegotiationContext`] scoped to one net.
@@ -28,25 +31,56 @@ pub(super) struct NeighborAvailability<'a> {
 /// Negotiated congestion never hard-blocks: foreign claims add a
 /// present-sharing penalty plus whatever history the resource accumulated in
 /// earlier passes. Resources already on the current net's tree are free.
-#[inline(always)]
+/// Result of pricing one neighbor under negotiated congestion.
+pub(super) enum NeighborCost {
+    /// The resource is free or owned by the current net.
+    Free,
+    /// The resource is contended; the value is the congestion surcharge.
+    Contended(usize),
+    /// Hard blocking is active and the resource is claimed by another net.
+    Blocked,
+}
+
 pub(super) fn neighbor_congestion_cost(
     availability: &NeighborAvailability<'_>,
+    current: &RouteNode,
     neighbor: &RouteNode,
     local_arc: Option<usize>,
-) -> usize {
+) -> NeighborCost {
     if availability.tree_nodes.contains(neighbor) {
-        return 0;
+        return NeighborCost::Free;
     }
 
-    let mut cost = availability
-        .congestion
-        .node_penalty(&availability.stitched_components.occupancy_key(neighbor));
+    let node_key = availability.stitched_components.occupancy_key(neighbor);
+    let node_claims = availability.congestion.occupied_route_nodes.get(&node_key);
+    let sink_claims = local_arc
+        .is_some()
+        .then(|| availability.congestion.occupied_route_sinks.get(neighbor))
+        .flatten();
 
-    if local_arc.is_some() {
-        cost += availability.congestion.sink_penalty(neighbor);
+    if availability.congestion.hard_block {
+        let node_taken = node_claims.is_some_and(|c| c.owner != availability.congestion.net_index);
+        let sink_taken =
+            sink_claims.is_some_and(|c| c.owner_net != availability.congestion.net_index);
+        if node_taken || sink_taken {
+            return NeighborCost::Blocked;
+        }
+        return NeighborCost::Free;
     }
 
-    cost
+    let mut cost = availability.congestion.node_penalty(&node_key);
+
+    if let Some(claims) = sink_claims {
+        cost += claims.congestion_penalty(
+            availability.congestion.net_index,
+            availability.congestion.net_origin,
+            current.wire,
+            history_of(availability.congestion.sink_history, neighbor),
+            availability.congestion.present_factor,
+        );
+    }
+
+    NeighborCost::Contended(cost)
 }
 
 #[inline(always)]

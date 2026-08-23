@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::{
     cil::load_cil,
+    domain::NetOrigin,
     resource::{
         ResourceBundle, load_arch,
         routing::{
@@ -51,12 +52,18 @@ fn same_net_resource_revisits_stay_free_of_contention() {
     let track = RouteNode::new(5, 7, wires.intern("H6W2"));
     let key = stitched_components.occupancy_key(&track);
     let mut claims = HashMap::default();
-    claims.insert(key, ResourceClaims::new(0));
+    claims.insert(key, ResourceClaims::new(0, NetOrigin::Logical));
 
     // The owning net may re-enter its own resource arbitrarily often:
     // shared multi-sink trees legitimately revisit branches.
-    claims.get_mut(&key).expect("claims").claim(0);
-    claims.get_mut(&key).expect("claims").claim(0);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(0, NetOrigin::Logical);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(0, NetOrigin::Logical);
     assert_eq!(claims.get(&key).expect("claims").others, 0);
     assert!(count_contested(&claims).next().is_none());
 }
@@ -68,11 +75,20 @@ fn foreign_net_claims_are_counted_and_priced() {
     let track = RouteNode::new(5, 7, wires.intern("H6W2"));
     let key = stitched_components.occupancy_key(&track);
     let mut claims = HashMap::default();
-    claims.insert(key, ResourceClaims::new(0));
+    claims.insert(key, ResourceClaims::new(0, NetOrigin::Logical));
 
-    claims.get_mut(&key).expect("claims").claim(1);
-    claims.get_mut(&key).expect("claims").claim(1);
-    claims.get_mut(&key).expect("claims").claim(2);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(1, NetOrigin::Logical);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(1, NetOrigin::Logical);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(2, NetOrigin::Logical);
 
     let record = claims.get(&key).expect("claims");
     assert_eq!(record.others, 3);
@@ -80,8 +96,14 @@ fn foreign_net_claims_are_counted_and_priced() {
     // Same-net entry pays only history; foreign entry pays present sharing
     // scaled by contention, plus history.
     let history = 3;
-    assert_eq!(record.congestion_penalty(0, history, 4), 3);
-    assert_eq!(record.congestion_penalty(1, history, 4), 3 + 4 * (3 + 1));
+    assert_eq!(
+        record.congestion_penalty(0, NetOrigin::Logical, history, 4),
+        3
+    );
+    assert_eq!(
+        record.congestion_penalty(1, NetOrigin::Logical, history, 4),
+        3 + 4 * (3 + 1)
+    );
 }
 
 #[test]
@@ -115,14 +137,14 @@ fn real_arch_stitched_component_claims_are_contested_across_tiles() {
         let key = components.occupancy_key(node);
         claims
             .entry(key)
-            .and_modify(|c: &mut ResourceClaims| c.claim(net))
-            .or_insert_with(|| ResourceClaims::new(net));
+            .and_modify(|c: &mut ResourceClaims| c.claim(net, NetOrigin::Logical))
+            .or_insert_with(|| ResourceClaims::new(net, NetOrigin::Logical));
     }
     let _ = tree_nodes;
 
     let contested: Vec<_> = count_contested(&claims).collect();
     assert_eq!(contested.len(), 1);
-    assert_eq!(contested[0].1.others, 1);
+    assert_eq!(contested[0].1, 1);
 }
 
 #[test]
@@ -285,6 +307,8 @@ fn dedicated_clock_search_reaches_real_arch_clock_sink() {
         sink_history: &HashMap::default(),
         present_factor: 1,
         net_index: 0,
+        net_origin: crate::domain::NetOrigin::Logical,
+        hard_block: false,
     };
     let path = super::route_sink_with_policy(&context, &negotiation, &mut search, &spec, None);
     let path = path.expect("dedicated clock route");
