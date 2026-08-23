@@ -84,6 +84,41 @@ Note on oracles: after the VeriComm continuous-clock finding (below),
 board validation must use settling-immune designs or Rust-vs-C++
 differentials; cycle-exact goldens are not achievable in VeriComm mode.
 
+### Known limitation: negotiated router is O(passes × all_nets) — needs incremental rip-up
+
+The negotiated congestion router re-routes ALL nets from scratch on
+every pass. For sparse designs (≤50 clusters, ≤1 contended resource)
+it converges in 1 pass with zero overhead. But for denser designs it
+becomes impractically slow:
+
+| Design | Clusters | Old (single-pass) | New (negotiated) |
+|---|---|---|---|
+| blinky | ~10 | <1 s | <1 s (1 pass) |
+| board-e2e max | ~50 | <5 s | <5 s (1 pass) |
+| dense_20 | ~100 | ~3 s | >10 min (9+ passes, not converged) |
+
+Root cause: each pass routes all nets from scratch even when only 1-2
+nets have conflicts. The fix is incremental rip-up-and-reroute:
+- After each pass, record which NETS traverse contended resources
+  (needs a net→resource reverse index).
+- Next pass: only rip up and re-route those nets; keep all other nets'
+  routes from the previous pass.
+- This turns per-pass cost from O(all_nets) to O(contended_nets),
+  typically 10-100× faster.
+
+Implementation sketch:
+- Add `net_claims: HashMap<RouteNodeKey, HashSet<usize>>` alongside the
+  existing `ResourceClaims` to track which nets use each resource.
+- In `route_device_design_internal`, after each pass: identify contended
+  keys → look up claiming nets → mark them for re-routing.
+- Clear only those nets' claims before the next pass.
+- All other nets' reservations stay in place.
+
+Also needed:
+- A dense-design generator script for benchmarking.
+- Convergence metrics in report.json (passes used, final overuse count).
+- Optional: bounded search radius during early passes (VPR's approach).
+
 ## Active Debug Handoff (2026-03-24)
 
 This section records the current board-debug state so a new contributor can continue
