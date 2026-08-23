@@ -297,6 +297,7 @@ fn ordered_start_nodes_prioritize_existing_tree_frontier() {
         .collect::<HashMap<_, _>>();
     let sink_wires = [wires.intern("SINK")];
     let spec = SinkRouteSpec {
+        criticality: 0.0,
         net_index: 0,
         net_origin: NetOrigin::Logical,
         net_kind: super::RouteNetKind::Generic,
@@ -335,6 +336,7 @@ fn ordered_start_nodes_prefer_lower_tree_cost_over_nearer_frontier() {
         .collect::<HashMap<_, _>>();
     let sink_wires = [wires.intern("SINK")];
     let spec = SinkRouteSpec {
+        criticality: 0.0,
         net_index: 0,
         net_origin: NetOrigin::Logical,
         net_kind: super::RouteNetKind::Generic,
@@ -385,6 +387,7 @@ fn dedicated_clock_search_reaches_real_arch_clock_sink() {
     let tree_start_costs = [(root, 0usize)].into_iter().collect::<HashMap<_, _>>();
     let sink_wires = [sink_wire];
     let spec = SinkRouteSpec {
+        criticality: 0.0,
         net_index: 0,
         net_origin: NetOrigin::Logical,
         net_kind: super::RouteNetKind::DedicatedClock,

@@ -63,6 +63,7 @@ impl<'a> DeviceLowering<'a> {
             let mut lowered = DeviceNet::new(net.name.clone(), NetOrigin::Logical)
                 .with_guide_tiles(guide_tiles(&net.route))
                 .with_sink_guides(sink_guides);
+            lowered.criticality = net.criticality;
             lowered.driver = driver;
             lowered.sinks = sinks;
             self.device.nets.push(lowered);
