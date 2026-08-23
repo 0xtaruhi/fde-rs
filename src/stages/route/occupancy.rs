@@ -1,195 +1,204 @@
 use rustc_hash::FxHashMap as HashMap;
+use smallvec::SmallVec;
 
-use crate::domain::NetOrigin;
-use crate::resource::routing::StitchedComponentDb;
+use crate::{domain::NetOrigin, resource::routing::StitchedComponentDb};
 
 use super::types::{RouteNode, RoutedPip, WireId};
-type RouteWireKey = RouteNode;
 
-/// Per-node claim bookkeeping for negotiated congestion.
-///
-/// `owner` is the net that claimed the resource first within the current
-/// negotiation pass; `others` counts claims by *different* nets afterwards.
-/// Same-net revisits (shared multi-sink trees) never bump `others`.
-///
-/// Synthetic gclk nets are exempt from contention counting entirely: they
-/// share physical pad/clock wires with user nets by construction (both are
-/// abstractions of the same silicon path), so no amount of negotiation can
-/// separate them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) enum RouteResource {
+    Node(RouteNode),
+    Sink(RouteNode),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ResourceClaims {
-    pub(super) owner: usize,
-    pub(super) owner_origin: NetOrigin,
-    pub(super) others: usize,
-}
-
-impl ResourceClaims {
-    pub(super) fn new(net_index: usize, origin: NetOrigin) -> Self {
-        Self {
-            owner: net_index,
-            owner_origin: origin,
-            others: 0,
-        }
-    }
-
-    fn shares_legally(&self, origin: NetOrigin) -> bool {
-        self.owner_origin == NetOrigin::SyntheticGclk || origin == NetOrigin::SyntheticGclk
-    }
-
-    pub(super) fn claim(&mut self, net_index: usize, origin: NetOrigin) {
-        if self.owner != net_index && !self.shares_legally(origin) {
-            self.others += 1;
-        }
-    }
-
-    /// Congestion penalty in cost units for a net about to enter this
-    /// resource. Same-net resources only pay accumulated history; foreign
-    /// claims additionally pay the present-sharing factor scaled by how
-    /// contested the resource already is.
-    pub(super) fn congestion_penalty(
-        &self,
-        net_index: usize,
-        origin: NetOrigin,
-        history: usize,
-        present_factor: usize,
-    ) -> usize {
-        if self.owner == net_index || self.shares_legally(origin) {
-            return history;
-        }
-        history + present_factor.saturating_mul(self.others + 1)
-    }
-}
-
-/// Sink-side claims keep the legacy gclk-sharing exception: a synthetic
-/// gclk net and the user clock net legitimately drive the same sink arc
-/// when they arrive over the same source wire, and forcing them apart is
-/// unroutable (they have no alternative path onto the clock spine).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SinkClaims {
-    pub(super) owner_net: usize,
-    pub(super) owner_origin: NetOrigin,
-    pub(super) owner_from: WireId,
-    pub(super) others: usize,
-}
-
-impl SinkClaims {
-    pub(super) fn new(net_index: usize, origin: NetOrigin, from: WireId) -> Self {
-        Self {
-            owner_net: net_index,
-            owner_origin: origin,
-            owner_from: from,
-            others: 0,
-        }
-    }
-
-    fn shares_legally(&self, origin: NetOrigin, from: WireId) -> bool {
-        self.owner_origin == NetOrigin::SyntheticGclk
-            || origin == NetOrigin::SyntheticGclk && self.owner_from == from
-    }
-
-    pub(super) fn claim(&mut self, net_index: usize, origin: NetOrigin, from: WireId) {
-        if self.owner_net == net_index || self.shares_legally(origin, from) {
-            return;
-        }
-        self.others += 1;
-    }
-
-    pub(super) fn congestion_penalty(
-        &self,
-        net_index: usize,
-        origin: NetOrigin,
-        from: WireId,
-        history: usize,
-        present_factor: usize,
-    ) -> usize {
-        if self.owner_net == net_index || self.shares_legally(origin, from) {
-            return history;
-        }
-        history + present_factor.saturating_mul(self.others + 1)
-    }
-}
-
-/// Historical congestion memory for one resource: grows every negotiation
-/// pass in which the resource ended up contested, making previously
-/// over-subscribed wires progressively less attractive.
-pub(super) type HistoryTable = HashMap<RouteWireKey, usize>;
-
-pub(super) fn history_of(history: &HistoryTable, key: &RouteWireKey) -> usize {
-    history.get(key).copied().unwrap_or(0)
-}
-
-pub(super) fn bump_history(history: &mut HistoryTable, key: &RouteWireKey, increment: usize) {
-    *history.entry(*key).or_insert(0) += increment;
-}
-
-pub(super) fn reserve_route_sinks(
-    occupied_route_sinks: &mut HashMap<RouteWireKey, SinkClaims>,
+struct Claim {
     net_index: usize,
     origin: NetOrigin,
-    path: &[RoutedPip],
-) {
-    for pip in path {
-        occupied_route_sinks
-            .entry(RouteNode::new(pip.x, pip.y, pip.to))
-            .and_modify(|claims| claims.claim(net_index, origin, pip.from))
-            .or_insert_with(|| SinkClaims::new(net_index, origin, pip.from));
+    from: Option<WireId>,
+}
+
+/// All claims on one physical resource, in deterministic route order.
+///
+/// Synthetic clock and logical-clock abstractions may share route nodes. At
+/// sinks they may share only when they use the same incoming wire.
+#[derive(Debug, Clone, Default)]
+struct ResourceClaims(SmallVec<[Claim; 2]>);
+
+impl ResourceClaims {
+    fn shares_legally(lhs: Claim, rhs: Claim) -> bool {
+        let has_synthetic =
+            lhs.origin == NetOrigin::SyntheticGclk || rhs.origin == NetOrigin::SyntheticGclk;
+        has_synthetic && (lhs.from.is_none() || lhs.from == rhs.from)
+    }
+
+    fn insert(&mut self, claim: Claim) -> bool {
+        if self
+            .0
+            .iter()
+            .any(|existing| existing.net_index == claim.net_index)
+        {
+            return false;
+        }
+        self.0.push(claim);
+        true
+    }
+
+    fn remove(&mut self, net_index: usize) {
+        self.0.retain(|claim| claim.net_index != net_index);
+    }
+
+    fn foreign_count(&self, claim: Claim) -> usize {
+        self.0
+            .iter()
+            .filter(|existing| {
+                existing.net_index != claim.net_index && !Self::shares_legally(**existing, claim)
+            })
+            .count()
+    }
+
+    fn overuse(&self) -> usize {
+        let largest_legal_group = self
+            .0
+            .iter()
+            .map(|candidate| {
+                let mut same_source = self.0.iter().filter(|claim| claim.from == candidate.from);
+                let synthetic = same_source
+                    .clone()
+                    .filter(|claim| claim.origin == NetOrigin::SyntheticGclk)
+                    .count();
+                synthetic
+                    + usize::from(same_source.any(|claim| claim.origin != NetOrigin::SyntheticGclk))
+            })
+            .max()
+            .unwrap_or(0);
+        self.0.len() - largest_legal_group
     }
 }
 
-pub(super) fn reserve_route_nodes(
+/// Bidirectional claim index used for incremental rip-up-and-reroute.
+///
+/// `by_resource` answers which nets must be rerouted for a conflict;
+/// `by_net` makes removing precisely one net proportional to its own route;
+pub(super) struct ClaimIndex {
+    by_resource: HashMap<RouteResource, ResourceClaims>,
+    by_net: Vec<Vec<RouteResource>>,
+}
+
+impl ClaimIndex {
+    pub(super) fn new(net_count: usize) -> Self {
+        Self {
+            by_resource: HashMap::default(),
+            by_net: vec![Vec::new(); net_count],
+        }
+    }
+
+    fn claim(&mut self, resource: RouteResource, claim: Claim) {
+        if self.by_resource.entry(resource).or_default().insert(claim) {
+            self.by_net[claim.net_index].push(resource);
+        }
+    }
+
+    pub(super) fn rip_up(&mut self, net_index: usize) {
+        for resource in std::mem::take(&mut self.by_net[net_index]) {
+            let remove_resource = if let Some(claims) = self.by_resource.get_mut(&resource) {
+                claims.remove(net_index);
+                claims.0.is_empty()
+            } else {
+                false
+            };
+            if remove_resource {
+                self.by_resource.remove(&resource);
+            }
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.by_resource.clear();
+        self.by_net.iter_mut().for_each(Vec::clear);
+    }
+
+    pub(super) fn contested_resources(&self) -> impl Iterator<Item = RouteResource> + '_ {
+        self.by_resource
+            .iter()
+            .filter_map(|(resource, claims)| (claims.overuse() > 0).then_some(*resource))
+    }
+
+    pub(super) fn claimant_nets(
+        &self,
+        resource: RouteResource,
+    ) -> impl Iterator<Item = usize> + '_ {
+        self.by_resource
+            .get(&resource)
+            .into_iter()
+            .flat_map(|claims| claims.0.iter().map(|claim| claim.net_index))
+    }
+
+    pub(super) fn overuse_count(&self) -> usize {
+        self.by_resource.values().map(ResourceClaims::overuse).sum()
+    }
+
+    fn penalty(
+        &self,
+        resource: RouteResource,
+        claim: Claim,
+        history: usize,
+        present_factor: usize,
+    ) -> usize {
+        let foreign = self
+            .by_resource
+            .get(&resource)
+            .map_or(0, |claims| claims.foreign_count(claim));
+        history + present_factor.saturating_mul(foreign)
+    }
+
+    fn blocked(&self, resource: RouteResource, claim: Claim) -> bool {
+        self.by_resource
+            .get(&resource)
+            .is_some_and(|claims| claims.foreign_count(claim) > 0)
+    }
+}
+
+pub(super) type HistoryTable = HashMap<RouteResource, usize>;
+
+pub(super) fn bump_history(history: &mut HistoryTable, resource: RouteResource, increment: usize) {
+    *history.entry(resource).or_insert(0) += increment;
+}
+
+pub(super) fn reserve_route_path(
     stitched_components: &StitchedComponentDb,
-    occupied_route_nodes: &mut HashMap<RouteNode, ResourceClaims>,
+    claims: &mut ClaimIndex,
     net_index: usize,
     origin: NetOrigin,
     path_nodes: &[RouteNode],
+    path_pips: &[RoutedPip],
 ) {
-    for &node in path_nodes {
-        let key = stitched_components.occupancy_key(&node);
-        occupied_route_nodes
-            .entry(key)
-            .and_modify(|claims| claims.claim(net_index, origin))
-            .or_insert_with(|| ResourceClaims::new(net_index, origin));
+    for pip in path_pips {
+        claims.claim(
+            RouteResource::Sink(RouteNode::new(pip.x, pip.y, pip.to)),
+            Claim {
+                net_index,
+                origin,
+                from: Some(pip.from),
+            },
+        );
     }
-}
-
-/// Count resources claimed by more than one net in the finished pass.
-pub(super) fn count_contested<K, C>(claims: &HashMap<K, C>) -> impl Iterator<Item = (&K, usize)>
-where
-    C: Contended,
-{
-    claims
-        .iter()
-        .filter_map(|(key, c)| (c.others() > 0).then_some((key, c.others())))
-}
-
-/// Uniform access to the foreign-claim counter across claim record types.
-pub(super) trait Contended {
-    fn others(&self) -> usize;
-}
-
-impl Contended for ResourceClaims {
-    fn others(&self) -> usize {
-        self.others
+    for node in path_nodes {
+        claims.claim(
+            RouteResource::Node(stitched_components.occupancy_key(node)),
+            Claim {
+                net_index,
+                origin,
+                from: None,
+            },
+        );
     }
-}
-
-impl Contended for SinkClaims {
-    fn others(&self) -> usize {
-        self.others
-    }
-}
-
-/// Penalty for an unclaimed resource: only its accumulated history applies.
-pub(super) fn unclaimed_penalty(history: usize) -> usize {
-    history
 }
 
 /// Everything a search needs to price resource contention for one net.
 pub(super) struct NegotiationContext<'a> {
-    pub(super) occupied_route_sinks: &'a HashMap<RouteNode, SinkClaims>,
-    pub(super) occupied_route_nodes: &'a HashMap<RouteNode, ResourceClaims>,
-    pub(super) node_history: &'a HistoryTable,
-    pub(super) sink_history: &'a HistoryTable,
+    pub(super) claims: &'a ClaimIndex,
+    pub(super) history: &'a HistoryTable,
     pub(super) present_factor: usize,
     pub(super) net_index: usize,
     pub(super) net_origin: NetOrigin,
@@ -197,17 +206,24 @@ pub(super) struct NegotiationContext<'a> {
 }
 
 impl NegotiationContext<'_> {
-    pub(super) fn node_penalty(&self, key: &RouteNode) -> usize {
-        self.occupied_route_nodes.get(key).map_or_else(
-            || unclaimed_penalty(history_of(self.node_history, key)),
-            |claims| {
-                claims.congestion_penalty(
-                    self.net_index,
-                    self.net_origin,
-                    history_of(self.node_history, key),
-                    self.present_factor,
-                )
-            },
+    fn claim(&self, from: Option<WireId>) -> Claim {
+        Claim {
+            net_index: self.net_index,
+            origin: self.net_origin,
+            from,
+        }
+    }
+
+    pub(super) fn penalty(&self, resource: RouteResource, from: Option<WireId>) -> usize {
+        self.claims.penalty(
+            resource,
+            self.claim(from),
+            self.history.get(&resource).copied().unwrap_or(0),
+            self.present_factor,
         )
+    }
+
+    pub(super) fn blocked(&self, resource: RouteResource, from: Option<WireId>) -> bool {
+        self.claims.blocked(resource, self.claim(from))
     }
 }

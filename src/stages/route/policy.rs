@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    occupancy::history_of,
+    occupancy::RouteResource,
     router::{RouteNetKind, RouteSinkContext},
 };
 
@@ -52,32 +52,21 @@ pub(super) fn neighbor_congestion_cost(
     }
 
     let node_key = availability.stitched_components.occupancy_key(neighbor);
-    let node_claims = availability.congestion.occupied_route_nodes.get(&node_key);
-    let sink_claims = local_arc
-        .is_some()
-        .then(|| availability.congestion.occupied_route_sinks.get(neighbor))
-        .flatten();
+    let node = RouteResource::Node(node_key);
+    let sink = RouteResource::Sink(*neighbor);
 
     if availability.congestion.hard_block {
-        let node_taken = node_claims.is_some_and(|c| c.owner != availability.congestion.net_index);
-        let sink_taken =
-            sink_claims.is_some_and(|c| c.owner_net != availability.congestion.net_index);
-        if node_taken || sink_taken {
+        if availability.congestion.blocked(node, None)
+            || local_arc.is_some() && availability.congestion.blocked(sink, Some(current.wire))
+        {
             return NeighborCost::Blocked;
         }
         return NeighborCost::Free;
     }
 
-    let mut cost = availability.congestion.node_penalty(&node_key);
-
-    if let Some(claims) = sink_claims {
-        cost += claims.congestion_penalty(
-            availability.congestion.net_index,
-            availability.congestion.net_origin,
-            current.wire,
-            history_of(availability.congestion.sink_history, neighbor),
-            availability.congestion.present_factor,
-        );
+    let mut cost = availability.congestion.penalty(node, None);
+    if local_arc.is_some() {
+        cost += availability.congestion.penalty(sink, Some(current.wire));
     }
 
     NeighborCost::Contended(cost)

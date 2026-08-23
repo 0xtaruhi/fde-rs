@@ -36,6 +36,7 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Live board single-case run: `python3 scripts/board_e2e.py run sticky16-check`
 - Board baseline diff: `python3 scripts/board_diff.py run`
 - Random board/model diff: `python3 scripts/random_board_diff.py --count 5 --seed 20260322 --keep-going`
+- Dense router benchmark: `python3 scripts/generate_dense_benchmark.py --width 192 --synthesize`
 - Slice config diff: `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.sidecar.txt>`
 - Emit debug sidecar: `cargo run --bin fde -- impl --input <design.edf> --constraints <constraints.xml> --resource-root resources/hw_lib --out-dir build/<run> --emit-sidecar`
 - Aspen-style Verilog->EDF synthesis: `python3 scripts/synth_yosys_fde.py --top <top> --out-edf build/<top>.edf <sources...>`
@@ -84,40 +85,24 @@ Note on oracles: after the VeriComm continuous-clock finding (below),
 board validation must use settling-immune designs or Rust-vs-C++
 differentials; cycle-exact goldens are not achievable in VeriComm mode.
 
-### Known limitation: negotiated router is O(passes × all_nets) — needs incremental rip-up
+### Incremental negotiated routing (2026-08-23, COMPLETE)
 
-The negotiated congestion router re-routes ALL nets from scratch on
-every pass. For sparse designs (≤50 clusters, ≤1 contended resource)
-it converges in 1 pass with zero overhead. But for denser designs it
-becomes impractically slow:
+`ClaimIndex` now owns both resource→claimants and net→resources indexes.
+Contended resources are derived from the resource claims instead of cached as
+a third state. Negotiation rips up only nets touching those resources, keeps
+every other route, and restores the original `net_order` before rerouting so
+fixed seeds remain deterministic. Removing a net rebuilds contention from the
+remaining typed claims, including legal synthetic-clock sharing.
 
-| Design | Clusters | Old (single-pass) | New (negotiated) |
-|---|---|---|---|
-| blinky | ~10 | <1 s | <1 s (1 pass) |
-| board-e2e max | ~50 | <5 s | <5 s (1 pass) |
-| dense_20 | ~100 | ~3 s | >10 min (9+ passes, not converged) |
+Route reports include negotiation passes, final overuse, routed-net attempts,
+and convergence. The dense benchmark generator uses a small fixed I/O surface
+and a configurable internal register/LUT mesh; unlike the old `dense_20`
+scratch generator, it does not measure conflicts caused by scores of
+unconstrained I/O ports.
 
-Root cause: each pass routes all nets from scratch even when only 1-2
-nets have conflicts. The fix is incremental rip-up-and-reroute:
-- After each pass, record which NETS traverse contended resources
-  (needs a net→resource reverse index).
-- Next pass: only rip up and re-route those nets; keep all other nets'
-  routes from the previous pass.
-- This turns per-pass cost from O(all_nets) to O(contended_nets),
-  typically 10-100× faster.
-
-Implementation sketch:
-- Add `net_claims: HashMap<RouteNodeKey, HashSet<usize>>` alongside the
-  existing `ResourceClaims` to track which nets use each resource.
-- In `route_device_design_internal`, after each pass: identify contended
-  keys → look up claiming nets → mark them for re-routing.
-- Clear only those nets' claims before the next pass.
-- All other nets' reservations stay in place.
-
-Also needed:
-- A dense-design generator script for benchmarking.
-- Convergence metrics in report.json (passes used, final overuse count).
-- Optional: bounded search radius during early passes (VPR's approach).
+Release benchmark (`--width 192`, seed 1): 321 logic clusters and 839 routable
+nets completed routing in about 3.1 s; pass 2 rerouted 8 nets and converged with
+zero overuse. Blinky's routed XML and bitstream remain byte-identical to main.
 
 ## Active Debug Handoff (2026-03-24)
 
