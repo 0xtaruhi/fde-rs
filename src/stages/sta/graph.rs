@@ -98,6 +98,17 @@ pub(crate) fn build_timing_graph(
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
 ) -> TimingGraph {
+    let typed_edges = collect_timing_edges(design, index, arch, delay);
+    let required = compute_required_times(&typed_edges, arrival);
+    render_timing_graph(design, index, arrival, &required, typed_edges)
+}
+
+fn collect_timing_edges(
+    design: &Design,
+    index: &DesignIndex<'_>,
+    arch: Option<&Arch>,
+    delay: Option<&DelayModel>,
+) -> Vec<TypedTimingEdge> {
     let mut typed_edges = Vec::<TypedTimingEdge>::new();
     for net in &design.nets {
         let Some(driver) = &net.driver else {
@@ -130,14 +141,56 @@ pub(crate) fn build_timing_graph(
             }
         }
     }
+    typed_edges
+}
 
-    render_timing_graph(
-        design,
-        index,
-        arrival,
-        summary.critical_path_ns,
-        typed_edges,
-    )
+type RequiredMap = std::collections::BTreeMap<TimingKey, f64>;
+
+/// Backward required-time propagation.
+///
+/// Every graph sink (a node with no outgoing timing edge) is seeded with the
+/// global worst arrival - the classic zero-constraint reference period - and
+/// requirements are then relaxed upstream through
+/// `required(from) <= required(to) - delay(edge)` until they settle. The
+/// result is a real per-node required time, so slacks distinguish parallel
+/// branches instead of reporting the global critical path everywhere.
+fn compute_required_times(edges: &[TypedTimingEdge], arrival: &ArrivalMap) -> RequiredMap {
+    use std::collections::BTreeMap;
+
+    let mut required = RequiredMap::new();
+    let mut outgoing_count = BTreeMap::<&TimingKey, usize>::new();
+    for edge in edges {
+        *outgoing_count.entry(&edge.from).or_insert(0) += 1;
+    }
+
+    let worst_arrival = arrival.values().copied().fold(f64::NEG_INFINITY, f64::max);
+    for edge in edges {
+        if !outgoing_count.contains_key(&edge.to) {
+            required.insert(edge.to.clone(), worst_arrival);
+        }
+    }
+    // Nodes that are neither endpoints nor reachable backwards keep the
+    // reference too, matching the previous uniform behaviour.
+    for key in arrival.keys() {
+        required.entry(key.clone()).or_insert(worst_arrival);
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for edge in edges {
+            let Some(target_required) = required.get(&edge.to).copied() else {
+                continue;
+            };
+            let candidate = target_required - edge.delay_ns;
+            let entry = required.entry(edge.from.clone()).or_insert(candidate);
+            if candidate < *entry {
+                *entry = candidate;
+                changed = true;
+            }
+        }
+    }
+    required
 }
 
 fn path_category(design: &Design, index: &DesignIndex<'_>, sink: &Endpoint) -> TimingPathCategory {
@@ -233,16 +286,20 @@ fn render_timing_graph(
     design: &Design,
     index: &DesignIndex<'_>,
     arrival: &ArrivalMap,
-    required_ns: f64,
+    required: &RequiredMap,
     typed_edges: Vec<TypedTimingEdge>,
 ) -> TimingGraph {
+    let fallback_required = arrival.values().copied().fold(f64::NEG_INFINITY, f64::max);
     let mut nodes = arrival
         .iter()
-        .map(|(id, arrival_ns)| TimingNode {
-            id: render_timing_key(design, index, id),
-            arrival_ns: *arrival_ns,
-            required_ns,
-            slack_ns: required_ns - *arrival_ns,
+        .map(|(id, arrival_ns)| {
+            let required_ns = required.get(id).copied().unwrap_or(fallback_required);
+            TimingNode {
+                id: render_timing_key(design, index, id),
+                arrival_ns: *arrival_ns,
+                required_ns,
+                slack_ns: required_ns - *arrival_ns,
+            }
         })
         .collect::<Vec<_>>();
     nodes.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
