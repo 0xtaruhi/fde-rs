@@ -36,6 +36,7 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Live board single-case run: `python3 scripts/board_e2e.py run sticky16-check`
 - Board baseline diff: `python3 scripts/board_diff.py run`
 - Random board/model diff: `python3 scripts/random_board_diff.py --count 5 --seed 20260322 --keep-going`
+- Dense router benchmark: `python3 scripts/generate_dense_benchmark.py --width 192 --synthesize`
 - Slice config diff: `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.sidecar.txt>`
 - Emit debug sidecar: `cargo run --bin fde -- impl --input <design.edf> --constraints <constraints.xml> --resource-root resources/hw_lib --out-dir build/<run> --emit-sidecar`
 - Aspen-style Verilog->EDF synthesis: `python3 scripts/synth_yosys_fde.py --top <top> --out-edf build/<top>.edf <sources...>`
@@ -83,6 +84,25 @@ weighted centroids), so no change was needed there.
 Note on oracles: after the VeriComm continuous-clock finding (below),
 board validation must use settling-immune designs or Rust-vs-C++
 differentials; cycle-exact goldens are not achievable in VeriComm mode.
+
+### Incremental negotiated routing (2026-08-23, COMPLETE)
+
+`ClaimIndex` now owns both resource→claimants and net→resources indexes.
+Contended resources are derived from the resource claims instead of cached as
+a third state. Negotiation rips up only nets touching those resources, keeps
+every other route, and restores the original `net_order` before rerouting so
+fixed seeds remain deterministic. Removing a net rebuilds contention from the
+remaining typed claims, including legal synthetic-clock sharing.
+
+Route reports include negotiation passes, final overuse, routed-net attempts,
+and convergence. The dense benchmark generator uses a small fixed I/O surface
+and a configurable internal register/LUT mesh; unlike the old `dense_20`
+scratch generator, it does not measure conflicts caused by scores of
+unconstrained I/O ports.
+
+Release benchmark (`--width 192`, seed 1): 321 logic clusters and 839 routable
+nets completed routing in about 3.1 s; pass 2 rerouted 8 nets and converged with
+zero overuse. Blinky's routed XML and bitstream remain byte-identical to main.
 
 ## Active Debug Handoff (2026-03-24)
 

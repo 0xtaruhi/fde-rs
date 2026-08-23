@@ -136,6 +136,16 @@ fn run_with_artifacts_internal(
     report.metric("physical_pip_count", route_image.pips.len());
     report.metric("routed_site_count", programmed_sites);
     report.metric("device_net_count", device_net_count);
+    report.metric("negotiation_passes", route_image.negotiation.passes_used);
+    report.metric(
+        "final_overuse_count",
+        route_image.negotiation.final_overuse_count,
+    );
+    report.metric(
+        "routed_net_attempts",
+        route_image.negotiation.routed_net_attempts,
+    );
+    report.metric("negotiation_converged", route_image.negotiation.converged);
     report.push(format!(
         "Materialized {} physical pips across {} routed sites for {} device nets.",
         route_image.pips.len(),

@@ -45,10 +45,10 @@ pub use report::{
 };
 pub use resource::{Arch, DelayModel, ResourceBundle, load_arch, load_delay_model};
 pub use route::{
-    DeviceRouteImage, DeviceRoutePip, RouteBit, RouteOptions, RoutedNetPip, load_route_pips,
-    load_route_pips_xml, lower_design, materialize_route_image, route_device_design,
-    route_device_design_with_reporter, run as run_route, run_with_artifacts_and_reporter,
-    run_with_reporter as run_route_with_reporter,
+    DeviceRouteImage, DeviceRoutePip, RouteBit, RouteNegotiationStats, RouteOptions, RoutedNetPip,
+    load_route_pips, load_route_pips_xml, lower_design, materialize_route_image,
+    route_device_design, route_device_design_with_reporter, run as run_route,
+    run_with_artifacts_and_reporter, run_with_reporter as run_route_with_reporter,
 };
 pub use sta::{
     StaArtifact, StaError, StaOptions, run as run_sta, run_with_reporter as run_sta_with_reporter,

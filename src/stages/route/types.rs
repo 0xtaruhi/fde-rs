@@ -11,6 +11,16 @@ pub struct DeviceRouteImage {
     pub pips: Vec<DeviceRoutePip>,
     #[serde(default)]
     pub notes: Vec<String>,
+    #[serde(default)]
+    pub negotiation: RouteNegotiationStats,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteNegotiationStats {
+    pub passes_used: usize,
+    pub final_overuse_count: usize,
+    pub routed_net_attempts: usize,
+    pub converged: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

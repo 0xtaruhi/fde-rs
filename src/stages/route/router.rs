@@ -6,9 +6,7 @@ use super::cost::{route_heuristic, route_transition_cost};
 use super::endpoint::{ResolvedRouteEndpoint, resolve_route_endpoint};
 use super::guide::{GuideDistances, GuideRouteMode, GuidedRouteNode, OrderedGuide, guide_penalty};
 use super::heap::{frontier_heap_pop, frontier_heap_push};
-use super::occupancy::{
-    self, NegotiationContext, ResourceClaims, reserve_route_nodes, reserve_route_sinks,
-};
+use super::occupancy::{self, ClaimIndex, NegotiationContext, reserve_route_path};
 use super::policy::{
     NeighborAvailability, classify_route_net_kind, neighbor_congestion_cost, neighbors,
 };
@@ -20,8 +18,8 @@ use super::{
         should_skip_unmapped_sink, sink_requires_all_wires,
     },
     types::{
-        DeviceRouteImage, DeviceRoutePip, RouteNode, RoutedPip, SearchParentStep, SearchState,
-        SiteRouteGraphs, WireId, WireInterner,
+        DeviceRouteImage, DeviceRoutePip, RouteNegotiationStats, RouteNode, RoutedPip,
+        SearchParentStep, SearchState, SiteRouteGraphs, WireId, WireInterner,
     },
     wire::tile_distance,
 };
@@ -46,17 +44,31 @@ struct LoadedRouteResources {
 }
 
 struct RoutingState {
-    pips: Vec<DeviceRoutePip>,
-    notes: Vec<String>,
-    guide_usage: GuideUsageStats,
-    occupied_route_sinks: HashMap<RouteNode, occupancy::SinkClaims>,
-    occupied_route_nodes: HashMap<RouteNode, ResourceClaims>,
-    node_history: occupancy::HistoryTable,
-    sink_history: occupancy::HistoryTable,
+    routes: Vec<NetRouteArtifacts>,
+    claims: ClaimIndex,
+    history: occupancy::HistoryTable,
     present_factor: usize,
     hard_block: bool,
     policy_search: SearchScratch<RouteNode, WireId>,
     guided_search: SearchScratch<GuidedRouteNode, (usize, WireId)>,
+}
+
+#[derive(Default)]
+struct NetRouteArtifacts {
+    pips: Vec<DeviceRoutePip>,
+    notes: Vec<String>,
+    guide_usage: GuideUsageStats,
+}
+
+struct RouteNotes<'a, 'b> {
+    notes: &'a mut Vec<String>,
+    reporter: &'a mut Option<&'b mut dyn StageReporter>,
+}
+
+impl RouteNotes<'_, '_> {
+    fn push(&mut self, note: String) {
+        push_route_note(self.notes, self.reporter, note);
+    }
 }
 
 /// Negotiated-congestion schedule: passes cap, per-pass history increment,
@@ -68,15 +80,13 @@ const PRESENT_FACTOR_GROWTH: usize = 2;
 const PRESENT_FACTOR_CAP: usize = 256;
 
 impl RoutingState {
-    fn new() -> Self {
+    fn new(net_count: usize) -> Self {
         Self {
-            pips: Vec::new(),
-            notes: Vec::new(),
-            guide_usage: GuideUsageStats::default(),
-            occupied_route_sinks: HashMap::default(),
-            occupied_route_nodes: HashMap::default(),
-            node_history: occupancy::HistoryTable::default(),
-            sink_history: occupancy::HistoryTable::default(),
+            routes: (0..net_count)
+                .map(|_| NetRouteArtifacts::default())
+                .collect(),
+            claims: ClaimIndex::new(net_count),
+            history: occupancy::HistoryTable::default(),
             present_factor: PRESENT_FACTOR_INITIAL,
             hard_block: false,
             policy_search: SearchScratch::default(),
@@ -84,14 +94,16 @@ impl RoutingState {
         }
     }
 
-    /// Drop per-pass artifacts so the next negotiation pass starts from a
-    /// clean slate. History and the present factor persist across passes.
-    fn begin_negotiation_pass(&mut self) {
-        self.pips.clear();
-        self.notes.clear();
-        self.guide_usage = GuideUsageStats::default();
-        self.occupied_route_sinks.clear();
-        self.occupied_route_nodes.clear();
+    fn rip_up(&mut self, net_index: usize) {
+        self.claims.rip_up(net_index);
+        self.routes[net_index] = NetRouteArtifacts::default();
+    }
+
+    fn clear_routes(&mut self) {
+        self.claims.clear();
+        self.routes
+            .iter_mut()
+            .for_each(|route| *route = NetRouteArtifacts::default());
     }
 }
 
@@ -155,7 +167,7 @@ fn route_device_design_internal(
     emit_stage_info(reporter, "route", "loading routing resources");
     let mut resources = load_route_resources(arch, arch_path, cil)?;
     let index = DeviceDesignIndex::build(device);
-    let mut state = RoutingState::new();
+    let mut state = RoutingState::new(device.nets.len());
     let tile_cache = TileRouteCache::build(arch, cil, &resources.graphs);
     let mut context = RouteSinkContext {
         arch,
@@ -169,7 +181,6 @@ fn route_device_design_internal(
         .iter()
         .filter(|&&net_index| should_route_device_net(&device.nets[net_index]))
         .count();
-    let progress_interval = (routeable_net_total / 20).max(1);
     emit_stage_info(
         reporter,
         "route",
@@ -180,18 +191,38 @@ fn route_device_design_internal(
         ),
     );
 
-    // Negotiated congestion (PathFinder-style): every pass re-routes all
-    // nets while allowing temporary resource sharing at a rising penalty;
-    // history accumulates on contended resources until the layout is
-    // conflict-free or the pass budget is exhausted.
-    let mut routed_net_count = 0usize;
+    // PathFinder-style negotiation starts with every net, then rips up only
+    // nets touching a contended resource. Unaffected routes and claims stay
+    // live, so later passes cost O(contended routes), not O(all routes).
+    let mut pending = vec![true; device.nets.len()];
     let mut contested_total = 0usize;
+    let mut overuse_total = 0usize;
+    let mut passes_used = 0usize;
+    let mut routed_net_attempts = 0usize;
     let mut converged = false;
+    let mut global_notes = Vec::new();
     for pass in 1..=MAX_NEGOTIATION_PASSES {
-        state.begin_negotiation_pass();
-        routed_net_count = 0;
+        passes_used = pass;
+        let rerouteable_total = net_order
+            .iter()
+            .filter(|&&net_index| {
+                pending[net_index] && should_route_device_net(&device.nets[net_index])
+            })
+            .count();
+        let progress_interval = (rerouteable_total / 20).max(1);
 
+        // Remove the whole affected set before routing any of it, then restore
+        // the repository's stable net order for deterministic results.
         for &net_index in &net_order {
+            if pending[net_index] {
+                state.rip_up(net_index);
+            }
+        }
+        let mut routed_net_count = 0usize;
+        for &net_index in &net_order {
+            if !pending[net_index] {
+                continue;
+            }
             let should_route = should_route_device_net(&device.nets[net_index]);
             route_net(
                 &mut context,
@@ -203,56 +234,28 @@ fn route_device_design_internal(
             );
             if should_route {
                 routed_net_count += 1;
+                routed_net_attempts += 1;
                 if routed_net_count == 1
-                    || routed_net_count == routeable_net_total
+                    || routed_net_count == rerouteable_total
                     || routed_net_count.is_multiple_of(progress_interval)
                 {
                     emit_stage_progress(
                         reporter,
                         "route",
                         format!(
-                            "pass {pass}: routed {}/{} nets ({:.0}%), pips={}, notes={}",
+                            "pass {pass}: routed {}/{} affected nets ({:.0}%)",
                             routed_net_count,
-                            routeable_net_total,
-                            (routed_net_count as f64 / routeable_net_total.max(1) as f64) * 100.0,
-                            state.pips.len(),
-                            state.notes.len()
+                            rerouteable_total,
+                            (routed_net_count as f64 / rerouteable_total.max(1) as f64) * 100.0
                         ),
                     );
                 }
             }
         }
 
-        let contested_nodes: Vec<_> = occupancy::count_contested(&state.occupied_route_nodes)
-            .map(|(key, _)| *key)
-            .collect();
-        let contested_sinks: Vec<_> = occupancy::count_contested(&state.occupied_route_sinks)
-            .map(|(key, _)| *key)
-            .collect();
-        contested_total = contested_nodes.len() + contested_sinks.len();
-
-        if pass == MAX_NEGOTIATION_PASSES {
-            for key in &contested_nodes {
-                let wire_name = context.wires.resolve(key.wire);
-                let node_key = resources.stitched_components.occupancy_key(key);
-                if let Some(c) = state.occupied_route_nodes.get(&node_key) {
-                    emit_stage_info(
-                        reporter,
-                        "route",
-                        format!(
-                            "DEBUG node ({}, {}) {} claimed_by={} origin={:?} others={} history={}",
-                            key.x,
-                            key.y,
-                            wire_name,
-                            c.owner,
-                            c.owner_origin,
-                            c.others,
-                            state.node_history.get(&node_key).unwrap_or(&0)
-                        ),
-                    );
-                }
-            }
-        }
+        let contested = state.claims.contested_resources().collect::<Vec<_>>();
+        contested_total = contested.len();
+        overuse_total = state.claims.overuse_count();
 
         if contested_total == 0 {
             converged = true;
@@ -264,25 +267,25 @@ fn route_device_design_internal(
             break;
         }
 
-        for key in &contested_nodes {
-            occupancy::bump_history(&mut state.node_history, key, HISTORY_INCREMENT);
-        }
-        for key in &contested_sinks {
-            occupancy::bump_history(&mut state.sink_history, key, HISTORY_INCREMENT);
+        pending.fill(false);
+        for resource in contested {
+            for net_index in state.claims.claimant_nets(resource) {
+                pending[net_index] = true;
+            }
+            occupancy::bump_history(&mut state.history, resource, HISTORY_INCREMENT);
         }
         state.present_factor =
             (state.present_factor * PRESENT_FACTOR_GROWTH).min(PRESENT_FACTOR_CAP);
     }
 
-    let _ = routed_net_count;
-
     if !converged {
         push_route_note(
-            &mut state.notes,
+            &mut global_notes,
             reporter,
             format!(
                 "Negotiated routing did not fully converge after \
-                 {MAX_NEGOTIATION_PASSES} passes ({contested_total} contended); \
+                 {MAX_NEGOTIATION_PASSES} passes ({contested_total} contended, \
+                 {overuse_total} overused); \
                  falling back to hard-blocking final pass."
             ),
         );
@@ -290,7 +293,7 @@ fn route_device_design_internal(
         // hard blocking so no two nets share a physical resource in the
         // final result. Nets that cannot find exclusive paths fail here
         // just as they would have under the old single-pass router.
-        state.begin_negotiation_pass();
+        state.clear_routes();
         state.hard_block = true;
         for &net_index in &net_order {
             route_net(
@@ -301,15 +304,38 @@ fn route_device_design_internal(
                 &mut state,
                 reporter,
             );
+            if should_route_device_net(&device.nets[net_index]) {
+                routed_net_attempts += 1;
+            }
         }
         state.hard_block = false;
     }
 
-    state.notes.push(state.guide_usage.summary());
-    emit_stage_info(reporter, "route", state.guide_usage.summary());
+    let mut guide_usage = GuideUsageStats::default();
+    for route in &state.routes {
+        guide_usage.merge(&route.guide_usage);
+    }
+    let guide_summary = guide_usage.summary();
+    emit_stage_info(reporter, "route", &guide_summary);
+
+    let mut pips = Vec::new();
+    let mut notes = global_notes;
+    for net_index in net_order {
+        let route = std::mem::take(&mut state.routes[net_index]);
+        pips.extend(route.pips);
+        notes.extend(route.notes);
+    }
+    notes.push(guide_summary);
+
     Ok(DeviceRouteImage {
-        pips: state.pips,
-        notes: state.notes,
+        pips,
+        notes,
+        negotiation: RouteNegotiationStats {
+            passes_used,
+            final_overuse_count: state.claims.overuse_count(),
+            routed_net_attempts,
+            converged,
+        },
     })
 }
 
@@ -365,20 +391,26 @@ fn route_net(
     state: &mut RoutingState,
     reporter: &mut Option<&mut dyn StageReporter>,
 ) {
-    let Some(mut prepared) = prepare_route_net(
-        context,
-        device,
-        index,
-        net_index,
-        &mut state.notes,
-        reporter,
-    ) else {
-        return;
-    };
-
-    for sink in ordered_net_sinks(prepared.net, prepared.driver_cell) {
-        route_net_sink(context, device, index, &mut prepared, sink, state, reporter);
+    let mut notes = Vec::new();
+    let prepared = prepare_route_net(context, device, index, net_index, &mut notes, reporter);
+    if let Some(mut prepared) = prepared {
+        let mut route_notes = RouteNotes {
+            notes: &mut notes,
+            reporter,
+        };
+        for sink in ordered_net_sinks(prepared.net, prepared.driver_cell) {
+            route_net_sink(
+                context,
+                device,
+                index,
+                &mut prepared,
+                sink,
+                state,
+                &mut route_notes,
+            );
+        }
     }
+    state.routes[net_index].notes = notes;
 }
 
 fn prepare_route_net<'a>(
@@ -496,30 +528,22 @@ fn route_net_sink(
     prepared: &mut PreparedRouteNet<'_>,
     sink: &DeviceEndpoint,
     state: &mut RoutingState,
-    reporter: &mut Option<&mut dyn StageReporter>,
+    route_notes: &mut RouteNotes<'_, '_>,
 ) {
     let sink_cell = match resolve_route_endpoint(device, index, sink) {
         ResolvedRouteEndpoint::Cell(cell) => cell,
         ResolvedRouteEndpoint::Port(port) => {
-            push_route_note(
-                &mut state.notes,
-                reporter,
-                format!(
-                    "Net {} sink {} resolves to device port {} and is not a routable cell.",
-                    prepared.net.name, sink.name, port.port_name
-                ),
-            );
+            route_notes.push(format!(
+                "Net {} sink {} resolves to device port {} and is not a routable cell.",
+                prepared.net.name, sink.name, port.port_name
+            ));
             return;
         }
         ResolvedRouteEndpoint::Unknown => {
-            push_route_note(
-                &mut state.notes,
-                reporter,
-                format!(
-                    "Net {} sink {} is not a routable cell.",
-                    prepared.net.name, sink.name
-                ),
-            );
+            route_notes.push(format!(
+                "Net {} sink {} is not a routable cell.",
+                prepared.net.name, sink.name
+            ));
             return;
         }
     };
@@ -529,14 +553,10 @@ fn route_net_sink(
         if should_skip_unmapped_sink(Some(prepared.driver_cell), sink_cell, sink) {
             return;
         }
-        push_route_note(
-            &mut state.notes,
-            reporter,
-            format!(
-                "Net {} sink {}:{} has no route-sink mapping.",
-                prepared.net.name, sink.name, sink.pin
-            ),
-        );
+        route_notes.push(format!(
+            "Net {} sink {}:{} has no route-sink mapping.",
+            prepared.net.name, sink.name, sink.pin
+        ));
         return;
     }
 
@@ -565,13 +585,11 @@ fn route_net_sink(
         };
 
         let negotiation = NegotiationContext {
-            occupied_route_sinks: &state.occupied_route_sinks,
-            occupied_route_nodes: &state.occupied_route_nodes,
-            node_history: &state.node_history,
-            sink_history: &state.sink_history,
+            claims: &state.claims,
+            history: &state.history,
             present_factor: state.present_factor,
             net_index: prepared.net_index,
-            net_origin: prepared.net.origin,
+            net_origin: prepared.net_origin,
             hard_block: state.hard_block,
         };
         let Some((path, guide_mode)) = route_sink(
@@ -581,18 +599,10 @@ fn route_net_sink(
             &mut state.guided_search,
             &spec,
         ) else {
-            push_route_note(
-                &mut state.notes,
-                reporter,
-                format!(
-                    "Net {} could not find a Rust route from {}:{} to {}:{}.",
-                    prepared.net.name,
-                    prepared.driver.name,
-                    prepared.driver.pin,
-                    sink.name,
-                    sink.pin
-                ),
-            );
+            route_notes.push(format!(
+                "Net {} could not find a Rust route from {}:{} to {}:{}.",
+                prepared.net.name, prepared.driver.name, prepared.driver.pin, sink.name, sink.pin
+            ));
             continue;
         };
         commit_routed_path(context, prepared, state, guide_mode, path);
@@ -622,19 +632,16 @@ fn commit_routed_path(
     guide_mode: GuideRouteMode,
     path: SinkRoutePath,
 ) {
-    state.guide_usage.record(guide_mode);
-    reserve_route_sinks(
-        &mut state.occupied_route_sinks,
+    state.routes[prepared.net_index]
+        .guide_usage
+        .record(guide_mode);
+    reserve_route_path(
+        context.stitched_components,
+        &mut state.claims,
         prepared.net_index,
         prepared.net_origin,
-        &path.pips,
-    );
-    reserve_route_nodes(
-        context.stitched_components,
-        &mut state.occupied_route_nodes,
-        prepared.net_index,
-        prepared.net.origin,
         &path.nodes,
+        &path.pips,
     );
     update_tree_state(prepared, &path.nodes);
 
@@ -642,7 +649,7 @@ fn commit_routed_path(
         if prepared.used_pips.insert((pip.x, pip.y, pip.from, pip.to))
             && let Some(materialized) = context.materialize_pip(pip, &prepared.net.name)
         {
-            state.pips.push(materialized);
+            state.routes[prepared.net_index].pips.push(materialized);
         }
     }
 }
@@ -738,6 +745,15 @@ impl GuideUsageStats {
             GuideRouteMode::Unguided => self.unguided += 1,
             GuideRouteMode::DedicatedClock => self.dedicated_clock += 1,
         }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.ordered += other.ordered;
+        self.strict += other.strict;
+        self.relaxed += other.relaxed;
+        self.fallback += other.fallback;
+        self.unguided += other.unguided;
+        self.dedicated_clock += other.dedicated_clock;
     }
 
     fn summary(&self) -> String {

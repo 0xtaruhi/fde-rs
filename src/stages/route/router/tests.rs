@@ -19,7 +19,7 @@ use crate::route::guide::GuideDistances;
 use crate::route::{
     guide::OrderedGuide,
     heap::{frontier_heap_pop, frontier_heap_push},
-    occupancy::{ResourceClaims, count_contested},
+    occupancy::{ClaimIndex, NegotiationContext, RouteResource, reserve_route_path},
 };
 
 #[test]
@@ -50,60 +50,88 @@ fn same_net_resource_revisits_stay_free_of_contention() {
     let stitched_components = StitchedComponentDb::default();
     let mut wires = WireInterner::default();
     let track = RouteNode::new(5, 7, wires.intern("H6W2"));
-    let key = stitched_components.occupancy_key(&track);
-    let mut claims = HashMap::default();
-    claims.insert(key, ResourceClaims::new(0, NetOrigin::Logical));
+    let mut claims = ClaimIndex::new(1);
 
     // The owning net may re-enter its own resource arbitrarily often:
     // shared multi-sink trees legitimately revisit branches.
-    claims
-        .get_mut(&key)
-        .expect("claims")
-        .claim(0, NetOrigin::Logical);
-    claims
-        .get_mut(&key)
-        .expect("claims")
-        .claim(0, NetOrigin::Logical);
-    assert_eq!(claims.get(&key).expect("claims").others, 0);
-    assert!(count_contested(&claims).next().is_none());
+    for _ in 0..3 {
+        reserve_route_path(
+            &stitched_components,
+            &mut claims,
+            0,
+            NetOrigin::Logical,
+            &[track],
+            &[],
+        );
+    }
+    assert_eq!(claims.contested_resources().count(), 0);
+    assert_eq!(claims.overuse_count(), 0);
 }
 
 #[test]
-fn foreign_net_claims_are_counted_and_priced() {
+fn foreign_net_claims_are_unique_and_priced() {
     let stitched_components = StitchedComponentDb::default();
     let mut wires = WireInterner::default();
     let track = RouteNode::new(5, 7, wires.intern("H6W2"));
     let key = stitched_components.occupancy_key(&track);
-    let mut claims = HashMap::default();
-    claims.insert(key, ResourceClaims::new(0, NetOrigin::Logical));
-
-    claims
-        .get_mut(&key)
-        .expect("claims")
-        .claim(1, NetOrigin::Logical);
-    claims
-        .get_mut(&key)
-        .expect("claims")
-        .claim(1, NetOrigin::Logical);
-    claims
-        .get_mut(&key)
-        .expect("claims")
-        .claim(2, NetOrigin::Logical);
-
-    let record = claims.get(&key).expect("claims");
-    assert_eq!(record.others, 3);
-
-    // Same-net entry pays only history; foreign entry pays present sharing
-    // scaled by contention, plus history.
-    let history = 3;
+    let resource = RouteResource::Node(key);
+    let mut claims = ClaimIndex::new(4);
+    for net in [0, 1, 1, 2] {
+        reserve_route_path(
+            &stitched_components,
+            &mut claims,
+            net,
+            NetOrigin::Logical,
+            &[track],
+            &[],
+        );
+    }
+    assert_eq!(claims.contested_resources().count(), 1);
+    assert_eq!(claims.overuse_count(), 2);
     assert_eq!(
-        record.congestion_penalty(0, NetOrigin::Logical, history, 4),
-        3
+        claims.claimant_nets(resource).collect::<Vec<_>>(),
+        vec![0, 1, 2]
     );
+
+    let history = [(resource, 3)].into_iter().collect();
+    let negotiation = NegotiationContext {
+        claims: &claims,
+        history: &history,
+        present_factor: 4,
+        net_index: 3,
+        net_origin: NetOrigin::Logical,
+        hard_block: false,
+    };
+    assert_eq!(negotiation.penalty(resource, None), 3 + 4 * 3);
+}
+
+#[test]
+fn ripping_up_the_first_claimant_rebuilds_contention_from_remaining_nets() {
+    let stitched_components = StitchedComponentDb::default();
+    let mut wires = WireInterner::default();
+    let track = RouteNode::new(5, 7, wires.intern("H6W2"));
+    let resource = RouteResource::Node(stitched_components.occupancy_key(&track));
+    let mut claims = ClaimIndex::new(3);
+    for net in 0..3 {
+        reserve_route_path(
+            &stitched_components,
+            &mut claims,
+            net,
+            NetOrigin::Logical,
+            &[track],
+            &[],
+        );
+    }
+
+    claims.rip_up(0);
     assert_eq!(
-        record.congestion_penalty(1, NetOrigin::Logical, history, 4),
-        3 + 4 * (3 + 1)
+        claims.claimant_nets(resource).collect::<Vec<_>>(),
+        vec![1, 2]
     );
+    assert_eq!(claims.overuse_count(), 1);
+
+    claims.rip_up(2);
+    assert_eq!(claims.contested_resources().count(), 0);
 }
 
 #[test]
@@ -132,19 +160,21 @@ fn real_arch_stitched_component_claims_are_contested_across_tiles() {
         components.occupancy_key(&lower)
     );
 
-    let mut claims = HashMap::default();
+    let mut claims = ClaimIndex::new(3);
     for (node, net) in [(&upper, 1usize), (&lower, 2usize)] {
-        let key = components.occupancy_key(node);
-        claims
-            .entry(key)
-            .and_modify(|c: &mut ResourceClaims| c.claim(net, NetOrigin::Logical))
-            .or_insert_with(|| ResourceClaims::new(net, NetOrigin::Logical));
+        reserve_route_path(
+            &components,
+            &mut claims,
+            net,
+            NetOrigin::Logical,
+            &[*node],
+            &[],
+        );
     }
     let _ = tree_nodes;
 
-    let contested: Vec<_> = count_contested(&claims).collect();
-    assert_eq!(contested.len(), 1);
-    assert_eq!(contested[0].1, 1);
+    assert_eq!(claims.contested_resources().count(), 1);
+    assert_eq!(claims.overuse_count(), 1);
 }
 
 #[test]
@@ -300,11 +330,11 @@ fn dedicated_clock_search_reaches_real_arch_clock_sink() {
     };
 
     let mut search = super::SearchScratch::default();
+    let claims = ClaimIndex::new(1);
+    let history = HashMap::default();
     let negotiation = super::occupancy::NegotiationContext {
-        occupied_route_sinks: &HashMap::default(),
-        occupied_route_nodes: &HashMap::default(),
-        node_history: &HashMap::default(),
-        sink_history: &HashMap::default(),
+        claims: &claims,
+        history: &history,
         present_factor: 1,
         net_index: 0,
         net_origin: crate::domain::NetOrigin::Logical,
