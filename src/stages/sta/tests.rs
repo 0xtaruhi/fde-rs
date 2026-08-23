@@ -256,6 +256,7 @@ fn sta_delay_model_overrides_distance_fallback() -> Result<()> {
         width: 2,
         height: 2,
         values: vec![vec![0.5, 0.6], vec![0.7, 0.8]],
+        ..Default::default()
     };
 
     let without_model = run(design.clone(), &StaOptions::default())?.value;
@@ -320,6 +321,7 @@ fn sta_nan_delay_surfaces_typed_error() {
         width: 1,
         height: 1,
         values: vec![vec![f64::NAN]],
+        ..Default::default()
     };
 
     let error = run(
@@ -397,4 +399,21 @@ fn sta_reporter_receives_stage_events() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn intrinsic_cell_delay_follows_overridable_cell_delays() {
+    use crate::resource::DelayModel;
+
+    let lut = Cell::lut("lut0", "LUT4").with_input("A", "a");
+
+    // Legacy defaults: 0.15 base + 0.04 per input for a single-input LUT.
+    let default = super::delay::intrinsic_cell_delay_ns(&lut, None);
+    assert!((default - 0.19).abs() < 1e-9);
+
+    let mut model = DelayModel::default();
+    model.cell_delays.lut_base_ns = 0.5;
+    model.cell_delays.lut_per_input_ns = 0.01;
+    let overridden = super::delay::intrinsic_cell_delay_ns(&lut, Some(&model));
+    assert!((overridden - 0.51).abs() < 1e-9);
 }

@@ -38,15 +38,17 @@ pub(crate) fn net_delay_ns(
     }
 }
 
-pub(crate) fn intrinsic_cell_delay_ns(cell: &Cell) -> f64 {
+pub(crate) fn intrinsic_cell_delay_ns(cell: &Cell, model: Option<&DelayModel>) -> f64 {
+    let delays = model.map_or_else(Default::default, |model| model.cell_delays);
+    let input_count = cell.inputs.len() as f64;
     if cell.is_lut() {
-        0.15 + cell.inputs.len() as f64 * 0.04
+        delays.lut_base_ns + input_count * delays.lut_per_input_ns
     } else if cell.is_buffer() {
-        0.04
+        delays.buffer_delay_ns
     } else if cell.is_sequential() {
-        0.1
+        delays.ff_delay_ns
     } else {
-        0.08 + cell.inputs.len() as f64 * 0.02
+        delays.other_base_ns + input_count * delays.other_per_input_ns
     }
 }
 
