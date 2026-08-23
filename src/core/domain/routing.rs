@@ -1,3 +1,15 @@
+//! Device wire-name adapter for the FDE fabric.
+//!
+//! This module is the SINGLE place that knows how FDE routing wires are
+//! spelled ("H6W3", "V6N2", "LEFT_LLH4", "S0_F_B1", ...). It classifies each
+//! name once into [`WireNameMetadata`], which `WireInterner` caches; every
+//! downstream algorithm (router, policies, costs) consumes that cached
+//! metadata and never re-matches strings.
+//!
+//! To retarget the flow to a different fabric, replace the predicate bodies
+//! below (or back them with a data table loaded from the architecture
+//! description) - nothing outside this module needs to change.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CanonicalWireFamily {
     E,

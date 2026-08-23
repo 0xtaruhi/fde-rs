@@ -24,19 +24,26 @@ pub use net::NetOrigin;
 pub use pin::PinRole;
 pub use primitive::{ConstantKind, PrimitiveKind};
 #[cfg(test)]
-pub(crate) use routing::is_block_ram_clock_sink_wire_name;
 #[cfg(test)]
-pub(crate) use routing::parse_canonical_indexed_wire;
+pub(crate) use routing::{is_block_ram_clock_sink_wire_name, parse_canonical_indexed_wire};
+// Raw wire-name predicates are implementation details of
+// `routing::wire_name_metadata`. Production code must consume the cached
+// `WireNameMetadata` from `WireInterner`; the re-exports below exist only so
+// tests can pin down the classification rules themselves.
 pub(crate) use routing::{
     CanonicalWireFamily, WireNameMetadata, should_skip_site_local_route_arc, wire_name_metadata,
 };
 pub use routing::{
-    SliceControlWireKind, SliceOutputWireKind, is_clock_distribution_wire_name,
-    is_clock_sink_wire_name, is_dedicated_clock_wire_name, is_directional_channel_wire_name,
-    is_hex_like_wire_name, is_long_wire_name, is_pad_stub_wire_name, normalized_slice_site_name,
-    output_wire_index, parse_pin_map_indices, pin_map_property_name, sink_output_preference,
-    slice_control_wire_name, slice_lut_input_wire_prefix, slice_lut_output_wire_name,
-    slice_output_wire_kind, slice_register_data_wire_name, slice_register_output_wire_name,
+    SliceControlWireKind, SliceOutputWireKind, normalized_slice_site_name, output_wire_index,
+    parse_pin_map_indices, pin_map_property_name, sink_output_preference, slice_control_wire_name,
+    slice_lut_input_wire_prefix, slice_lut_output_wire_name, slice_output_wire_kind,
+    slice_register_data_wire_name, slice_register_output_wire_name,
+};
+#[cfg(test)]
+pub(crate) use routing::{
+    is_clock_distribution_wire_name, is_clock_sink_wire_name, is_dedicated_clock_wire_name,
+    is_directional_channel_wire_name, is_hex_like_wire_name, is_long_wire_name,
+    is_pad_stub_wire_name,
 };
 pub use sequential::{SequentialCellType, SequentialInitValue};
 pub use site::{SiteKind, SliceSequentialConfigKey, SliceSlot};
