@@ -429,6 +429,7 @@ fn route_net_sink(
         let spec = SinkRouteSpec {
             net_index: prepared.net_index,
             net_origin: prepared.net_origin,
+            criticality: prepared.net.criticality,
             net_kind: prepared.net_kind,
             strict_clock_sink: prepared.net_kind == RouteNetKind::DedicatedClock
                 && sink_wires
@@ -665,6 +666,7 @@ pub(super) struct SinkRouteSpec<'a> {
     pub(super) net_origin: NetOrigin,
     pub(super) net_kind: RouteNetKind,
     pub(super) strict_clock_sink: bool,
+    pub(super) criticality: f64,
     pub(super) ordered_guide: &'a OrderedGuide,
     pub(super) guide_distances: &'a GuideDistances,
     pub(super) roots: &'a [RouteNode],

@@ -193,6 +193,9 @@ pub struct DeviceNet {
     pub driver: Option<DeviceEndpoint>,
     pub sinks: Vec<DeviceEndpoint>,
     pub origin: NetOrigin,
+    /// Timing criticality inherited from the logical net (0.0 = default).
+    #[serde(default)]
+    pub criticality: f64,
     #[serde(default)]
     pub guide_tiles: Vec<(usize, usize)>,
     #[serde(default)]
