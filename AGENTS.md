@@ -58,34 +58,27 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Keep string handling at parsing and reporting boundaries; do not add new raw string branching in core stage logic when a typed enum or helper can model it.
 - Prefer semantic helper modules in `domain/` over repeating `eq_ignore_ascii_case`, `to_ascii_lowercase`, or string literal matches across stage code.
 
-## Algorithm modernization status (2026-08-22)
+## Algorithm modernization status (2026-08-22, COMPLETE)
 
-Placement is classic simulated annealing (swap moves, HPWL+timing cost,
-incremental evaluation, parallel candidate scoring). Routing is a
-single-pass ordered A* per sink with hard occupancy rejection - NOT
-PathFinder: there is no negotiated congestion, no history cost, no
-present sharing. The "STA" stage computes forward arrivals only; its
-required-time/slack numbers use the global critical path for every node.
+All four planned upgrades have landed on the algorithm-modernization branch:
 
-Landed upgrades:
+1. Negotiated congestion routing (PathFinder-style): ResourceClaims track
+   owner + foreign-claim counts per resource; searches allow temporary
+   sharing priced by present factor x contention + accumulated history;
+   passes repeat until conflict-free (32-pass cap, non-convergence is
+   reported as a route note).
+2. Timing-driven route costs: net criticality discounts site-local node
+   costs by up to 25% during search. Net ORDER is deliberately untouched -
+   low-fanout-first prevents local-escape starvation.
+3. Real backward required-time propagation in STA: graph sinks are seeded
+   with the worst arrival and requirements relax upstream, giving true
+   per-node slacks that distinguish parallel branches.
+4. Adaptive SA placement: Relocate moves join Swap with acceptance-driven
+   weight rebalancing every 128 trials, plus gentle reheat when a 256-trial
+   window closes below the acceptance floor.
 
-1. Timing-driven route costs (PR #11): net criticality from the analysis
-   stage now discounts site-local node costs by up to 25% during search.
-   Net ORDER is deliberately untouched - the low-fanout-first order
-   prevents local-escape starvation (see add16-folded-check below).
-
-Next steps, in ROI order:
-
-1. Negotiated congestion in the router (PathFinder-style history +
-   present-sharing + iterate-until-legal). This removes net-order
-   dependence and unlocks dense designs. Requires allowing occupied
-   neighbors with penalty costs during search plus a final legality
-   pass; keep clock-legality filters as-is (they are legality, not
-   congestion). Verify against settling-immune board cases.
-2. Real backward slack propagation in STA so per-endpoint criticality
-   feeds placement AND routing instead of topological proxies.
-3. SA move diversity + acceptance-adaptive schedule.
-4. Analytic initial placement before annealing.
+Initial placement was already analytic (connectivity-weighted greedy toward
+weighted centroids), so no change was needed there.
 
 Note on oracles: after the VeriComm continuous-clock finding (below),
 board validation must use settling-immune designs or Rust-vs-C++
