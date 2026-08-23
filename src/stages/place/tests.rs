@@ -39,6 +39,7 @@ fn mini_delay() -> DelayModel {
             vec![0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
             vec![0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
         ],
+        ..Default::default()
     }
 }
 
@@ -99,6 +100,7 @@ fn synthetic_delay(width: usize, height: usize) -> DelayModel {
         width,
         height,
         values,
+        ..Default::default()
     }
 }
 

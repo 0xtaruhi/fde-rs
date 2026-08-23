@@ -63,7 +63,7 @@ pub(crate) fn compute_arrivals(
                 let net_delay = net_delay_ns(design, &index, net, arch, delay);
                 input_arrival = input_arrival.max(src_arrival + net_delay);
             }
-            let output_arrival = input_arrival + intrinsic_cell_delay_ns(cell);
+            let output_arrival = input_arrival + intrinsic_cell_delay_ns(cell, delay);
             for output in &cell.outputs {
                 let key = cell_arrival_key(cell_id, &output.port);
                 if output_arrival > *arrival.get(&key).unwrap_or(&-1.0) {

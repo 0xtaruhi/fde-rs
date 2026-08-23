@@ -118,7 +118,7 @@ pub(crate) fn build_timing_graph(
             continue;
         }
         let cell_id = cell_index.into();
-        let cell_delay = intrinsic_cell_delay_ns(cell);
+        let cell_delay = intrinsic_cell_delay_ns(cell, delay);
         for input in &cell.inputs {
             let from = cell_arrival_key(cell_id, &input.port);
             for output in &cell.outputs {
