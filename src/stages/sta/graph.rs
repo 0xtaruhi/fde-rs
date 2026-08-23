@@ -94,7 +94,7 @@ pub(crate) fn build_timing_graph(
     design: &Design,
     index: &DesignIndex<'_>,
     arrival: &ArrivalMap,
-    summary: &TimingSummary,
+    _summary: &TimingSummary,
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
 ) -> TimingGraph {
