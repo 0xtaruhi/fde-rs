@@ -417,3 +417,66 @@ fn intrinsic_cell_delay_follows_overridable_cell_delays() {
     let overridden = super::delay::intrinsic_cell_delay_ns(&lut, Some(&model));
     assert!((overridden - 0.51).abs() < 1e-9);
 }
+
+#[test]
+fn backward_slack_distinguishes_parallel_branches() -> Result<()> {
+    let artifact = run(build_fanin_design(), &StaOptions::default())?.value;
+
+    let graph = &artifact.graph;
+    let slack_of = |id: &str| {
+        graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| node.slack_ns)
+            .unwrap_or_else(|| panic!("missing node {id}"))
+    };
+
+    // Slow branch (b_net, 5 units -> 0.40 arrival + 0.23 cell arc) consumes
+    // the whole reference period -> zero slack; the faster a_net branch keeps
+    // exactly the skew between the two arrivals as positive slack.
+    let slow = slack_of("cell:u0:B");
+    let fast = slack_of("cell:u0:A");
+    assert!((slow - 0.0).abs() < 1e-9, "slow branch slack {slow}");
+    assert!((fast - 0.08).abs() < 1e-9, "fast branch slack {fast}");
+    assert!(fast > slow);
+
+    Ok(())
+}
+
+fn build_fanin_design() -> Design {
+    Design {
+        name: "sta-slack".to_string(),
+        stage: "routed".to_string(),
+        ports: vec![
+            Port::input("in_a").at(0, 0),
+            Port::input("in_b").at(0, 5),
+            Port::output("out").at(4, 2),
+        ],
+        cells: vec![
+            Cell::lut("u0", "LUT4")
+                .with_input("A", "a_net")
+                .with_input("B", "b_net")
+                .with_output("O", "out_net")
+                .in_cluster("clb0"),
+        ],
+        nets: vec![
+            Net::new("a_net")
+                .with_driver(Endpoint::port("in_a", "IN"))
+                .with_sink(Endpoint::cell("u0", "A")),
+            Net::new("b_net")
+                .with_driver(Endpoint::port("in_b", "IN"))
+                .with_sink(Endpoint::cell("u0", "B")),
+            Net::new("out_net")
+                .with_driver(Endpoint::cell("u0", "O"))
+                .with_sink(Endpoint::port("out", "OUT")),
+        ],
+        clusters: vec![
+            Cluster::logic("clb0")
+                .with_member("u0")
+                .with_capacity(1)
+                .at(2, 2),
+        ],
+        ..Design::default()
+    }
+}

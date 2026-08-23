@@ -165,8 +165,47 @@ pub(super) fn candidate_targets(
     width: usize,
     height: usize,
     rng: &mut ChaCha8Rng,
+    move_kind: super::solver::MoveKind,
 ) -> CandidateTargets {
     let mut targets = CandidateTargets::new();
+    let focus_occupied_elsewhere = |point: Point| -> bool {
+        placements
+            .iter()
+            .enumerate()
+            .any(|(index, placed)| index != focus.index() && *placed == Some(point))
+    };
+
+    if move_kind == super::solver::MoveKind::Relocate {
+        // Relocate move: only propose EMPTY sites so the focus cluster moves
+        // without displacing anyone. Falls back to the classic swap
+        // candidate set when no free site is reachable nearby.
+        let mut relocated = CandidateTargets::new();
+        if focus_kind == ClusterKind::BlockRam {
+            for site in sites {
+                if !focus_occupied_elsewhere(*site) {
+                    push_unique(&mut relocated, *site);
+                }
+            }
+        } else {
+            for anchor in [
+                graph.weighted_centroid(focus, placements),
+                model.signal_centroid(focus, placements),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                for (nearby, _rank) in nearby_sites(anchor, site_mask, width, height, 2) {
+                    if !focus_occupied_elsewhere(nearby) {
+                        push_unique(&mut relocated, nearby);
+                    }
+                }
+            }
+        }
+        if !relocated.is_empty() {
+            return relocated;
+        }
+        // fall through to the classic swap candidate generation below
+    }
     if let Some(current) = placements.get(focus.index()).copied().flatten() {
         push_unique(&mut targets, current);
         extend_best_sites(

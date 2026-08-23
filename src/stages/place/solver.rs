@@ -30,6 +30,111 @@ const PLATEAU_EARLY_EXIT_MIN_MOVABLE_CLUSTERS: usize = 512;
 const PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO: f64 = 0.60;
 const PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT: f64 = 0.0005;
 
+/// Trials between adaptive move-weight rebalancing passes.
+const ADAPTIVE_REBALANCE_INTERVAL: usize = 128;
+/// Clamp for the swap-vs-relocate preference so neither kind starves.
+const MOVE_WEIGHT_FLOOR: f64 = 0.1;
+/// Rolling acceptance window used by the gentle-reheat heuristic.
+const ACCEPTANCE_WINDOW: u32 = 256;
+/// Below this window acceptance ratio, mildly reheat once to escape shallow
+/// local minima instead of freezing in place.
+const REHEAT_ACCEPTANCE_FLOOR: f64 = 0.04;
+const REHEAT_FACTOR: f64 = 1.10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MoveKind {
+    Swap,
+    Relocate,
+}
+
+/// Adaptive move-kind weighting plus rolling acceptance statistics.
+#[derive(Debug)]
+struct AdaptiveMoves {
+    swap_weight: f64,
+    attempts: [u32; 2],
+    accepts: [u32; 2],
+    since_rebalance: usize,
+    window_attempts: u32,
+    window_accepts: u32,
+    /// Set when an acceptance window closes; consumed by the scheduler.
+    pending_window_ratio: Option<f64>,
+}
+
+impl Default for AdaptiveMoves {
+    fn default() -> Self {
+        Self {
+            swap_weight: 0.5,
+            attempts: [0; 2],
+            accepts: [0; 2],
+            since_rebalance: 0,
+            window_attempts: 0,
+            window_accepts: 0,
+            pending_window_ratio: None,
+        }
+    }
+}
+
+impl AdaptiveMoves {
+    fn pick_kind(&self, rng: &mut ChaCha8Rng) -> MoveKind {
+        if rng.random::<f64>() < self.swap_weight {
+            MoveKind::Swap
+        } else {
+            MoveKind::Relocate
+        }
+    }
+
+    fn record(&mut self, kind: MoveKind, accepted: bool) {
+        let slot = match kind {
+            MoveKind::Swap => 0,
+            MoveKind::Relocate => 1,
+        };
+        self.attempts[slot] += 1;
+        self.window_attempts += 1;
+        if accepted {
+            self.accepts[slot] += 1;
+            self.window_accepts += 1;
+        }
+        self.since_rebalance += 1;
+
+        if self.since_rebalance >= ADAPTIVE_REBALANCE_INTERVAL {
+            self.rebalance();
+        }
+        if self.window_attempts >= ACCEPTANCE_WINDOW {
+            self.pending_window_ratio =
+                Some(self.window_accepts as f64 / self.window_attempts as f64);
+            self.window_attempts = 0;
+            self.window_accepts = 0;
+        }
+    }
+
+    /// Acceptance ratio of the last closed window, if any.
+    fn take_window_ratio(&mut self) -> Option<f64> {
+        self.pending_window_ratio.take()
+    }
+
+    /// VPR-style rebalance: shift weight toward the move kind with the higher
+    /// recent acceptance ratio, clamped so both kinds stay alive.
+    fn rebalance(&mut self) {
+        self.since_rebalance = 0;
+        let rate = |slot: usize| {
+            let attempts = self.attempts[slot] as f64;
+            if attempts <= 0.0 {
+                return 0.0;
+            }
+            f64::from(self.accepts[slot]) / attempts
+        };
+        let swap_rate = rate(0);
+        let relocate_rate = rate(1);
+        if swap_rate + relocate_rate <= f64::EPSILON {
+            return;
+        }
+        let target = swap_rate / (swap_rate + relocate_rate);
+        self.swap_weight = target
+            .clamp(1.0 - MOVE_WEIGHT_FLOOR * 9.0, MOVE_WEIGHT_FLOOR * 9.0)
+            .clamp(MOVE_WEIGHT_FLOOR, 1.0 - MOVE_WEIGHT_FLOOR);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PlacementSolution {
     pub(crate) placements: Vec<Option<Point>>,
@@ -314,6 +419,7 @@ fn choose_focus_and_targets(
     placements: &[Option<Point>],
     focus_sampler: &FocusSampler,
     rng: &mut ChaCha8Rng,
+    move_kind: MoveKind,
 ) -> Result<(ClusterId, CandidateTargets)> {
     let focus = choose_focus(focus_sampler, rng)
         .ok_or_else(|| anyhow!("missing movable cluster during placement"))?;
@@ -329,6 +435,7 @@ fn choose_focus_and_targets(
         context.options.arch.width,
         context.options.arch.height,
         rng,
+        move_kind,
     );
     Ok((focus, targets))
 }
@@ -535,6 +642,7 @@ fn solve_incremental(
     let iterations = anneal_iterations(context);
     let mut temperature = anneal_temperature(state.metrics.total, context.movable.len());
     let mut stall = 0usize;
+    let mut moves = AdaptiveMoves::default();
     let mut plateau_exit =
         PlateauExitState::new(iterations, context.movable.len(), best.metrics.total);
     emit_stage_info(
@@ -558,11 +666,13 @@ fn solve_incremental(
                 &best.metrics,
             );
         }
+        let move_kind = moves.pick_kind(&mut rng);
         let (focus, candidates) = choose_focus_and_targets(
             context,
             state.evaluator.placements(),
             &focus_sampler,
             &mut rng,
+            move_kind,
         )?;
         let best_trial = best_incremental_trial(
             context,
@@ -573,6 +683,7 @@ fn solve_incremental(
         );
 
         let Some(trial) = best_trial else {
+            moves.record(move_kind, false);
             continue;
         };
         let trial_metrics = trial.metrics().clone();
@@ -582,6 +693,7 @@ fn solve_incremental(
             trial_metrics.total,
             temperature,
         );
+        moves.record(move_kind, accept);
 
         if accept {
             state.evaluator.apply_candidate(trial);
@@ -606,6 +718,16 @@ fn solve_incremental(
         }
 
         temperature = cool_temperature(temperature, step);
+        if moves
+            .take_window_ratio()
+            .is_some_and(|ratio| ratio < REHEAT_ACCEPTANCE_FLOOR)
+        {
+            // Gentle reheat: the annealer froze mid-run, back off slightly.
+            temperature = (temperature * REHEAT_FACTOR).min(anneal_temperature(
+                state.metrics.total,
+                context.movable.len(),
+            ));
+        }
         if plateau_exit.should_stop(step, temperature, best.metrics.total) {
             emit_stage_info(
                 reporter,
@@ -736,6 +858,7 @@ fn solve_full(
     let iterations = anneal_iterations(context);
     let mut temperature = anneal_temperature(state.metrics.total, context.movable.len());
     let mut stall = 0usize;
+    let mut moves = AdaptiveMoves::default();
     let mut plateau_exit =
         PlateauExitState::new(iterations, context.movable.len(), best.metrics.total);
     emit_stage_info(
@@ -759,8 +882,9 @@ fn solve_full(
                 &best.metrics,
             );
         }
+        let move_kind = moves.pick_kind(&mut rng);
         let (focus, candidates) =
-            choose_focus_and_targets(context, &state.current, &focus_sampler, &mut rng)?;
+            choose_focus_and_targets(context, &state.current, &focus_sampler, &mut rng, move_kind)?;
         let best_trial = best_full_trial(
             context,
             &state.current,
@@ -771,6 +895,7 @@ fn solve_full(
         );
 
         let Some((trial_updates, trial_metrics)) = best_trial else {
+            moves.record(move_kind, false);
             continue;
         };
         let accept = accept_trial(
@@ -779,6 +904,7 @@ fn solve_full(
             trial_metrics.total,
             temperature,
         );
+        moves.record(move_kind, accept);
 
         if accept {
             apply_updates_in_place(&mut state.current, &trial_updates);
@@ -804,6 +930,16 @@ fn solve_full(
         }
 
         temperature = cool_temperature(temperature, step);
+        if moves
+            .take_window_ratio()
+            .is_some_and(|ratio| ratio < REHEAT_ACCEPTANCE_FLOOR)
+        {
+            // Gentle reheat: the annealer froze mid-run, back off slightly.
+            temperature = (temperature * REHEAT_FACTOR).min(anneal_temperature(
+                state.metrics.total,
+                context.movable.len(),
+            ));
+        }
         if plateau_exit.should_stop(step, temperature, best.metrics.total) {
             emit_stage_info(
                 reporter,
@@ -1171,5 +1307,49 @@ mod tests {
             }
         }
         assert!(triggered);
+    }
+}
+
+#[cfg(test)]
+mod adaptive_tests {
+    use super::{AdaptiveMoves, MoveKind, REHEAT_ACCEPTANCE_FLOOR};
+
+    #[test]
+    fn same_net_style_repeats_never_shift_weights_without_acceptance() {
+        let mut moves = AdaptiveMoves::default();
+        for _ in 0..512 {
+            moves.record(MoveKind::Swap, false);
+        }
+        // No accepted trials anywhere: rebalancing must not move the weight.
+        assert!((moves.swap_weight - 0.5).abs() < f64::EPSILON);
+        // Frozen acceptance triggers the reheat signal on window close.
+        let ratio = moves.take_window_ratio();
+        assert!(ratio.is_some_and(|r| r < REHEAT_ACCEPTANCE_FLOOR));
+    }
+
+    #[test]
+    fn rebalance_leans_toward_the_successful_move_kind() {
+        let mut moves = AdaptiveMoves::default();
+        // Relocations succeed consistently, swaps never do.
+        for _ in 0..8 {
+            moves.record(MoveKind::Relocate, true);
+            moves.record(MoveKind::Swap, false);
+        }
+        moves.rebalance();
+        assert!(moves.swap_weight < 0.5, "swap weight {}", moves.swap_weight);
+    }
+
+    #[test]
+    fn clamps_keep_both_move_kinds_alive() {
+        let mut moves = AdaptiveMoves::default();
+        for _ in 0..64 {
+            moves.record(MoveKind::Relocate, true);
+        }
+        moves.rebalance();
+        assert!(
+            moves.swap_weight >= 0.1,
+            "swap weight {}",
+            moves.swap_weight
+        );
     }
 }

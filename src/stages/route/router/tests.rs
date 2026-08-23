@@ -19,7 +19,7 @@ use crate::route::guide::GuideDistances;
 use crate::route::{
     guide::OrderedGuide,
     heap::{frontier_heap_pop, frontier_heap_push},
-    occupancy::{RouteSinkOwner, route_node_is_available, route_sink_is_available},
+    occupancy::{ResourceClaims, count_contested},
 };
 
 #[test]
@@ -46,168 +46,68 @@ fn ordered_guide_rejects_skipping_across_turns() {
 }
 
 #[test]
-fn route_sink_availability_keeps_configurable_sinks_single_owned() {
-    let mut wires = WireInterner::default();
-    let current_wire = wires.intern("CURRENT");
-    let neighbor_wire = wires.intern("NEXT");
-    let other_wire = wires.intern("OTHER");
-    let current = RouteNode::new(7, 9, current_wire);
-    let neighbor = RouteNode::new(7, 9, neighbor_wire);
-    let mut occupied = HashMap::default();
-
-    assert!(route_sink_is_available(
-        &occupied,
-        1,
-        NetOrigin::Logical,
-        &current,
-        &neighbor,
-        Some(0),
-    ));
-
-    occupied.insert(
-        RouteNode::new(7, 9, neighbor_wire),
-        RouteSinkOwner {
-            net_index: 1,
-            origin: NetOrigin::Logical,
-            from: current_wire,
-        },
-    );
-    assert!(route_sink_is_available(
-        &occupied,
-        1,
-        NetOrigin::Logical,
-        &current,
-        &neighbor,
-        Some(0),
-    ));
-
-    occupied.insert(
-        RouteNode::new(7, 9, neighbor_wire),
-        RouteSinkOwner {
-            net_index: 2,
-            origin: NetOrigin::Logical,
-            from: other_wire,
-        },
-    );
-    assert!(!route_sink_is_available(
-        &occupied,
-        1,
-        NetOrigin::Logical,
-        &current,
-        &neighbor,
-        Some(0),
-    ));
-    assert!(route_sink_is_available(
-        &occupied,
-        1,
-        NetOrigin::Logical,
-        &current,
-        &neighbor,
-        None,
-    ));
-}
-
-#[test]
-fn synthetic_gclk_owner_can_share_same_programmable_sink_arc() {
-    let mut wires = WireInterner::default();
-    let current_wire = wires.intern("GCLK_PW");
-    let neighbor_wire = wires.intern("GCLK");
-    let current = RouteNode::new(34, 27, current_wire);
-    let neighbor = RouteNode::new(34, 27, neighbor_wire);
-    let occupied = [(
-        RouteNode::new(34, 27, neighbor_wire),
-        RouteSinkOwner {
-            net_index: 0,
-            origin: NetOrigin::SyntheticGclk,
-            from: current_wire,
-        },
-    )]
-    .into_iter()
-    .collect::<HashMap<_, _>>();
-
-    assert!(route_sink_is_available(
-        &occupied,
-        1,
-        NetOrigin::Logical,
-        &current,
-        &neighbor,
-        Some(0),
-    ));
-    assert!(route_sink_is_available(
-        &occupied,
-        2,
-        NetOrigin::SyntheticGclk,
-        &current,
-        &neighbor,
-        Some(0),
-    ));
-}
-
-#[test]
-fn synthetic_gclk_sharing_still_requires_matching_source_wire() {
-    let mut wires = WireInterner::default();
-    let source_wire = wires.intern("GCLK_PW");
-    let other_source_wire = wires.intern("OTHER_PW");
-    let neighbor_wire = wires.intern("GCLK");
-    let current = RouteNode::new(34, 27, other_source_wire);
-    let neighbor = RouteNode::new(34, 27, neighbor_wire);
-    let occupied = [(
-        RouteNode::new(34, 27, neighbor_wire),
-        RouteSinkOwner {
-            net_index: 0,
-            origin: NetOrigin::SyntheticGclk,
-            from: source_wire,
-        },
-    )]
-    .into_iter()
-    .collect::<HashMap<_, _>>();
-
-    assert!(!route_sink_is_available(
-        &occupied,
-        1,
-        NetOrigin::Logical,
-        &current,
-        &neighbor,
-        Some(0),
-    ));
-}
-
-#[test]
-fn all_route_nodes_are_reserved_across_nets() {
+fn same_net_resource_revisits_stay_free_of_contention() {
+    let stitched_components = StitchedComponentDb::default();
     let mut wires = WireInterner::default();
     let track = RouteNode::new(5, 7, wires.intern("H6W2"));
-    let site_sink = RouteNode::new(5, 7, wires.intern("S0_F_B1"));
-    let occupied = [(track, 0usize), (site_sink, 0usize)]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
-    let tree_nodes = HashSet::default();
-    let stitched_components = StitchedComponentDb::default();
+    let key = stitched_components.occupancy_key(&track);
+    let mut claims = HashMap::default();
+    claims.insert(key, ResourceClaims::new(0, NetOrigin::Logical));
 
-    assert!(!route_node_is_available(
-        &stitched_components,
-        &occupied,
-        1,
-        &track,
-        &tree_nodes,
-    ));
-    assert!(route_node_is_available(
-        &stitched_components,
-        &occupied,
-        0,
-        &track,
-        &tree_nodes,
-    ));
-    assert!(!route_node_is_available(
-        &stitched_components,
-        &occupied,
-        1,
-        &site_sink,
-        &tree_nodes,
-    ));
+    // The owning net may re-enter its own resource arbitrarily often:
+    // shared multi-sink trees legitimately revisit branches.
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(0, NetOrigin::Logical);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(0, NetOrigin::Logical);
+    assert_eq!(claims.get(&key).expect("claims").others, 0);
+    assert!(count_contested(&claims).next().is_none());
 }
 
 #[test]
-fn real_arch_stitched_component_occupancy_blocks_shared_llh_track_across_tiles() {
+fn foreign_net_claims_are_counted_and_priced() {
+    let stitched_components = StitchedComponentDb::default();
+    let mut wires = WireInterner::default();
+    let track = RouteNode::new(5, 7, wires.intern("H6W2"));
+    let key = stitched_components.occupancy_key(&track);
+    let mut claims = HashMap::default();
+    claims.insert(key, ResourceClaims::new(0, NetOrigin::Logical));
+
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(1, NetOrigin::Logical);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(1, NetOrigin::Logical);
+    claims
+        .get_mut(&key)
+        .expect("claims")
+        .claim(2, NetOrigin::Logical);
+
+    let record = claims.get(&key).expect("claims");
+    assert_eq!(record.others, 3);
+
+    // Same-net entry pays only history; foreign entry pays present sharing
+    // scaled by contention, plus history.
+    let history = 3;
+    assert_eq!(
+        record.congestion_penalty(0, NetOrigin::Logical, history, 4),
+        3
+    );
+    assert_eq!(
+        record.congestion_penalty(1, NetOrigin::Logical, history, 4),
+        3 + 4 * (3 + 1)
+    );
+}
+
+#[test]
+fn real_arch_stitched_component_claims_are_contested_across_tiles() {
     let Some(bundle) =
         ResourceBundle::discover_from(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))).ok()
     else {
@@ -225,30 +125,26 @@ fn real_arch_stitched_component_occupancy_blocks_shared_llh_track_across_tiles()
 
     let upper = RouteNode::new(4, 53, wires.intern("RIGHT_LLH3"));
     let lower = RouteNode::new(4, 5, wires.intern("LLH0"));
-    let tree_nodes = HashSet::default();
+    let tree_nodes: HashSet<RouteNode> = HashSet::default();
 
     assert_eq!(
         components.occupancy_key(&upper),
         components.occupancy_key(&lower)
     );
 
-    let occupied = [(components.occupancy_key(&upper), 0usize)]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
-    assert!(!route_node_is_available(
-        &components,
-        &occupied,
-        1,
-        &lower,
-        &tree_nodes,
-    ));
-    assert!(route_node_is_available(
-        &components,
-        &occupied,
-        0,
-        &lower,
-        &tree_nodes,
-    ));
+    let mut claims = HashMap::default();
+    for (node, net) in [(&upper, 1usize), (&lower, 2usize)] {
+        let key = components.occupancy_key(node);
+        claims
+            .entry(key)
+            .and_modify(|c: &mut ResourceClaims| c.claim(net, NetOrigin::Logical))
+            .or_insert_with(|| ResourceClaims::new(net, NetOrigin::Logical));
+    }
+    let _ = tree_nodes;
+
+    let contested: Vec<_> = count_contested(&claims).collect();
+    assert_eq!(contested.len(), 1);
+    assert_eq!(contested[0].1, 1);
 }
 
 #[test]
@@ -298,8 +194,6 @@ fn ordered_start_nodes_prioritize_existing_tree_frontier() {
     let sink_wires = [wires.intern("SINK")];
     let spec = SinkRouteSpec {
         criticality: 0.0,
-        net_index: 0,
-        net_origin: NetOrigin::Logical,
         net_kind: super::RouteNetKind::Generic,
         strict_clock_sink: false,
         ordered_guide: &ordered_guide,
@@ -337,8 +231,6 @@ fn ordered_start_nodes_prefer_lower_tree_cost_over_nearer_frontier() {
     let sink_wires = [wires.intern("SINK")];
     let spec = SinkRouteSpec {
         criticality: 0.0,
-        net_index: 0,
-        net_origin: NetOrigin::Logical,
         net_kind: super::RouteNetKind::Generic,
         strict_clock_sink: false,
         ordered_guide: &ordered_guide,
@@ -388,8 +280,6 @@ fn dedicated_clock_search_reaches_real_arch_clock_sink() {
     let sink_wires = [sink_wire];
     let spec = SinkRouteSpec {
         criticality: 0.0,
-        net_index: 0,
-        net_origin: NetOrigin::Logical,
         net_kind: super::RouteNetKind::DedicatedClock,
         strict_clock_sink: true,
         ordered_guide: &ordered_guide,
@@ -410,14 +300,17 @@ fn dedicated_clock_search_reaches_real_arch_clock_sink() {
     };
 
     let mut search = super::SearchScratch::default();
-    let path = super::route_sink_with_policy(
-        &context,
-        &HashMap::default(),
-        &HashMap::default(),
-        &mut search,
-        &spec,
-        None,
-    );
+    let negotiation = super::occupancy::NegotiationContext {
+        occupied_route_sinks: &HashMap::default(),
+        occupied_route_nodes: &HashMap::default(),
+        node_history: &HashMap::default(),
+        sink_history: &HashMap::default(),
+        present_factor: 1,
+        net_index: 0,
+        net_origin: crate::domain::NetOrigin::Logical,
+        hard_block: false,
+    };
+    let path = super::route_sink_with_policy(&context, &negotiation, &mut search, &spec, None);
     let path = path.expect("dedicated clock route");
     let wires_on_path = path
         .nodes
