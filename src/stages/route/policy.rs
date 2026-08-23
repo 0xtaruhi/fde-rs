@@ -1,10 +1,8 @@
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashSet as HashSet;
 use smallvec::SmallVec;
 
 use crate::domain::SiteKind;
-use crate::{
-    DeviceCell, domain::NetOrigin, resource::routing::WireMetadata, route::types::RouteNode,
-};
+use crate::{DeviceCell, resource::routing::WireMetadata, route::types::RouteNode};
 #[cfg(test)]
 use crate::{
     domain::{
@@ -15,45 +13,40 @@ use crate::{
     route::types::{SiteRouteArc, WireInterner},
 };
 
-use super::{
-    occupancy::{RouteNodeOwner, RouteSinkOwner, route_node_is_available, route_sink_is_available},
-    router::{RouteNetKind, RouteSinkContext},
-};
+use super::router::{RouteNetKind, RouteSinkContext};
 
+/// Per-neighbor evaluation inputs: the device graph adapter plus a view of
+/// the shared [`NegotiationContext`] scoped to one net.
 pub(super) struct NeighborAvailability<'a> {
     pub(super) stitched_components: &'a crate::resource::routing::StitchedComponentDb,
-    pub(super) occupied_route_sinks: &'a HashMap<RouteNode, RouteSinkOwner>,
-    pub(super) occupied_route_nodes: &'a HashMap<RouteNode, RouteNodeOwner>,
-    pub(super) net_index: usize,
-    pub(super) net_origin: NetOrigin,
+    pub(super) congestion: &'a super::occupancy::NegotiationContext<'a>,
     pub(super) tree_nodes: &'a HashSet<RouteNode>,
 }
 
+/// Cost of entering `neighbor` beyond the base transition cost.
+///
+/// Negotiated congestion never hard-blocks: foreign claims add a
+/// present-sharing penalty plus whatever history the resource accumulated in
+/// earlier passes. Resources already on the current net's tree are free.
 #[inline(always)]
-pub(super) fn neighbor_is_available(
+pub(super) fn neighbor_congestion_cost(
     availability: &NeighborAvailability<'_>,
-    current: &RouteNode,
     neighbor: &RouteNode,
     local_arc: Option<usize>,
-) -> bool {
+) -> usize {
     if availability.tree_nodes.contains(neighbor) {
-        return true;
+        return 0;
     }
 
-    route_node_is_available(
-        availability.stitched_components,
-        availability.occupied_route_nodes,
-        availability.net_index,
-        neighbor,
-        availability.tree_nodes,
-    ) && route_sink_is_available(
-        availability.occupied_route_sinks,
-        availability.net_index,
-        availability.net_origin,
-        current,
-        neighbor,
-        local_arc,
-    )
+    let mut cost = availability
+        .congestion
+        .node_penalty(&availability.stitched_components.occupancy_key(neighbor));
+
+    if local_arc.is_some() {
+        cost += availability.congestion.sink_penalty(neighbor);
+    }
+
+    cost
 }
 
 #[inline(always)]
