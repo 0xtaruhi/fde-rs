@@ -1,6 +1,6 @@
 [package]
 name = "fde"
-version = "1.0.4"
+version = "1.1.0"
 edition = "2024"
 authors = ["0xtaruhi"]
 description = "Standalone Rust implementation flow for FDE"
