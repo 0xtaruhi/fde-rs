@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
 
@@ -58,15 +58,18 @@ struct NetRouteArtifacts {
     pips: Vec<DeviceRoutePip>,
     notes: Vec<String>,
     guide_usage: GuideUsageStats,
+    failed: bool,
 }
 
 struct RouteNotes<'a, 'b> {
     notes: &'a mut Vec<String>,
+    failed: &'a mut bool,
     reporter: &'a mut Option<&'b mut dyn StageReporter>,
 }
 
 impl RouteNotes<'_, '_> {
     fn push(&mut self, note: String) {
+        *self.failed = true;
         push_route_note(self.notes, self.reporter, note);
     }
 }
@@ -311,6 +314,8 @@ fn route_device_design_internal(
         state.hard_block = false;
     }
 
+    validate_final_routing(device, &state, context.wires)?;
+
     let mut guide_usage = GuideUsageStats::default();
     for route in &state.routes {
         guide_usage.merge(&route.guide_usage);
@@ -392,10 +397,13 @@ fn route_net(
     reporter: &mut Option<&mut dyn StageReporter>,
 ) {
     let mut notes = Vec::new();
+    let mut failed = false;
+    let should_route = should_route_device_net(&device.nets[net_index]);
     let prepared = prepare_route_net(context, device, index, net_index, &mut notes, reporter);
     if let Some(mut prepared) = prepared {
         let mut route_notes = RouteNotes {
             notes: &mut notes,
+            failed: &mut failed,
             reporter,
         };
         for sink in ordered_net_sinks(prepared.net, prepared.driver_cell) {
@@ -409,8 +417,55 @@ fn route_net(
                 &mut route_notes,
             );
         }
+    } else if should_route {
+        failed = true;
     }
     state.routes[net_index].notes = notes;
+    state.routes[net_index].failed = failed;
+}
+
+fn validate_final_routing(
+    device: &DeviceDesign,
+    state: &RoutingState,
+    wires: &WireInterner,
+) -> Result<()> {
+    let mut issues = Vec::new();
+    let mut contested = state.claims.contested_resources().collect::<Vec<_>>();
+    contested.sort_unstable();
+    for resource in contested {
+        let node = match resource {
+            occupancy::RouteResource::Node(node) | occupancy::RouteResource::Sink(node) => node,
+        };
+        let claimants = state
+            .claims
+            .claimant_nets(resource)
+            .map(|net_index| device.nets[net_index].name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        issues.push(format!(
+            "{} at ({}, {}) is claimed by [{}]",
+            wires.resolve(node.wire),
+            node.x,
+            node.y,
+            claimants
+        ));
+    }
+    for (net_index, route) in state.routes.iter().enumerate() {
+        if route.failed {
+            let detail = route.notes.last().map_or("no route detail", String::as_str);
+            issues.push(format!(
+                "net '{}' is incomplete: {detail}",
+                device.nets[net_index].name
+            ));
+        }
+    }
+    if issues.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "routing did not produce a legal complete result: {}",
+        issues.join("; ")
+    )
 }
 
 fn prepare_route_net<'a>(

@@ -182,7 +182,7 @@ fn end_to_end_impl_generates_artifacts() {
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/simple.edf"),
         out_dir: out_dir.clone(),
-        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        resource_root: Some(fixture("resources/hw_lib")),
         constraints: Some(fixture("tests/fixtures/constraints.xml")),
         ..ImplementationOptions::default()
     })
@@ -246,7 +246,7 @@ fn impl_flow_is_deterministic_for_fixed_seed() {
         run_implementation(&ImplementationOptions {
             input: fixture("tests/fixtures/simple.edf"),
             out_dir,
-            resource_root: Some(fixture("tests/fixtures/hw_lib")),
+            resource_root: Some(fixture("resources/hw_lib")),
             constraints: Some(fixture("tests/fixtures/constraints.xml")),
             ..ImplementationOptions::default()
         })
@@ -281,7 +281,7 @@ fn end_to_end_impl_report_records_pipeline_stage_order() {
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/simple.edf"),
         out_dir,
-        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        resource_root: Some(fixture("resources/hw_lib")),
         constraints: Some(fixture("tests/fixtures/constraints.xml")),
         ..ImplementationOptions::default()
     })
@@ -301,7 +301,7 @@ fn end_to_end_impl_handles_used_ground_constant_net() {
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/const-gnd.edf"),
         out_dir,
-        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        resource_root: Some(fixture("resources/hw_lib")),
         constraints: Some(fixture("tests/fixtures/const-gnd-constraints.xml")),
         emit_sidecar: true,
         ..ImplementationOptions::default()
@@ -382,7 +382,7 @@ fn implementation_is_deterministic_for_same_seed() {
     let (_temp_b, out_b) = temp_out("impl-b");
     let options = ImplementationOptions {
         input: fixture("tests/fixtures/simple.edf"),
-        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        resource_root: Some(fixture("resources/hw_lib")),
         constraints: Some(fixture("tests/fixtures/constraints.xml")),
         seed: 12345,
         emit_sidecar: true,
@@ -416,7 +416,7 @@ fn implementation_preserves_indexed_ports_and_pin_constraints() {
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/bus.edf"),
         out_dir,
-        resource_root: Some(fixture("tests/fixtures/hw_lib")),
+        resource_root: Some(fixture("resources/hw_lib")),
         constraints: Some(fixture("tests/fixtures/bus-constraints.xml")),
         ..ImplementationOptions::default()
     })
@@ -433,10 +433,10 @@ fn implementation_preserves_indexed_ports_and_pin_constraints() {
     assert!(mapped_ports.contains_key("y[0]"));
     assert!(mapped_ports.contains_key("y[1]"));
 
-    assert_eq!(routed_ports.get("a[0]").map(String::as_str), Some("P1"));
-    assert_eq!(routed_ports.get("a[1]").map(String::as_str), Some("P2"));
+    assert_eq!(routed_ports.get("a[0]").map(String::as_str), Some("P5"));
+    assert_eq!(routed_ports.get("a[1]").map(String::as_str), Some("P6"));
     assert_eq!(routed_ports.get("y[0]").map(String::as_str), Some("P4"));
-    assert_eq!(routed_ports.get("y[1]").map(String::as_str), Some("P5"));
+    assert_eq!(routed_ports.get("y[1]").map(String::as_str), Some("P7"));
 }
 
 #[test]

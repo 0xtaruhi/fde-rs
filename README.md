@@ -169,6 +169,10 @@ cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-outp
   --cil resources/hw_lib/fdp3p7_cil.xml
 ```
 
+Constraint entries are validated against both the design ports and the selected
+architecture package. Unknown ports or package pins fail explicitly; unconstrained
+ports bind deterministically to one complete `(pin, x, y, z)` pad site.
+
 Emit the optional debug sidecar:
 
 ```bash

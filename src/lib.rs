@@ -37,7 +37,7 @@ pub use bitgen::{
 pub use bitgen::{BitgenOptions, run as run_bitgen, run_with_reporter as run_bitgen_with_reporter};
 pub(crate) use bitgen::{DeviceDesignIndex, DeviceEndpointRef};
 pub use cil::{Cil, load_cil};
-pub use constraints::{ConstraintEntry, load_constraints};
+pub use constraints::{ConstraintEntry, apply_constraints_checked, load_constraints};
 pub use domain::{
     CellKind, ClusterKind, ConstantKind, EndpointKind, NetOrigin, PinRole, PrimitiveKind, SiteKind,
     TimingPathCategory,

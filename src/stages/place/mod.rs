@@ -6,7 +6,7 @@ mod support;
 
 use crate::{
     analysis::annotate_net_criticality,
-    constraints::{apply_constraints, ensure_port_positions},
+    constraints::{apply_constraints_checked, ensure_port_positions},
     domain::ClusterKind,
     ir::Design,
     report::{StageOutput, StageReport, StageReporter, emit_stage_info},
@@ -69,7 +69,7 @@ fn run_internal(
             options.arch.width, options.arch.height, options.mode, options.seed
         ),
     );
-    apply_constraints(&mut design, &options.arch, &options.constraints);
+    apply_constraints_checked(&mut design, &options.arch, &options.constraints)?;
     ensure_port_positions(&mut design, &options.arch);
 
     if matches!(options.mode, PlaceMode::TimingDriven) {
