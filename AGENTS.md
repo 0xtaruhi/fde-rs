@@ -30,6 +30,7 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Check: `cargo check`
 - Test: `cargo test`
 - CI parity: `cargo fmt --all -- --check && cargo check --locked --all-targets && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo test --locked --quiet`
+- Board probe CI: `cargo clippy --locked --manifest-path tools/wave_probe/Cargo.toml --all-targets -- -D warnings && cargo test --locked --manifest-path tools/wave_probe/Cargo.toml`
 - CI smoke: `cargo run --locked --quiet --bin fde -- impl --input examples/blinky/blinky.edf --constraints examples/blinky/constraints.xml --resource-root resources/hw_lib --out-dir /tmp/fde-rs-ci-smoke`
 - Board EDF dry run: `find examples/board-e2e -mindepth 2 -maxdepth 2 -name '*.edf' | sort | while read -r edf; do case_dir=$(dirname "${edf}"); name=$(basename "${case_dir}"); cargo run --bin fde -- impl --input "${edf}" --constraints "${case_dir}/constraints.xml" --resource-root resources/hw_lib --out-dir "build/board-e2e/${name}"; done`
 - Live board run: `python3 scripts/board_e2e.py run`
@@ -43,6 +44,7 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Emit debug sidecar: `cargo run --bin fde -- impl --input <design.edf> --constraints <constraints.xml> --resource-root resources/hw_lib --out-dir build/<run> --emit-sidecar`
 - Aspen-style Verilog->EDF synthesis: `python3 scripts/synth_yosys_fde.py --top <top> --out-edf build/<top>.edf <sources...>`
 - In-repo board probe: `cargo run --manifest-path tools/wave_probe/Cargo.toml -- <bitstream>`
+- Raw board trace: `cargo run --manifest-path tools/wave_probe/Cargo.toml -- --trace-jsonl <trace.jsonl> <bitstream>`
 - Main help: `cargo run --bin fde -- --help`
 - End-to-end smoke: `cargo run --bin fde -- impl --input examples/blinky/blinky.edf --constraints examples/blinky/constraints.xml --resource-root tests/fixtures/hw_lib --out-dir build/blinky-run`
 - Package dry run: `cargo publish --locked --dry-run`

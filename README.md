@@ -372,6 +372,21 @@ Lastly, if everything fails, you can confirm that the program can be uploaded by
 sudo tools/wave_probe/target/debug/wave_probe build/blinky-run/06-output.bit
 ```
 
+The probe uses the checked-in FDP3P7 board profile, including the complete
+54-input/54-output VeriComm lane map and caller-owned customer ID. Capture a
+lossless raw trace with:
+
+```bash
+cargo run --manifest-path tools/wave_probe/Cargo.toml -- \
+  --trace-jsonl build/blinky-run/vericomm-trace.jsonl \
+  build/blinky-run/06-output.bit
+```
+
+Each JSONL sample contains the full 64-bit transmitted and received frames.
+The metadata deliberately labels timing as an asynchronous USB batch because
+the fabric clock continues running in VeriComm mode; sample indexes are not
+FPGA clock-cycle numbers.
+
 ## Repository Scope
 
 The public contract is the emitted XML and bitstream shape. Internally, Rust stays

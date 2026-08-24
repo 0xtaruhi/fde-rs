@@ -31,7 +31,8 @@ simulation observations matched the live board on 2026-08-24.
 Cases can optionally override the default probe waveform by setting
 `probe_segments` in the manifest. This is used for long-cycle board regressions
 such as `sticky16-check`, where the observable behavior only appears after a
-longer repeated stimulus window.
+longer repeated stimulus window. Segment lengths are raw 16-bit word counts,
+must be multiples of four, and are assembled into typed 64-bit VeriComm frames.
 
 Run the full suite with:
 
