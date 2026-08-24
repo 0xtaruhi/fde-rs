@@ -14,6 +14,14 @@ impl Point {
     pub(crate) const fn as_tuple(self) -> (usize, usize) {
         (self.x, self.y)
     }
+
+    pub(crate) fn from_weighted_coordinates(x: f64, y: f64) -> Option<Self> {
+        if !x.is_finite() || x < 0.0 || !y.is_finite() || y < 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Some(Self::new(x.round() as usize, y.round() as usize))
+    }
 }
 
 impl From<(usize, usize)> for Point {
@@ -151,8 +159,7 @@ impl PlacementModel {
     pub(crate) fn nets_for_cluster(&self, cluster_id: ClusterId) -> &[usize] {
         self.nets_by_cluster
             .get(cluster_id.index())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn signal_centroid(
@@ -203,10 +210,7 @@ impl PlacementModel {
         if weight_total == 0.0 {
             None
         } else {
-            Some(Point::new(
-                (x_total / weight_total).round() as usize,
-                (y_total / weight_total).round() as usize,
-            ))
+            Point::from_weighted_coordinates(x_total / weight_total, y_total / weight_total)
         }
     }
 }

@@ -97,8 +97,8 @@ pub(super) fn resolve_target_assignment(
         ));
     }
 
-    target.tile_name = target_tile.name.clone();
-    target.tile_type = target_tile.tile_type.clone();
+    target.tile_name.clone_from(&target_tile.name);
+    target.tile_type.clone_from(&target_tile.tile_type);
     target.x = target_tile.logic_x;
     target.y = target_tile.logic_y;
     if let Some(tile_def) = cil.tiles.get(&target.tile_type) {

@@ -67,30 +67,16 @@ fn run_internal(
     let artifacts = FlowArtifacts::modern(&options.out_dir, options.emit_sidecar);
 
     let input_design = map::load_input(&options.input)?;
+    let map_options = MapOptions {
+        lut_size: options.lut_size,
+        cell_library: resources.dc_cell.clone(),
+        emit_structural_verilog: false,
+    };
     let mut map_result = run_stage_with_reporter(
         "map",
         &mut runtime_reporter_option,
-        || {
-            map::run(
-                input_design.clone(),
-                &MapOptions {
-                    lut_size: options.lut_size,
-                    cell_library: resources.dc_cell.clone(),
-                    emit_structural_verilog: false,
-                },
-            )
-        },
-        |reporter| {
-            map::run_with_reporter(
-                input_design.clone(),
-                &MapOptions {
-                    lut_size: options.lut_size,
-                    cell_library: resources.dc_cell.clone(),
-                    emit_structural_verilog: false,
-                },
-                reporter,
-            )
-        },
+        || map::run(input_design.clone(), &map_options),
+        |reporter| map::run_with_reporter(input_design.clone(), &map_options, reporter),
     )?;
     save_design_stage_artifact(
         &mut map_result.report,
@@ -99,33 +85,19 @@ fn run_internal(
         &artifacts.map,
     )?;
 
+    let pack_options = PackOptions {
+        family: options.family.clone(),
+        capacity: options.pack_capacity,
+        cell_library: resources.pack_cell.clone(),
+        dcp_library: resources.pack_lib.clone(),
+        config: resources.pack_config.clone(),
+    };
     let mut pack_result = run_stage_with_reporter(
         "pack",
         &mut runtime_reporter_option,
-        || {
-            pack::run(
-                map_result.value.design.clone(),
-                &PackOptions {
-                    family: options.family.clone(),
-                    capacity: options.pack_capacity,
-                    cell_library: resources.pack_cell.clone(),
-                    dcp_library: resources.pack_lib.clone(),
-                    config: resources.pack_config.clone(),
-                },
-            )
-        },
+        || pack::run(map_result.value.design.clone(), &pack_options),
         |reporter| {
-            pack::run_with_reporter(
-                map_result.value.design.clone(),
-                &PackOptions {
-                    family: options.family.clone(),
-                    capacity: options.pack_capacity,
-                    cell_library: resources.pack_cell.clone(),
-                    dcp_library: resources.pack_lib.clone(),
-                    config: resources.pack_config.clone(),
-                },
-                reporter,
-            )
+            pack::run_with_reporter(map_result.value.design.clone(), &pack_options, reporter)
         },
     )?;
     save_design_stage_artifact(
@@ -135,34 +107,18 @@ fn run_internal(
         &artifacts.pack,
     )?;
 
+    let place_options = PlaceOptions {
+        arch: Arc::clone(&arch),
+        delay: delay_model.clone(),
+        constraints: Arc::clone(&constraints),
+        mode: options.place_mode,
+        seed: options.seed,
+    };
     let mut place_result = run_stage_with_reporter(
         "place",
         &mut runtime_reporter_option,
-        || {
-            place::run(
-                pack_result.value.clone(),
-                &PlaceOptions {
-                    arch: Arc::clone(&arch),
-                    delay: delay_model.clone(),
-                    constraints: Arc::clone(&constraints),
-                    mode: options.place_mode,
-                    seed: options.seed,
-                },
-            )
-        },
-        |reporter| {
-            place::run_with_reporter(
-                pack_result.value.clone(),
-                &PlaceOptions {
-                    arch: Arc::clone(&arch),
-                    delay: delay_model.clone(),
-                    constraints: Arc::clone(&constraints),
-                    mode: options.place_mode,
-                    seed: options.seed,
-                },
-                reporter,
-            )
-        },
+        || place::run(pack_result.value.clone(), &place_options),
+        |reporter| place::run_with_reporter(pack_result.value.clone(), &place_options, reporter),
     )?;
     save_design_stage_artifact_with_context(
         &mut place_result.report,
@@ -178,31 +134,21 @@ fn run_internal(
         loaded_cil.as_ref(),
         constraints.as_ref(),
     )?;
+    let route_options = RouteOptions {
+        arch: Arc::clone(&arch),
+        arch_path: resources.arch.clone(),
+        constraints: Arc::clone(&constraints),
+        cil: loaded_cil.clone(),
+        device_design: route_device_design,
+    };
     let mut route_result = run_stage_with_reporter(
         "route",
         &mut runtime_reporter_option,
-        || {
-            route::run_with_artifacts(
-                place_result.value.clone(),
-                &RouteOptions {
-                    arch: Arc::clone(&arch),
-                    arch_path: resources.arch.clone(),
-                    constraints: Arc::clone(&constraints),
-                    cil: loaded_cil.clone(),
-                    device_design: route_device_design.clone(),
-                },
-            )
-        },
+        || route::run_with_artifacts(place_result.value.clone(), &route_options),
         |reporter| {
             route::run_with_artifacts_and_reporter(
                 place_result.value.clone(),
-                &RouteOptions {
-                    arch: Arc::clone(&arch),
-                    arch_path: resources.arch.clone(),
-                    constraints: Arc::clone(&constraints),
-                    cil: loaded_cil.clone(),
-                    device_design: route_device_design.clone(),
-                },
+                &route_options,
                 reporter,
             )
         },
@@ -233,28 +179,15 @@ fn run_internal(
         )?;
     }
 
+    let sta_options = StaOptions {
+        arch: Some(Arc::clone(&arch)),
+        delay: delay_model,
+    };
     let mut sta_result = run_stage_with_reporter(
         "sta",
         &mut runtime_reporter_option,
-        || {
-            sta::run(
-                routed_design.clone(),
-                &StaOptions {
-                    arch: Some(Arc::clone(&arch)),
-                    delay: delay_model.clone(),
-                },
-            )
-        },
-        |reporter| {
-            sta::run_with_reporter(
-                routed_design.clone(),
-                &StaOptions {
-                    arch: Some(Arc::clone(&arch)),
-                    delay: delay_model.clone(),
-                },
-                reporter,
-            )
-        },
+        || sta::run(routed_design.clone(), &sta_options),
+        |reporter| sta::run_with_reporter(routed_design.clone(), &sta_options, reporter),
     )?;
     if let Some(sta_lib) = resources.sta_lib.as_ref() {
         sta_result
@@ -275,35 +208,20 @@ fn run_internal(
         &sta_result.value.report_text,
     )?;
 
+    let bitgen_options = BitgenOptions {
+        arch_name: Some(arch.name.clone()),
+        arch_path: Some(resources.arch.clone()),
+        cil_path: resources.cil.clone(),
+        cil: loaded_cil.clone(),
+        device_design: Some(device_design),
+        route_image: Some(route_image),
+    };
     let mut bitgen_result = run_stage_with_reporter(
         "bitgen",
         &mut runtime_reporter_option,
-        || {
-            bitgen::run(
-                sta_result.value.design.clone(),
-                &BitgenOptions {
-                    arch_name: Some(arch.name.clone()),
-                    arch_path: Some(resources.arch.clone()),
-                    cil_path: resources.cil.clone(),
-                    cil: loaded_cil.clone(),
-                    device_design: Some(device_design.clone()),
-                    route_image: Some(route_image.clone()),
-                },
-            )
-        },
+        || bitgen::run(sta_result.value.design.clone(), &bitgen_options),
         |reporter| {
-            bitgen::run_with_reporter(
-                sta_result.value.design.clone(),
-                &BitgenOptions {
-                    arch_name: Some(arch.name.clone()),
-                    arch_path: Some(resources.arch.clone()),
-                    cil_path: resources.cil.clone(),
-                    cil: loaded_cil.clone(),
-                    device_design: Some(device_design.clone()),
-                    route_image: Some(route_image.clone()),
-                },
-                reporter,
-            )
+            bitgen::run_with_reporter(sta_result.value.design.clone(), &bitgen_options, reporter)
         },
     )?;
     write_bytes_stage_artifact(

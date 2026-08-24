@@ -201,10 +201,10 @@ impl DesignXmlWriter {
     }
 
     fn write_route(&mut self, segments: &[RouteSegment], pips: &[RoutePip]) -> Result<()> {
-        if !pips.is_empty() {
-            self.write_pips(pips)
-        } else {
+        if pips.is_empty() {
             self.write_segments_as_properties(segments)
+        } else {
+            self.write_pips(pips)
         }
     }
 
@@ -351,7 +351,7 @@ fn mapped_external_modules(design: &Design) -> Vec<ExternalModule> {
         .map(|cell| cell.type_name.as_str())
         .collect::<BTreeSet<_>>();
     mapped_external_module_specs()
-        .into_iter()
+        .iter()
         .filter(|spec| used_modules.contains(spec.name))
         .map(mapped_external_module)
         .collect()
@@ -488,7 +488,7 @@ fn mapped_logic_constant_module_specs() -> [MappedExternalModuleSpec; 2] {
     ]
 }
 
-fn mapped_external_module(spec: MappedExternalModuleSpec) -> ExternalModule {
+fn mapped_external_module(spec: &MappedExternalModuleSpec) -> ExternalModule {
     ExternalModule {
         name: spec.name.to_string(),
         module_type: spec.module_type.to_string(),
@@ -647,7 +647,7 @@ fn logical_truth_table_bits(primitive: PrimitiveKind) -> Option<usize> {
         | PrimitiveKind::Generic
         | PrimitiveKind::Unknown => return None,
     };
-    1usize.checked_shl(inputs as u32)
+    1usize.checked_shl(inputs.try_into().ok()?)
 }
 
 fn format_truth_table_literal(bits: &[u8]) -> String {

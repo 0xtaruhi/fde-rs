@@ -128,15 +128,15 @@ impl Cell {
     }
 
     pub fn register_clock_net(&self) -> Option<&str> {
-        self.input_net_matching(|primitive, port| primitive.is_clock_pin(port))
+        self.input_net_matching(PrimitiveKind::is_clock_pin)
     }
 
     pub fn register_clock_enable_net(&self) -> Option<&str> {
-        self.input_net_matching(|primitive, port| primitive.is_clock_enable_pin(port))
+        self.input_net_matching(PrimitiveKind::is_clock_enable_pin)
     }
 
     pub fn register_set_reset_net(&self) -> Option<&str> {
-        self.input_net_matching(|primitive, port| primitive.is_set_reset_pin(port))
+        self.input_net_matching(PrimitiveKind::is_set_reset_pin)
     }
 
     pub fn register_init_value(&self) -> Option<SequentialInitValue> {

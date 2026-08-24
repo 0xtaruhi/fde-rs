@@ -50,8 +50,7 @@ impl<'a> Parser<'a> {
                 self.expect_lparen()?;
                 let head = self.expect_atom()?;
                 match head.as_str() {
-                    "library" => self.parse_library(&mut builder)?,
-                    "external" => self.parse_library(&mut builder)?,
+                    "library" | "external" => self.parse_library(&mut builder)?,
                     _ => self.skip_current_list()?,
                 }
             } else {
@@ -68,8 +67,7 @@ impl<'a> Parser<'a> {
         let design = builder.finish();
         if design.ports.is_empty() && design.cells.is_empty() && design.nets.is_empty() {
             return Err(anyhow!(
-                "missing DESIGN library top cell '{}' in EDIF",
-                top_name
+                "missing DESIGN library top cell '{top_name}' in EDIF"
             ));
         }
         Ok(design)

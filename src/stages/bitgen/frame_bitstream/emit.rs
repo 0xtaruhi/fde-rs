@@ -78,10 +78,7 @@ pub(crate) fn hex_word(word: u32) -> String {
 
 fn required_command_parameter<'a>(command: &'a BitstreamCommand, name: &str) -> Result<&'a str> {
     command.parameter.as_deref().ok_or_else(|| {
-        anyhow!(
-            "bitstream command {} is missing its required parameter payload",
-            name
-        )
+        anyhow!("bitstream command {name} is missing its required parameter payload")
     })
 }
 
@@ -165,7 +162,14 @@ fn write_memory_blocks(
         .context("missing or invalid fillblank while rendering memory blocks")?;
 
     for (index, payload) in memory_payloads.iter().enumerate() {
-        let memory_address = 0x0200_0000u32 + (index as u32 + 1) * 0x0002_0000u32;
+        let block_number = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(1))
+            .context("memory block index overflows 32-bit bitstream field")?;
+        let memory_address = block_number
+            .checked_mul(0x0002_0000)
+            .and_then(|offset| 0x0200_0000u32.checked_add(offset))
+            .context("memory block address overflows 32-bit bitstream field")?;
         write_fdri_block_with_padding(text, memory_address, payload, word_count_shift, fillblank)?;
     }
     Ok(memory_payloads.len())
@@ -192,7 +196,7 @@ fn write_fdri_block_with_padding(
 
     writeln!(text, "3000_2001")?;
     writeln!(text, "{}", hex_word(address))?;
-    writeln!(text, "3000_4000\t//{} words", header_words)?;
+    writeln!(text, "3000_4000\t//{header_words} words")?;
     writeln!(text, "{}", hex_word(0x5000_0000u32 + header_words))?;
     for word in payload {
         writeln!(text, "{}", hex_word(*word))?;

@@ -152,14 +152,12 @@ mod tests {
             .nets
             .iter()
             .find(|net| net.name == "mid0")
-            .map(|net| net.criticality)
-            .unwrap_or(0.0);
+            .map_or(0.0, |net| net.criticality);
         let fast = design
             .nets
             .iter()
             .find(|net| net.name == "fast")
-            .map(|net| net.criticality)
-            .unwrap_or(0.0);
+            .map_or(0.0, |net| net.criticality);
 
         assert!(mid0 > fast);
     }

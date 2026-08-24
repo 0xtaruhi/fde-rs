@@ -54,8 +54,8 @@ pub(crate) enum CliPlaceMode {
 impl From<CliPlaceMode> for PlaceMode {
     fn from(value: CliPlaceMode) -> Self {
         match value {
-            CliPlaceMode::Bounding => PlaceMode::BoundingBox,
-            CliPlaceMode::Timing => PlaceMode::TimingDriven,
+            CliPlaceMode::Bounding => Self::BoundingBox,
+            CliPlaceMode::Timing => Self::TimingDriven,
         }
     }
 }
@@ -63,8 +63,8 @@ impl From<CliPlaceMode> for PlaceMode {
 impl From<PlaceMode> for CliPlaceMode {
     fn from(value: PlaceMode) -> Self {
         match value {
-            PlaceMode::BoundingBox => CliPlaceMode::Bounding,
-            PlaceMode::TimingDriven => CliPlaceMode::Timing,
+            PlaceMode::BoundingBox => Self::Bounding,
+            PlaceMode::TimingDriven => Self::Timing,
         }
     }
 }

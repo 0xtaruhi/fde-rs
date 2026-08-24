@@ -35,7 +35,7 @@ fn write_temp_arch_file() -> NamedTempFile {
 
 fn mini_bram_cil() -> crate::cil::Cil {
     parse_cil_str(
-        r##"
+        r#"
         <device name="mini">
           <site_library>
             <block_site name="BRAM">
@@ -80,7 +80,7 @@ fn mini_bram_cil() -> crate::cil::Cil {
             <command cmd="writeMem"/>
           </bstrcmd_library>
         </device>
-        "##,
+        "#,
     )
     .expect("parse mini bram cil")
 }

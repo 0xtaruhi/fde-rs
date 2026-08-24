@@ -94,7 +94,7 @@ pub(crate) fn route_write_context<'a>(
     }
 }
 
-pub(crate) fn sta_write_context<'a>(arch: Option<&'a Arch>) -> DesignWriteContext<'a> {
+pub(crate) fn sta_write_context(arch: Option<&Arch>) -> DesignWriteContext<'_> {
     DesignWriteContext {
         arch,
         ..DesignWriteContext::default()

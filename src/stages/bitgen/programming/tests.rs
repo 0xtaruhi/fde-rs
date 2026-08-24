@@ -68,7 +68,7 @@ fn compiled_block_ram_requests(device: &DeviceDesign, cil_xml: &str) -> Vec<Requ
 }
 
 fn mini_logic_slice_lut_cil() -> &'static str {
-    r##"
+    r#"
         <device name="mini">
           <site_library>
             <block_site name="SLICE">
@@ -97,11 +97,11 @@ fn mini_logic_slice_lut_cil() -> &'static str {
             </block_site>
           </site_library>
         </device>
-        "##
+        "#
 }
 
 fn mini_block_ram_cil() -> &'static str {
-    r##"
+    r#"
         <device name="mini">
           <site_library>
             <block_site name="BRAM">
@@ -143,7 +143,7 @@ fn mini_block_ram_cil() -> &'static str {
             </block_site>
           </site_library>
         </device>
-        "##
+        "#
 }
 
 fn repo_root() -> PathBuf {
@@ -568,7 +568,7 @@ fn routed_lut_only_slice_emits_usage_bits_without_ff_controls() {
 
     let requests = compiled_logic_slice_requests(
         &device,
-        r##"
+        r#"
         <device name="mini">
           <site_library>
             <block_site name="SLICE">
@@ -593,7 +593,7 @@ fn routed_lut_only_slice_emits_usage_bits_without_ff_controls() {
             </block_site>
           </site_library>
         </device>
-        "##,
+        "#,
     );
 
     assert!(

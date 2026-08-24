@@ -4,7 +4,7 @@ use crate::{
     ir::{Design, DesignIndex, Port, PortId},
 };
 
-impl<'a> DeviceLowering<'a> {
+impl DeviceLowering<'_> {
     pub(super) fn materialize_ports(&mut self) {
         for port in &self.design.ports {
             let Some(port_id) = self.index.port_id(&port.name) else {
@@ -89,7 +89,7 @@ impl<'a> DeviceLowering<'a> {
         let io_type = binding.pad_kind.io_type_name();
         self.bind_io_cell(
             port_id,
-            DeviceCell::new(io_name.clone(), CellKind::Io, io_type)
+            DeviceCell::new(io_name, CellKind::Io, io_type)
                 .placed(
                     binding.site_kind,
                     binding.site_name.clone(),
@@ -115,7 +115,7 @@ impl<'a> DeviceLowering<'a> {
             .to_string();
         self.bind_gclk_cell(
             port_id,
-            DeviceCell::new(gclk_name.clone(), CellKind::GlobalClockBuffer, "GCLK")
+            DeviceCell::new(gclk_name, CellKind::GlobalClockBuffer, "GCLK")
                 .placed(
                     SiteKind::Gclk,
                     gclk_site_name,
@@ -137,7 +137,7 @@ impl<'a> DeviceLowering<'a> {
         let io_name = format!("$iob${}", port.name);
         self.bind_io_cell(
             port_id,
-            DeviceCell::new(io_name.clone(), CellKind::Io, "IOB")
+            DeviceCell::new(io_name, CellKind::Io, "IOB")
                 .placed(
                     binding.site_kind,
                     binding.site_name.clone(),

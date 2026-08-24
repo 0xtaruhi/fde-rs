@@ -206,6 +206,10 @@ impl StageReport {
         self.elapsed_ms = Some(elapsed.as_millis().try_into().unwrap_or(u64::MAX));
     }
 
+    /// Records a serializable stage metric.
+    ///
+    /// # Panics
+    /// Panics when `value` cannot be represented as JSON.
     pub fn metric(&mut self, key: impl Into<String>, value: impl Serialize) {
         self.metrics.insert(
             key.into(),
@@ -322,7 +326,6 @@ pub fn format_stage_event_line(
         StageEvent::Started { stage } if include_lifecycle => {
             Some(format!(">>> starting {stage}\n"))
         }
-        StageEvent::Started { .. } => None,
         StageEvent::Log {
             stage,
             level,
@@ -351,7 +354,7 @@ pub fn format_stage_event_line(
             format_stage_status_name(*status),
             elapsed_ms
         )),
-        StageEvent::Finished { .. } => None,
+        StageEvent::Started { .. } | StageEvent::Finished { .. } => None,
     }
 }
 
@@ -372,20 +375,20 @@ pub fn render_summary_report(report: &ImplementationReport) -> String {
         ));
     }
     if let Some(bitstream_sha256) = report.bitstream_sha256.as_deref() {
-        out.push_str(&format!("Bitstream SHA  : {}\n", bitstream_sha256));
+        out.push_str(&format!("Bitstream SHA  : {bitstream_sha256}\n"));
     }
 
     if !report.inputs.is_empty() {
         out.push_str("\nInputs\n------\n");
         for (key, value) in &report.inputs {
-            out.push_str(&format!("{:14}: {}\n", key, value));
+            out.push_str(&format!("{key:14}: {value}\n"));
         }
     }
 
     if !report.resources.is_empty() {
         out.push_str("\nResources\n---------\n");
         for (key, value) in &report.resources {
-            out.push_str(&format!("{:14}: {}\n", key, value));
+            out.push_str(&format!("{key:14}: {value}\n"));
         }
     }
 
@@ -485,19 +488,19 @@ pub fn render_detailed_log(report: &ImplementationReport) -> String {
         if !stage.artifacts.is_empty() {
             out.push_str("  Artifacts:\n");
             for (key, value) in &stage.artifacts {
-                out.push_str(&format!("    - {} = {}\n", key, value));
+                out.push_str(&format!("    - {key} = {value}\n"));
             }
         }
         if !stage.warnings.is_empty() {
             out.push_str("  Warnings:\n");
             for warning in &stage.warnings {
-                out.push_str(&format!("    - {}\n", warning));
+                out.push_str(&format!("    - {warning}\n"));
             }
         }
         if !stage.messages.is_empty() {
             out.push_str("  Messages:\n");
             for message in &stage.messages {
-                out.push_str(&format!("    - {}\n", message));
+                out.push_str(&format!("    - {message}\n"));
             }
         }
         out.push('\n');
@@ -536,7 +539,7 @@ fn push_mapping_section(out: &mut String, title: &str, values: &BTreeMap<String,
     out.push_str(&"-".repeat(title.len()));
     out.push('\n');
     for (key, value) in values {
-        out.push_str(&format!("{:14}: {}\n", key, value));
+        out.push_str(&format!("{key:14}: {value}\n"));
     }
     out.push('\n');
 }

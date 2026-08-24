@@ -60,7 +60,7 @@ fn run_internal(
     }
 
     design.stage = "placed".to_string();
-    design.metadata.arch_name = options.arch.name.clone();
+    design.metadata.arch_name.clone_from(&options.arch.name);
     emit_stage_info(
         &mut reporter,
         "place",
@@ -247,7 +247,7 @@ fn assign_cluster_slots(design: &mut Design, site_capacity: usize) -> Result<()>
                     );
                 }
                 if used[slot] {
-                    bail!("multiple clusters request slot {} at ({x}, {y})", slot);
+                    bail!("multiple clusters request slot {slot} at ({x}, {y})");
                 }
                 used[slot] = true;
             }

@@ -17,12 +17,12 @@ pub(super) fn prepare_artifacts(
     options: &BitgenOptions,
 ) -> Result<PreparedArtifacts> {
     let arch = load_optional_arch(options)?;
-    let programming_image = prepare_architecture_backed_programming(options)?;
+    let programming_image = prepare_architecture_backed_programming(options);
     let config_image = build_config_image_if_available(
         programming_image.as_ref(),
         options.cil.as_ref(),
         arch.as_ref(),
-    )?;
+    );
     let text_bitstream = build_text_bitstream(
         circuit,
         options,
@@ -49,31 +49,29 @@ fn load_optional_arch(options: &BitgenOptions) -> Result<Option<Arch>> {
         .transpose()
 }
 
-fn prepare_architecture_backed_programming(
-    options: &BitgenOptions,
-) -> Result<Option<ProgrammingImage>> {
+fn prepare_architecture_backed_programming(options: &BitgenOptions) -> Option<ProgrammingImage> {
     if let (Some(device_design), Some(cil)) = (options.device_design.as_ref(), options.cil.as_ref())
     {
-        return Ok(Some(build_programming_image(
+        return Some(build_programming_image(
             device_design,
             cil,
             options.route_image.as_ref(),
-        )));
+        ));
     }
 
-    Ok(None)
+    None
 }
 
 fn build_config_image_if_available(
     programming_image: Option<&ProgrammingImage>,
     cil: Option<&crate::cil::Cil>,
     arch: Option<&Arch>,
-) -> Result<Option<ConfigImage>> {
+) -> Option<ConfigImage> {
     match (programming_image, cil) {
-        (Some(programming_image), Some(cil)) => encode_config_image(programming_image, cil, arch)
-            .context("failed to build tile configuration image")
-            .map(Some),
-        _ => Ok(None),
+        (Some(programming_image), Some(cil)) => {
+            Some(encode_config_image(programming_image, cil, arch))
+        }
+        _ => None,
     }
 }
 

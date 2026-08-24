@@ -77,9 +77,7 @@ fn assert_supported_slice_shapes(packed: &Design) {
         ) {
             (true, true, 2) => pair_count == 1,
             (true, true, 4) => pair_count == 2,
-            (true, false, 1 | 2) => true,
-            (false, true, 1 | 2) => true,
-            (false, false, 1) => true,
+            (true, false, 1 | 2) | (false, true, 1 | 2) | (false, false, 1) => true,
             _ => false,
         };
         assert!(

@@ -3,8 +3,8 @@ use crate::report::StageReport;
 
 pub(super) fn build_report(byte_count: usize, artifacts: &PreparedArtifacts) -> StageReport {
     let mut report = StageReport::new("bitgen");
+    report.metric("byte_count", byte_count);
     if let Some(serialized) = artifacts.text_bitstream.as_ref() {
-        report.metric("byte_count", byte_count);
         report.metric("major_chunk_count", serialized.major_count);
         report.metric("memory_chunk_count", serialized.memory_count);
         report.push(format!(
@@ -12,17 +12,15 @@ pub(super) fn build_report(byte_count: usize, artifacts: &PreparedArtifacts) -> 
             byte_count, serialized.major_count, serialized.memory_count
         ));
     } else {
-        report.metric("byte_count", byte_count);
         report.push(format!(
-            "Generated {} bytes of deterministic bitstream payload.",
-            byte_count
+            "Generated {byte_count} bytes of deterministic bitstream payload."
         ));
     }
     if let Some(config_image) = artifacts.config_image.as_ref() {
         let set_bits = config_image
             .tiles
             .iter()
-            .map(|tile| tile.set_bit_count())
+            .map(super::TileConfigImage::set_bit_count)
             .sum::<usize>();
         let routed_pips = artifacts
             .programming_image

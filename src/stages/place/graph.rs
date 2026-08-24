@@ -13,8 +13,7 @@ impl ClusterGraph {
     pub(crate) fn neighbors(&self, cluster_id: ClusterId) -> &[(ClusterId, f64)] {
         self.adjacency
             .get(cluster_id.index())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn total_weight(&self, cluster_id: ClusterId) -> f64 {
@@ -42,10 +41,7 @@ impl ClusterGraph {
         if weight_total == 0.0 {
             None
         } else {
-            Some(Point::new(
-                (x_total / weight_total).round() as usize,
-                (y_total / weight_total).round() as usize,
-            ))
+            Point::from_weighted_coordinates(x_total / weight_total, y_total / weight_total)
         }
     }
 }

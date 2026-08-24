@@ -61,7 +61,7 @@ fn parse_element_path(path: Node<'_, '_>) -> ElementPath {
     let mut entry = ElementPath {
         input: path.attribute("in").unwrap_or_default().to_string(),
         output: path.attribute("out").unwrap_or_default().to_string(),
-        segregated: !matches!(path.attribute("segregated"), Some("no") | Some("false")),
+        segregated: !matches!(path.attribute("segregated"), Some("no" | "false")),
         ..ElementPath::default()
     };
     if let Some(config) = find_child(path, "configuration_info") {
@@ -301,7 +301,7 @@ fn parse_bitstream_commands(root: Node<'_, '_>, cil: &mut Cil) {
         return;
     };
 
-    for child in node.children().filter(|node| node.is_element()) {
+    for child in node.children().filter(roxmltree::Node::is_element) {
         if child.has_tag_name("parameter") {
             let Some(name) = child.attribute("name") else {
                 continue;

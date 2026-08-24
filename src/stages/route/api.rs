@@ -504,7 +504,7 @@ mod tests {
         .into_iter()
         .fold(
             Net::new("GND_NET").with_driver(Endpoint::cell("GND", "O")),
-            |net, sink| net.with_sink(sink),
+            Net::with_sink,
         );
 
         let design = Design {

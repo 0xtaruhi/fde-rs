@@ -19,7 +19,7 @@ pub(crate) fn save_fde_design_xml_with_context(
         &writer::XmlWriteContext {
             arch: context.arch,
             _cil: context.cil,
-            _constraints: context.constraints,
+            constraints: context.constraints,
             cil_path: context.cil_path,
         },
     )

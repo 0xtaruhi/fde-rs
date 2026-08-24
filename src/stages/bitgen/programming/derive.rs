@@ -269,7 +269,7 @@ fn endpoint_matches_cell_pin(
 }
 
 fn slot_of_cell(cell: &DeviceCell, site: &SiteInstance) -> usize {
-    bel_slot(&cell.bel).unwrap_or(site.z.min(1)).min(1)
+    bel_slot(&cell.bel).unwrap_or_else(|| site.z.min(1)).min(1)
 }
 
 fn cell_property<'a>(cell: &'a DeviceCell, key: &str) -> Option<&'a str> {
@@ -279,7 +279,7 @@ fn cell_property<'a>(cell: &'a DeviceCell, key: &str) -> Option<&'a str> {
 fn bel_slot(bel: &str) -> Option<usize> {
     bel.chars()
         .rev()
-        .find(|ch| ch.is_ascii_digit())
+        .find(char::is_ascii_digit)
         .and_then(|ch| ch.to_digit(10))
-        .map(|digit| digit as usize)
+        .and_then(|digit| usize::try_from(digit).ok())
 }

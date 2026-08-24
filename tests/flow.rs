@@ -300,7 +300,7 @@ fn end_to_end_impl_handles_used_ground_constant_net() {
     let (_temp, out_dir) = temp_out("impl-const-gnd");
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/const-gnd.edf"),
-        out_dir: out_dir.clone(),
+        out_dir,
         resource_root: Some(fixture("tests/fixtures/hw_lib")),
         constraints: Some(fixture("tests/fixtures/const-gnd-constraints.xml")),
         emit_sidecar: true,
@@ -389,12 +389,12 @@ fn implementation_is_deterministic_for_same_seed() {
         ..ImplementationOptions::default()
     };
     let report_a = run_implementation(&ImplementationOptions {
-        out_dir: out_a.clone(),
+        out_dir: out_a,
         ..options.clone()
     })
     .expect("impl a");
     let report_b = run_implementation(&ImplementationOptions {
-        out_dir: out_b.clone(),
+        out_dir: out_b,
         ..options
     })
     .expect("impl b");
@@ -415,7 +415,7 @@ fn implementation_preserves_indexed_ports_and_pin_constraints() {
     let (_temp, out_dir) = temp_out("impl-bus");
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/bus.edf"),
-        out_dir: out_dir.clone(),
+        out_dir,
         resource_root: Some(fixture("tests/fixtures/hw_lib")),
         constraints: Some(fixture("tests/fixtures/bus-constraints.xml")),
         ..ImplementationOptions::default()
@@ -458,7 +458,7 @@ fn rust_impl_emits_device_and_tile_config_when_external_resources_are_available(
     let (_temp, out_dir) = temp_out("impl-rust-tiles");
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/blinky-yosys.edf"),
-        out_dir: out_dir.clone(),
+        out_dir,
         resource_root: Some(resource_root),
         constraints: Some(fixture("tests/fixtures/fdp3p7-constraints.xml")),
         emit_sidecar: true,
@@ -501,7 +501,7 @@ fn rust_impl_emits_text_bitstream_when_external_resources_are_available() {
     let (_temp, out_dir) = temp_out("impl-rust-text-bitstream");
     let report = run_implementation(&ImplementationOptions {
         input: fixture("tests/fixtures/blinky-yosys.edf"),
-        out_dir: out_dir.clone(),
+        out_dir,
         resource_root: Some(resource_root),
         constraints: Some(fixture("tests/fixtures/fdp3p7-constraints.xml")),
         emit_sidecar: true,
@@ -545,7 +545,7 @@ fn complex_external_resource_impl_emits_text_bitstream() {
     let (_temp, out_dir) = temp_out("impl-rust-complex-text-bitstream");
     let report = run_implementation(&ImplementationOptions {
         input,
-        out_dir: out_dir.clone(),
+        out_dir,
         resource_root: Some(resource_root),
         constraints: Some(constraints),
         emit_sidecar: true,

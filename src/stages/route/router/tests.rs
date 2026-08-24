@@ -93,7 +93,7 @@ fn foreign_net_claims_are_unique_and_priced() {
         vec![0, 1, 2]
     );
 
-    let history = [(resource, 3)].into_iter().collect();
+    let history = std::iter::once((resource, 3)).collect();
     let negotiation = NegotiationContext {
         claims: &claims,
         history: &history,
@@ -304,9 +304,9 @@ fn dedicated_clock_search_reaches_real_arch_clock_sink() {
     let sink_wire = wires.intern("S0_CLK_B");
     let ordered_guide = OrderedGuide::new(&[]);
     let guide_distances = GuideDistances::new(&arch, &[]);
-    let tree_nodes = [root].into_iter().collect::<HashSet<_>>();
+    let tree_nodes = std::iter::once(root).collect::<HashSet<_>>();
     let tree_starts = tree_nodes.clone();
-    let tree_start_costs = [(root, 0usize)].into_iter().collect::<HashMap<_, _>>();
+    let tree_start_costs = std::iter::once((root, 0usize)).collect::<HashMap<_, _>>();
     let sink_wires = [sink_wire];
     let spec = SinkRouteSpec {
         criticality: 0.0,

@@ -94,7 +94,7 @@ fn parse_cell_delays(doc: &Document) -> CellIntrinsicDelays {
     else {
         return delays;
     };
-    for node in element.children().filter(|node| node.is_element()) {
+    for node in element.children().filter(roxmltree::Node::is_element) {
         let attribute = |name: &str| node.attribute(name).and_then(|v| v.parse::<f64>().ok());
         match node.tag_name().name() {
             "lut" => {
@@ -167,7 +167,7 @@ mod tests {
         );
         let model = load_delay_model(Some(&path)).expect("load").expect("model");
         assert_eq!(model.name, "clb2clb");
-        assert_eq!(model.lookup(1, 1), 0.4);
+        assert!((model.lookup(1, 1) - 0.4).abs() < f64::EPSILON);
         let delays = model.cell_delays;
         assert!((delays.lut_base_ns - 0.15).abs() < 1e-9);
         assert!((delays.ff_delay_ns - 0.1).abs() < 1e-9);

@@ -112,10 +112,7 @@ fn port_attr_value(
         .or_else(|| cell_property(cell, "PORT_ATTR"))
         .map(str::to_owned),
         (BlockRamKind::SinglePort, BlockRamPortSide::B) => None,
-        (BlockRamKind::DualPort, BlockRamPortSide::A) => {
-            cell_property(cell, side.port_attr_key().as_str()).map(str::to_owned)
-        }
-        (BlockRamKind::DualPort, BlockRamPortSide::B) => {
+        (BlockRamKind::DualPort, BlockRamPortSide::A | BlockRamPortSide::B) => {
             cell_property(cell, side.port_attr_key().as_str()).map(str::to_owned)
         }
     }

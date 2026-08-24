@@ -162,7 +162,7 @@ fn normalize_lut_cell_inputs(cell: &mut Cell) -> bool {
         return false;
     }
 
-    let new_truth_table_bits = 1usize.checked_shl(new_width.min(7) as u32).unwrap_or(128);
+    let new_truth_table_bits = 1usize << new_width.min(7);
     let mut new_value = 0u128;
     for new_address in 0..new_truth_table_bits {
         let mut old_address = 0usize;
@@ -418,7 +418,7 @@ fn gate_ff_data_inputs_with_clock(design: &mut Design) -> usize {
         if let Some(cell) = design.cells.get_mut(gate.ff_id.index())
             && let Some(d_pin) = cell.inputs.iter_mut().find(|pin| pin.port == gate.d_port)
         {
-            d_pin.net = gated_net.clone();
+            d_pin.net.clone_from(&gated_net);
         }
         design
             .nets

@@ -29,12 +29,15 @@ pub(super) fn route_transition_cost(
     discount_for_criticality(base, spec.criticality)
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn discount_for_criticality(base: usize, criticality: f64) -> usize {
-    if base == 0 || criticality <= f64::EPSILON {
+    if base == 0 || !criticality.is_finite() || criticality <= f64::EPSILON {
         return base;
     }
     let factor = 1.0 - MAX_CRITICALITY_DISCOUNT * criticality.clamp(0.0, 1.0);
-    ((base as f64) * factor).round() as usize
+    let discounted = (base as f64) * factor;
+    debug_assert!(discounted.is_finite() && discounted >= 0.0);
+    discounted.round() as usize
 }
 
 pub(super) fn route_heuristic(

@@ -106,12 +106,7 @@ pub(super) fn initial_placement(
             .get(site_index)
             .is_some_and(|clusters| clusters.len() >= site_capacity)
         {
-            bail!(
-                "too many fixed clusters requested {} site ({}, {})",
-                site_label,
-                x,
-                y
-            );
+            bail!("too many fixed clusters requested {site_label} site ({x}, {y})");
         }
         occupied[site_index].push(ClusterId::new(index));
         placements[index] = Some(point);
@@ -138,7 +133,7 @@ pub(super) fn initial_placement(
             _ => (logic_sites, logic_site_capacity, "logic"),
         };
         if sites.is_empty() {
-            bail!("ran out of {} sites during initial placement", site_label);
+            bail!("ran out of {site_label} sites during initial placement");
         }
         let target = graph
             .weighted_centroid(cluster_id, &placements)

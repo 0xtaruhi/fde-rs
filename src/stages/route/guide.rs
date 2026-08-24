@@ -188,12 +188,18 @@ fn guide_run_is_linear(run: &[(usize, usize)]) -> bool {
 }
 
 fn guide_step(from: (usize, usize), to: (usize, usize)) -> Option<(isize, isize)> {
-    let dx = to.0 as isize - from.0 as isize;
-    let dy = to.1 as isize - from.1 as isize;
-    match (dx, dy) {
-        (-1 | 1, 0) | (0, -1 | 1) => Some((dx.signum(), dy.signum())),
-        _ => None,
+    if !matches!(
+        (from.0.abs_diff(to.0), from.1.abs_diff(to.1)),
+        (1, 0) | (0, 1)
+    ) {
+        return None;
     }
+    let direction = |from: usize, to: usize| match to.cmp(&from) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    Some((direction(from.0, to.0), direction(from.1, to.1)))
 }
 
 fn tile_neighbors(arch: &Arch, x: usize, y: usize) -> SmallVec<[(usize, usize); 4]> {

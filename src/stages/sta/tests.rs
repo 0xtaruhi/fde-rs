@@ -349,8 +349,8 @@ fn sta_empty_design_reports_zero_critical_path() -> Result<()> {
     .value;
 
     let summary = artifact.design.timing.expect("timing summary");
-    assert_eq!(summary.critical_path_ns, 0.0);
-    assert_eq!(summary.fmax_mhz, 0.0);
+    assert!(summary.critical_path_ns.abs() < f64::EPSILON);
+    assert!(summary.fmax_mhz.abs() < f64::EPSILON);
     assert!(summary.top_paths.is_empty());
     assert!(artifact.graph.nodes.is_empty());
     assert!(artifact.graph.edges.is_empty());
@@ -361,7 +361,6 @@ fn sta_empty_design_reports_zero_critical_path() -> Result<()> {
 
 #[test]
 fn sta_reporter_receives_stage_events() -> Result<()> {
-    let events = Arc::new(Mutex::new(Vec::<StageEvent>::new()));
     struct Collector(Arc<Mutex<Vec<StageEvent>>>);
 
     impl StageReporter for Collector {
@@ -370,6 +369,7 @@ fn sta_reporter_receives_stage_events() -> Result<()> {
         }
     }
 
+    let events = Arc::new(Mutex::new(Vec::<StageEvent>::new()));
     let mut reporter = Some(&mut Collector(Arc::clone(&events)) as &mut dyn StageReporter);
     run_stage_with_reporter(
         "sta",
@@ -397,6 +397,7 @@ fn sta_reporter_receives_stage_events() -> Result<()> {
         )),
         "arrival info event missing: {events:?}"
     );
+    drop(events);
 
     Ok(())
 }
@@ -428,8 +429,7 @@ fn backward_slack_distinguishes_parallel_branches() -> Result<()> {
             .nodes
             .iter()
             .find(|node| node.id == id)
-            .map(|node| node.slack_ns)
-            .unwrap_or_else(|| panic!("missing node {id}"))
+            .map_or_else(|| panic!("missing node {id}"), |node| node.slack_ns)
     };
 
     // Slow branch (b_net, 5 units -> 0.40 arrival + 0.23 cell arc) consumes

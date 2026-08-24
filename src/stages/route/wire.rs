@@ -63,9 +63,9 @@ pub(crate) fn route_node_class(
         return RouteNodeClass::Clock;
     }
 
-    let length = bounds
-        .map(|bounds| bounds.max_x - bounds.min_x + bounds.max_y - bounds.min_y)
-        .unwrap_or(0);
+    let length = bounds.map_or(0, |bounds| {
+        bounds.max_x - bounds.min_x + bounds.max_y - bounds.min_y
+    });
     if is_long_wire_name(raw) && length != 0 {
         return RouteNodeClass::Long;
     }

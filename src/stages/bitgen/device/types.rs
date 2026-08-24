@@ -309,9 +309,9 @@ impl DeviceEndpoint {
 fn trailing_index(raw: &str) -> Option<usize> {
     raw.chars()
         .rev()
-        .find(|ch| ch.is_ascii_digit())
+        .find(char::is_ascii_digit)
         .and_then(|ch| ch.to_digit(10))
-        .map(|digit| digit as usize)
+        .and_then(|digit| usize::try_from(digit).ok())
 }
 
 #[cfg(test)]

@@ -22,7 +22,7 @@ pub(super) fn build_port_bindings(
             let output_used = port_used_as_output(design, &port.name);
             let pin_name = port.pin.as_deref().or_else(|| {
                 context
-                    ._constraints
+                    .constraints
                     .iter()
                     .find(|constraint| constraint.port_name == port.name)
                     .map(|constraint| constraint.pin_name.as_str())
@@ -32,9 +32,8 @@ pub(super) fn build_port_bindings(
                 .and_then(|arch| pin_name.and_then(|pin| arch.pad(pin)));
             let pad_module_ref = match pad.map(|pad| pad.site_kind) {
                 Some(PadSiteKind::GclkIob) => "gclkiob",
-                Some(PadSiteKind::Iob) => "iob",
                 None if clock_input => "gclkiob",
-                None => "iob",
+                Some(PadSiteKind::Iob) | None => "iob",
             };
             let fallback_position = port.x.zip(port.y).map(|(x, y)| (x, y, port.z.unwrap_or(0)));
             let pad_position = pad.map(|pad| (pad.x, pad.y, pad.z)).or(fallback_position);
@@ -146,6 +145,7 @@ pub(super) fn split_clock_route_pips(
 #[cfg(test)]
 mod tests {
     use super::{build_pad_configs, build_port_bindings};
+    use crate::io::xml::writer::XmlWriteContext;
     use crate::ir::{Design, Endpoint, Net, Port};
 
     #[test]
@@ -156,7 +156,7 @@ mod tests {
             ..Design::default()
         };
 
-        let bindings = build_port_bindings(&design, &Default::default());
+        let bindings = build_port_bindings(&design, &XmlWriteContext::default());
         let binding = bindings.first().expect("binding");
 
         assert_eq!(binding.pad_position, Some((5, 1, 2)));
@@ -180,7 +180,7 @@ mod tests {
             ..Design::default()
         };
 
-        let bindings = build_port_bindings(&design, &Default::default());
+        let bindings = build_port_bindings(&design, &XmlWriteContext::default());
         let binding = bindings
             .iter()
             .find(|binding| binding.port_name == "uart_rx")

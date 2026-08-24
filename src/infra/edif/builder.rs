@@ -61,7 +61,7 @@ impl DesignBuilder {
 
     pub(super) fn push_instance(&mut self, instance_ref: String, mut cell: Cell) {
         if let Some(resolved_type_name) = self.library_cell_names.get(&cell.type_name) {
-            cell.type_name = resolved_type_name.clone();
+            cell.type_name.clone_from(resolved_type_name);
         }
         cell.kind = classify_cell_kind(&cell.type_name);
         self.instance_names

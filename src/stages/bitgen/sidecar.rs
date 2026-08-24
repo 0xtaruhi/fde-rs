@@ -1,6 +1,8 @@
 use super::{
-    ConfigImage, SerializedTextBitstream, api::BitgenOptions, artifacts::PreparedArtifacts,
-    circuit::BitgenCircuit,
+    ConfigImage, SerializedTextBitstream,
+    api::BitgenOptions,
+    artifacts::PreparedArtifacts,
+    circuit::{BitgenCircuit, serialize_net_route},
 };
 use crate::bitgen::ProgrammingImage;
 use std::fmt::Write;
@@ -25,12 +27,12 @@ pub(super) fn build_sidecar(
         }
     );
     if let Some(arch_name) = options.arch_name.as_ref() {
-        let _ = writeln!(sidecar, "arch={}", arch_name);
+        let _ = writeln!(sidecar, "arch={arch_name}");
     }
     if let Some(cil_path) = options.cil_path.as_ref() {
         let _ = writeln!(sidecar, "cil={}", cil_path.display());
     }
-    let _ = writeln!(sidecar, "sha256={}", sha256);
+    let _ = writeln!(sidecar, "sha256={sha256}");
     let _ = writeln!(sidecar);
     for cluster in &circuit.clusters {
         let _ = writeln!(
@@ -69,7 +71,7 @@ fn render_bitstream_sidecar(sidecar: &mut String, serialized: &SerializedTextBit
     let _ = writeln!(sidecar, "MAJORS {}", serialized.major_count);
     let _ = writeln!(sidecar, "MEMORIES {}", serialized.memory_count);
     for note in &serialized.notes {
-        let _ = writeln!(sidecar, "NOTE {}", note);
+        let _ = writeln!(sidecar, "NOTE {note}");
     }
 }
 
@@ -77,7 +79,7 @@ fn render_config_image_sidecar(sidecar: &mut String, config_image: &ConfigImage)
     let _ = writeln!(sidecar);
     let _ = writeln!(sidecar, "# Tile Config Image");
     for note in &config_image.notes {
-        let _ = writeln!(sidecar, "NOTE {}", note);
+        let _ = writeln!(sidecar, "NOTE {note}");
     }
     for tile in &config_image.tiles {
         let _ = writeln!(
@@ -117,7 +119,7 @@ fn render_programming_sidecar(sidecar: &mut String, programming: &ProgrammingIma
     let _ = writeln!(sidecar);
     let _ = writeln!(sidecar, "# Routed Transmission Pips");
     for note in &programming.notes {
-        let _ = writeln!(sidecar, "NOTE {}", note);
+        let _ = writeln!(sidecar, "NOTE {note}");
     }
     for pip in &programming.routes {
         let _ = writeln!(
@@ -125,26 +127,5 @@ fn render_programming_sidecar(sidecar: &mut String, programming: &ProgrammingIma
             "PIP {} {} {} @ {},{} {} -> {}",
             pip.net_name, pip.tile_name, pip.site_name, pip.x, pip.y, pip.from_net, pip.to_net
         );
-    }
-}
-
-fn serialize_net_route(net: &crate::ir::Net) -> String {
-    if !net.route.is_empty() {
-        net.route
-            .iter()
-            .map(|segment| {
-                format!(
-                    "{}:{}-{}:{}",
-                    segment.x0, segment.y0, segment.x1, segment.y1
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    } else {
-        net.route_pips
-            .iter()
-            .map(|pip| format!("{}:{}@{},{}", pip.from_net, pip.to_net, pip.x, pip.y))
-            .collect::<Vec<_>>()
-            .join("|")
     }
 }

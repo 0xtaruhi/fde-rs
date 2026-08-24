@@ -37,5 +37,5 @@ pub fn build_config_image(
     route_image: Option<&crate::route::DeviceRouteImage>,
 ) -> Result<ConfigImage> {
     let programming = build_programming_image(device, cil, route_image);
-    config_image::encode_config_image(&programming, cil, arch)
+    Ok(config_image::encode_config_image(&programming, cil, arch))
 }

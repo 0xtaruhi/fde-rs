@@ -309,7 +309,7 @@ impl BlockRamPin {
         let compact = pin
             .trim()
             .chars()
-            .filter(|ch| ch.is_ascii_alphanumeric())
+            .filter(char::is_ascii_alphanumeric)
             .map(|ch| ch.to_ascii_uppercase())
             .collect::<String>();
         if compact.is_empty() {
@@ -396,8 +396,8 @@ impl BlockRamPin {
         Self::Control { side, signal }
     }
 
-    pub(crate) fn physical_port_name(self) -> Option<String> {
-        Some(match self {
+    pub(crate) fn physical_port_name(self) -> String {
+        match self {
             Self::Control { side, signal } => signal.physical_port_name(side).to_string(),
             Self::DataIn { side, index } => match side {
                 BlockRamPortSide::A => format!("DINA{index}"),
@@ -411,7 +411,7 @@ impl BlockRamPin {
                 BlockRamPortSide::A => format!("ADDRA_{index}"),
                 BlockRamPortSide::B => format!("ADDRB_{index}"),
             },
-        })
+        }
     }
 
     pub(crate) const fn control_signal(self) -> Option<BlockRamControlSignal> {
@@ -453,8 +453,10 @@ impl BlockRamPin {
                 side: BlockRamPortSide::B,
                 ..
             } => Some(-1),
-            Self::Addr { index, .. } => Some((routed_addr_index(index)? / 4) as isize - 2),
-            Self::DataOut { index, .. } => Some(index as isize % 4 - 3),
+            Self::Addr { index, .. } => {
+                Some(isize::try_from(routed_addr_index(index)? / 4).ok()? - 2)
+            }
+            Self::DataOut { index, .. } => Some(isize::try_from(index).ok()? % 4 - 3),
             Self::DataIn { index, .. } => match index {
                 0 | 2 | 8 | 10 => Some(-3),
                 1 | 3 | 9 | 11 => Some(-2),
@@ -655,7 +657,7 @@ mod tests {
             "WEA"
         );
         assert_eq!(
-            BlockRamPin::parse("DOA[3]").and_then(BlockRamPin::physical_port_name),
+            BlockRamPin::parse("DOA[3]").map(BlockRamPin::physical_port_name),
             Some("DOUTA3".to_string())
         );
         assert!(BlockRamPin::parse("DOB7").is_some_and(BlockRamPin::is_data_output));

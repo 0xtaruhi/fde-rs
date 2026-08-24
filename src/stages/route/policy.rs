@@ -72,7 +72,7 @@ pub(super) fn neighbor_congestion_cost(
     NeighborCost::Contended(cost)
 }
 
-#[inline(always)]
+#[inline]
 pub(super) fn node_has_successors(context: &RouteSinkContext<'_>, node: &RouteNode) -> bool {
     if let Some(tile) = context.tile_context(node)
         && let Some(graph) = tile.graph

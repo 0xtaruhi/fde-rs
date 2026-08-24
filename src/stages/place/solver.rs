@@ -27,7 +27,8 @@ const CANDIDATE_SCORE_PARALLEL_MIN_MOVABLE_CLUSTERS: usize = 1024;
 const ANNEAL_TEMPERATURE_FLOOR: f64 = 0.02;
 const PLATEAU_EARLY_EXIT_MIN_ITERATIONS: usize = 50_000;
 const PLATEAU_EARLY_EXIT_MIN_MOVABLE_CLUSTERS: usize = 512;
-const PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO: f64 = 0.60;
+const PLATEAU_EARLY_EXIT_MIN_COMPLETION_NUMERATOR: usize = 3;
+const PLATEAU_EARLY_EXIT_MIN_COMPLETION_DENOMINATOR: usize = 5;
 const PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT: f64 = 0.0005;
 
 /// Trials between adaptive move-weight rebalancing passes.
@@ -101,7 +102,7 @@ impl AdaptiveMoves {
         }
         if self.window_attempts >= ACCEPTANCE_WINDOW {
             self.pending_window_ratio =
-                Some(self.window_accepts as f64 / self.window_attempts as f64);
+                Some(f64::from(self.window_accepts) / f64::from(self.window_attempts));
             self.window_attempts = 0;
             self.window_accepts = 0;
         }
@@ -117,7 +118,7 @@ impl AdaptiveMoves {
     fn rebalance(&mut self) {
         self.since_rebalance = 0;
         let rate = |slot: usize| {
-            let attempts = self.attempts[slot] as f64;
+            let attempts = f64::from(self.attempts[slot]);
             if attempts <= 0.0 {
                 return 0.0;
             }
@@ -371,8 +372,7 @@ impl PlateauExitState {
     fn new(iterations: usize, movable_count: usize, best_total: f64) -> Self {
         let enabled = iterations >= PLATEAU_EARLY_EXIT_MIN_ITERATIONS
             && movable_count >= PLATEAU_EARLY_EXIT_MIN_MOVABLE_CLUSTERS;
-        let min_completion_step =
-            ((iterations as f64) * PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO).ceil() as usize;
+        let min_completion_step = plateau_min_completion_step(iterations);
         let window = (iterations / 20)
             .max(movable_count * 2)
             .min(iterations.max(1));
@@ -412,6 +412,14 @@ impl PlateauExitState {
         self.window_start_best_total = best_total;
         relative_improvement < PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT
     }
+}
+
+fn plateau_min_completion_step(iterations: usize) -> usize {
+    let whole = iterations / PLATEAU_EARLY_EXIT_MIN_COMPLETION_DENOMINATOR
+        * PLATEAU_EARLY_EXIT_MIN_COMPLETION_NUMERATOR;
+    let remainder = iterations % PLATEAU_EARLY_EXIT_MIN_COMPLETION_DENOMINATOR
+        * PLATEAU_EARLY_EXIT_MIN_COMPLETION_NUMERATOR;
+    whole + remainder.div_ceil(PLATEAU_EARLY_EXIT_MIN_COMPLETION_DENOMINATOR)
 }
 
 fn choose_focus_and_targets(
@@ -751,10 +759,11 @@ fn solve_incremental(
             best.metrics.total
         ),
     );
+    let metrics = best.metrics;
     Ok(refine_solution(
         context,
         best.placements,
-        best.metrics,
+        &metrics,
         reporter,
     ))
 }
@@ -963,10 +972,11 @@ fn solve_full(
             best.metrics.total
         ),
     );
+    let metrics = best.metrics;
     Ok(refine_solution(
         context,
         best.placements,
-        best.metrics,
+        &metrics,
         reporter,
     ))
 }
@@ -974,7 +984,7 @@ fn solve_full(
 fn refine_solution(
     context: &SolveContext<'_>,
     placements: Vec<Option<Point>>,
-    metrics: PlacementMetrics,
+    metrics: &PlacementMetrics,
     reporter: &mut Option<&mut dyn StageReporter>,
 ) -> PlacementSolution {
     let mut evaluator = PlacementEvaluator::new_from_positions(
@@ -1276,9 +1286,8 @@ fn site_resources<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ANNEAL_TEMPERATURE_FLOOR, PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO,
-        PLATEAU_EARLY_EXIT_MIN_ITERATIONS, PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT,
-        PlateauExitState,
+        ANNEAL_TEMPERATURE_FLOOR, PLATEAU_EARLY_EXIT_MIN_ITERATIONS,
+        PLATEAU_EARLY_EXIT_RELATIVE_IMPROVEMENT, PlateauExitState, plateau_min_completion_step,
     };
 
     #[test]
@@ -1290,11 +1299,15 @@ mod tests {
     }
 
     #[test]
+    fn plateau_completion_ratio_does_not_overflow() {
+        assert_eq!(plateau_min_completion_step(usize::MAX), usize::MAX / 5 * 3);
+    }
+
+    #[test]
     fn plateau_exit_triggers_after_large_window_with_tiny_improvement() {
         let iterations = PLATEAU_EARLY_EXIT_MIN_ITERATIONS;
         let mut plateau = PlateauExitState::new(iterations, 1_024, 10_000.0);
-        let start_step =
-            ((iterations as f64) * PLATEAU_EARLY_EXIT_MIN_COMPLETION_RATIO).ceil() as usize;
+        let start_step = plateau_min_completion_step(iterations);
         for step in 0..start_step {
             assert!(!plateau.should_stop(step, ANNEAL_TEMPERATURE_FLOOR, 10_000.0));
         }
