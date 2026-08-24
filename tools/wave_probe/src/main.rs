@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use std::{collections::BTreeMap, env, path::Path, thread, time::Duration};
-use vlfd_rs::{Device, IoSettings, Programmer};
+use vlfd_rs::{Board, IoConfig, Programmer};
 
 #[derive(Debug, Clone)]
 struct Segment {
@@ -56,10 +56,12 @@ fn decoded_mask(rx: &[u16]) -> u16 {
 
 fn summarize_segment(index: usize, segment: &Segment, rx: &[u16]) {
     let decoded = decoded_mask(rx);
-    let low_nibble_hist = rx.iter().fold(BTreeMap::<u16, usize>::new(), |mut hist, word| {
-        *hist.entry(word & 0x000f).or_default() += 1;
-        hist
-    });
+    let low_nibble_hist = rx
+        .iter()
+        .fold(BTreeMap::<u16, usize>::new(), |mut hist, word| {
+            *hist.entry(word & 0x000f).or_default() += 1;
+            hist
+        });
     let preview = rx
         .iter()
         .take(8)
@@ -113,32 +115,35 @@ fn main() -> Result<()> {
     let bitstream = args
         .next()
         .context("usage: wave_probe <bitstream> [pattern*words ...]")?;
-    let mut segments = args.map(|arg| parse_segment(&arg)).collect::<Result<Vec<_>>>()?;
+    let mut segments = args
+        .map(|arg| parse_segment(&arg))
+        .collect::<Result<Vec<_>>>()?;
     if segments.is_empty() {
         segments = default_segments();
     }
 
-    let mut programmer = Programmer::connect()?;
+    let mut programmer = Programmer::open()?;
     programmer.program(Path::new(&bitstream))?;
     programmer.close()?;
     println!("program_ok {bitstream}");
 
-    let mut device = Device::connect()?;
-    let fifo_words = usize::from(device.config().fifo_size());
+    let mut board = Board::open()?;
+    let fifo_words = usize::from(board.config().fifo_size_words());
     println!(
-        "device_connected programmed={} fifo_size={} vericomm={} version={}",
-        device.config().is_programmed(),
+        "device_connected programmed={} fifo_size={} vericomm={} version={} clock_continues={}",
+        board.config().is_programmed(),
         fifo_words,
-        device.config().vericomm_ability(),
-        device.config().smims_version_raw(),
+        board.config().vericomm_ability(),
+        board.config().smims_version_raw(),
+        board.config().vericomm_clock_continues(),
     );
-    device.enter_io_mode(&IoSettings::default())?;
+    let mut io = board.configure_io(&IoConfig::default())?;
     thread::sleep(Duration::from_millis(50));
 
     let prime_words = fifo_words.min(64);
-    let mut prime_tx = vec![0u16; prime_words];
+    let prime_tx = vec![0u16; prime_words];
     let mut prime_rx = vec![0u16; prime_words];
-    device.transfer_io(&mut prime_tx, &mut prime_rx)?;
+    io.transfer_into(&prime_tx, &mut prime_rx)?;
     thread::sleep(Duration::from_millis(20));
 
     let total_words = segments.iter().map(|segment| segment.words).sum::<usize>();
@@ -169,13 +174,14 @@ fn main() -> Result<()> {
     }
 
     let mut rx = vec![0u16; tx.len()];
-    device.transfer_io(&mut tx, &mut rx)?;
+    io.transfer_into(&tx, &mut rx)?;
     thread::sleep(Duration::from_millis(20));
 
     for (index, (segment, range)) in segments.iter().zip(ranges.iter()).enumerate() {
         summarize_segment(index, segment, &rx[range.clone()]);
     }
 
-    device.exit_io_mode()?;
+    io.finish()?;
+    board.close()?;
     Ok(())
 }
