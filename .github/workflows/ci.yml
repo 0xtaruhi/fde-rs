@@ -43,6 +43,12 @@ jobs:
       - name: Cargo test
         run: cargo test --locked --quiet
 
+      - name: Board probe Clippy
+        run: cargo clippy --locked --manifest-path tools/wave_probe/Cargo.toml --all-targets -- -D warnings
+
+      - name: Board probe tests
+        run: cargo test --locked --manifest-path tools/wave_probe/Cargo.toml
+
       - name: Install Icarus Verilog
         run: sudo apt-get update && sudo apt-get install --yes iverilog
 

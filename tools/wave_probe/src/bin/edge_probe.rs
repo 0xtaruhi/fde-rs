@@ -1,44 +1,64 @@
-//! Per-word trace of a resettable counter: measures exactly how many fabric
-//! clock edges the VeriComm fixture delivers per tx word.
+//! Per-sample trace of a resettable counter: demonstrates that VeriComm
+//! captures an asynchronously free-running fabric rather than clock steps.
 //!
-//! Stream: word0 = rst(0x0008), words 1..N = 0x0000, rest = 0x0000.
-//! rx gives one sampled nibble per word slot -> watch cnt evolve.
+//! Stream: sample 0 = rst(0x0008), later samples = 0x0000.
 
-use anyhow::Result;
-use vlfd_rs::{Board, IoConfig};
+use anyhow::{Result, bail};
+use vlfd_rs::{Board, BoardSelector, IoConfig, Licence, Programmer, VeriCommFrame};
+use wave_probe::profile::BoardProfile;
 
 fn main() -> Result<()> {
-    let _bitstream = std::env::args()
+    let bitstream = std::env::args()
         .nth(1)
         .expect("usage: edge_probe <bitstream> [words]");
-    let n_words: usize = std::env::args()
+    let n_samples: usize = std::env::args()
         .nth(2)
         .and_then(|v| v.parse().ok())
         .unwrap_or(24);
 
-    let mut board = Board::open()?;
+    let profile = BoardProfile::bundled()?;
+    let boards = Board::enumerate()?;
+    let [board_info] = boards.as_slice() else {
+        bail!(
+            "edge_probe requires exactly one connected board, found {}",
+            boards.len()
+        );
+    };
+    let selector = BoardSelector::UsbLocation(board_info.location.clone());
+    let mut programmer = Programmer::open_selected(&selector)?;
+    programmer.program(bitstream)?;
+    programmer.close()?;
+
+    let mut board = Board::open_selected(&selector)?;
+    let fifo_words = usize::from(board.config().fifo_size_words());
     println!(
         "device programmed={} fifo={} vericomm={} clock_continues={}",
         board.config().is_programmed(),
-        board.config().fifo_size_words(),
+        fifo_words,
         board.config().vericomm_ability(),
         board.config().vericomm_clock_continues()
     );
-    let mut io = board.configure_io(&IoConfig::default())?;
+    let mut io = board.configure_io(&IoConfig::new(Licence::CustomerId(profile.customer_id)))?;
 
-    let mut tx = vec![0u16; 1024];
-    let mut rx = vec![0u16; 1024];
-    tx[0] = 0x0008; // rst high for first word only
-    // words 1..n_words: rst low (counter counts), rest stay zero (still count!)
+    let mut tx = vec![0u16; fifo_words];
+    let mut rx = vec![0u16; fifo_words];
+    tx[..VeriCommFrame::WORDS].copy_from_slice(VeriCommFrame::from_bits(0x0008).words());
+    // Sample 0 asserts reset; subsequent samples leave it low while the clock free-runs.
 
     io.transfer_into(&tx, &mut rx)?;
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    println!("word | raw    | cnt(nibble)");
-    for (index, word) in rx.iter().enumerate().take(n_words) {
-        let nibble = word & 0xf;
+    println!("sample | raw               | cnt(nibble)");
+    for (index, words) in rx
+        .chunks_exact(VeriCommFrame::WORDS)
+        .enumerate()
+        .take(n_samples)
+    {
+        let sample = VeriCommFrame::from_words([words[0], words[1], words[2], words[3]]);
+        let nibble = sample.words()[0] & 0xf;
         println!(
-            "{index:4} | {word:04x}   | {nibble:x} {}",
+            "{index:6} | {:016x} | {nibble:x} {}",
+            sample.bits(),
             "#".repeat(nibble as usize)
         );
     }
