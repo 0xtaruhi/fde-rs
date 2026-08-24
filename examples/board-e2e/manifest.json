@@ -1,4 +1,50 @@
 {
+  "simulation_profiles": {
+    "combinational": {
+      "sources": ["tests/rtl/board_comb_suite.v"],
+      "testbench": "tests/rtl/board_comb_tb.v",
+      "probe_segments": [
+        "0x0000*64",
+        "0x0001*64",
+        "0x0002*64",
+        "0x0003*64",
+        "0x0004*64",
+        "0x0005*64",
+        "0x0006*64",
+        "0x0007*64",
+        "0x0008*64",
+        "0x0009*64",
+        "0x000a*64",
+        "0x000b*64",
+        "0x000c*64",
+        "0x000d*64",
+        "0x000e*64",
+        "0x000f*64"
+      ]
+    },
+    "sequential": {
+      "sources": ["tests/rtl/board_seq_suite.v"],
+      "testbench": "tests/rtl/board_seq_tb.v",
+      "probe_segments": [
+        "0x0008*64",
+        "0x0000*64",
+        "0x0009*64",
+        "0x0001*64",
+        "0x000a*64",
+        "0x0002*64",
+        "0x000b*64",
+        "0x0003*64",
+        "0x000c*64",
+        "0x0004*64",
+        "0x000d*64",
+        "0x0005*64",
+        "0x000e*64",
+        "0x0006*64",
+        "0x000f*64",
+        "0x0007*64"
+      ]
+    }
+  },
   "cases": [
     {
       "name": "invert",
@@ -267,6 +313,170 @@
         "0x0",
         "0x0"
       ]
+    },
+    {
+      "name": "comb-boolean",
+      "edf": "comb-boolean/comb_boolean.edf",
+      "constraints": "comb-boolean/constraints.xml",
+      "rtl_top": "comb_boolean",
+      "expected_outputs": ["0x8", "0xc", "0x0", "0x5", "0xe", "0xa", "0x6", "0x3", "0x2", "0x6", "0xa", "0xf", "0x6", "0x2", "0xe", "0xb"]
+    },
+    {
+      "name": "comb-mux",
+      "edf": "comb-mux/comb_mux.edf",
+      "constraints": "comb-mux/constraints.xml",
+      "rtl_top": "comb_mux",
+      "expected_outputs": ["0x0", "0x1", "0x2", "0xb", "0x4", "0x0", "0x7", "0xb", "0x8", "0xd", "0x0", "0xd", "0xe", "0xe", "0x7", "0xf"]
+    },
+    {
+      "name": "comb-decoder",
+      "edf": "comb-decoder/comb_decoder.edf",
+      "constraints": "comb-decoder/constraints.xml",
+      "rtl_top": "comb_decoder",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0x0", "0x1", "0x2", "0x4", "0x8", "0x1", "0x2", "0x4", "0x8", "0x0", "0x0", "0x0", "0x0"]
+    },
+    {
+      "name": "comb-compare",
+      "edf": "comb-compare/comb_compare.edf",
+      "constraints": "comb-compare/constraints.xml",
+      "rtl_top": "comb_compare",
+      "expected_outputs": ["0x1", "0xa", "0xa", "0xa", "0xc", "0x1", "0xa", "0xa", "0xc", "0xc", "0x1", "0xa", "0xc", "0xc", "0xc", "0x1"]
+    },
+    {
+      "name": "comb-adder",
+      "edf": "comb-adder/comb_adder.edf",
+      "constraints": "comb-adder/constraints.xml",
+      "rtl_top": "comb_adder",
+      "expected_outputs": ["0x0", "0x9", "0xa", "0x3", "0x9", "0x2", "0x3", "0xc", "0xa", "0x3", "0x4", "0xd", "0x3", "0xc", "0xd", "0x6"]
+    },
+    {
+      "name": "comb-subtractor",
+      "edf": "comb-subtractor/comb_subtractor.edf",
+      "constraints": "comb-subtractor/constraints.xml",
+      "rtl_top": "comb_subtractor",
+      "expected_outputs": ["0x8", "0x7", "0x6", "0x5", "0x9", "0x8", "0x7", "0x6", "0xa", "0x9", "0x8", "0x7", "0xb", "0xa", "0x9", "0x8"]
+    },
+    {
+      "name": "comb-rotate",
+      "edf": "comb-rotate/comb_rotate.edf",
+      "constraints": "comb-rotate/constraints.xml",
+      "rtl_top": "comb_rotate",
+      "expected_outputs": ["0x0", "0x8", "0x1", "0x9", "0x2", "0xa", "0x3", "0xb", "0x4", "0xc", "0x5", "0xd", "0x6", "0xe", "0x7", "0xf"]
+    },
+    {
+      "name": "comb-priority",
+      "edf": "comb-priority/comb_priority.edf",
+      "constraints": "comb-priority/constraints.xml",
+      "rtl_top": "comb_priority",
+      "expected_outputs": ["0x0", "0xc", "0xd", "0x5", "0xe", "0x6", "0x6", "0xe", "0xf", "0x7", "0x7", "0xf", "0x7", "0xf", "0xf", "0x7"]
+    },
+    {
+      "name": "comb-majority",
+      "edf": "comb-majority/comb_majority.edf",
+      "constraints": "comb-majority/constraints.xml",
+      "rtl_top": "comb_majority",
+      "expected_outputs": ["0x0", "0x1", "0x1", "0x3", "0x1", "0x3", "0x3", "0x5", "0x1", "0x3", "0x3", "0x5", "0x3", "0x5", "0x5", "0xd"]
+    },
+    {
+      "name": "comb-gray",
+      "edf": "comb-gray/comb_gray.edf",
+      "constraints": "comb-gray/constraints.xml",
+      "rtl_top": "comb_gray",
+      "expected_outputs": ["0x0", "0x1", "0x3", "0x2", "0x6", "0x7", "0x5", "0x4", "0xc", "0xd", "0xf", "0xe", "0xa", "0xb", "0x9", "0x8"]
+    },
+    {
+      "name": "comb-barrel",
+      "edf": "comb-barrel/comb_barrel.edf",
+      "constraints": "comb-barrel/constraints.xml",
+      "rtl_top": "comb_barrel",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0x0", "0x1", "0x2", "0x4", "0x8", "0x2", "0x4", "0x8", "0x0", "0x3", "0x6", "0xc", "0x8"]
+    },
+    {
+      "name": "comb-sbox",
+      "edf": "comb-sbox/comb_sbox.edf",
+      "constraints": "comb-sbox/constraints.xml",
+      "rtl_top": "comb_sbox",
+      "expected_outputs": ["0xe", "0x4", "0xd", "0x1", "0x2", "0xf", "0xb", "0x8", "0x3", "0xa", "0x6", "0xc", "0x5", "0x9", "0x0", "0x7"]
+    },
+    {
+      "name": "seq-dff-bank",
+      "edf": "seq-dff-bank/seq_dff_bank.edf",
+      "constraints": "seq-dff-bank/constraints.xml",
+      "rtl_top": "seq_dff_bank",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0x3", "0x0", "0x5", "0x0", "0x6", "0x0", "0x9", "0x0", "0xa", "0x0", "0xc", "0x0", "0xf"]
+    },
+    {
+      "name": "seq-pipeline",
+      "edf": "seq-pipeline/seq_pipeline.edf",
+      "constraints": "seq-pipeline/constraints.xml",
+      "rtl_top": "seq_pipeline",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0xf", "0x0", "0xf", "0x0", "0x0", "0x0", "0xf", "0x0", "0x0", "0x0", "0x0", "0x0", "0xf"]
+    },
+    {
+      "name": "seq-counter-up",
+      "edf": "seq-counter-up/seq_counter_up.edf",
+      "constraints": "seq-counter-up/constraints.xml",
+      "rtl_top": "seq_counter_up",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0x1", "0x0", "0x2", "0x0", "0x3", "0x0", "0x4", "0x0", "0x5", "0x0", "0x6", "0x0", "0x7"]
+    },
+    {
+      "name": "seq-counter-down",
+      "edf": "seq-counter-down/seq_counter_down.edf",
+      "constraints": "seq-counter-down/constraints.xml",
+      "rtl_top": "seq_counter_down",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0xf", "0x8", "0xf", "0x9", "0xf", "0xa", "0xf", "0xb", "0xf", "0xc", "0xf", "0xd", "0xf", "0xe", "0xf", "0xf"]
+    },
+    {
+      "name": "seq-async-reset",
+      "edf": "seq-async-reset/seq_async_reset.edf",
+      "constraints": "seq-async-reset/constraints.xml",
+      "rtl_top": "seq_async_reset",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x1", "0x0", "0x3", "0x0", "0x7", "0x0", "0x5", "0x0", "0x4", "0x0", "0xe", "0x0", "0x6", "0x0", "0xc"]
+    },
+    {
+      "name": "seq-enable",
+      "edf": "seq-enable/seq_enable.edf",
+      "constraints": "seq-enable/constraints.xml",
+      "rtl_top": "seq_enable",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x0", "0x8", "0x0", "0xb", "0x0", "0xd", "0x0", "0xe"]
+    },
+    {
+      "name": "seq-feedback",
+      "edf": "seq-feedback/seq_feedback.edf",
+      "constraints": "seq-feedback/constraints.xml",
+      "rtl_top": "seq_feedback",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x0", "0x0", "0xf", "0x0", "0xe", "0x0", "0xf", "0x0", "0xc", "0x0", "0xf", "0x0", "0xe", "0x0", "0xf"]
+    },
+    {
+      "name": "seq-fsm",
+      "edf": "seq-fsm/seq_fsm.edf",
+      "constraints": "seq-fsm/constraints.xml",
+      "rtl_top": "seq_fsm",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0xe", "0x0", "0xf", "0x0", "0xf", "0x0", "0xe", "0x0", "0xf", "0x0", "0xe", "0x0", "0xe", "0x0", "0xf"]
+    },
+    {
+      "name": "seq-accumulator",
+      "edf": "seq-accumulator/seq_accumulator.edf",
+      "constraints": "seq-accumulator/constraints.xml",
+      "rtl_top": "seq_accumulator",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x0", "0x4", "0x0", "0x8", "0x0", "0xc", "0x0", "0x0", "0x0", "0x4", "0x0", "0x8", "0x0", "0xc", "0x0", "0x0"]
+    },
+    {
+      "name": "seq-onehot",
+      "edf": "seq-onehot/seq_onehot.edf",
+      "constraints": "seq-onehot/constraints.xml",
+      "rtl_top": "seq_onehot",
+      "rtl_profile": "sequential",
+      "expected_outputs": ["0x1", "0x8", "0x0", "0x9", "0x3", "0xa", "0x2", "0xb", "0x5", "0xc", "0x4", "0xd", "0x7", "0xe", "0x6", "0xf"]
     }
   ]
 }

@@ -21,6 +21,9 @@ class BoardCase:
     constraints: Path
     expected_outputs: tuple[str, ...]
     probe_segments: tuple[str, ...]
+    rtl_top: str | None = None
+    rtl_sources: tuple[Path, ...] = ()
+    rtl_testbench: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,14 +71,37 @@ def load_manifest(root: Path) -> dict:
 
 def load_cases(root: Path) -> dict[str, BoardCase]:
     case_root = root / "examples" / "board-e2e"
+    manifest = load_manifest(root)
+    simulation_profiles = manifest.get("simulation_profiles", {})
     cases: dict[str, BoardCase] = {}
-    for raw_case in load_manifest(root)["cases"]:
+    for raw_case in manifest["cases"]:
+        rtl_top = raw_case.get("rtl_top")
+        profile_name = raw_case.get("rtl_profile", "combinational")
+        if rtl_top and profile_name not in simulation_profiles:
+            raise ValueError(
+                f"{raw_case['name']}: unknown RTL profile {profile_name!r}"
+            )
+        simulation = simulation_profiles[profile_name] if rtl_top else {}
+        rtl_sources = tuple(root / path for path in simulation.get("sources", ()))
+        rtl_testbench = simulation.get("testbench")
+        if rtl_top and (not rtl_sources or not rtl_testbench):
+            raise ValueError(
+                f"{raw_case['name']}: RTL profile {profile_name!r} needs sources and a testbench"
+            )
         case = BoardCase(
             name=raw_case["name"],
             edf=case_root / raw_case["edf"],
             constraints=case_root / raw_case["constraints"],
             expected_outputs=tuple(raw_case["expected_outputs"]),
-            probe_segments=tuple(raw_case.get("probe_segments", ())),
+            probe_segments=tuple(
+                raw_case.get(
+                    "probe_segments",
+                    simulation.get("probe_segments", ()) if rtl_top else (),
+                )
+            ),
+            rtl_top=rtl_top,
+            rtl_sources=rtl_sources if rtl_top else (),
+            rtl_testbench=root / rtl_testbench if rtl_top and rtl_testbench else None,
         )
         cases[case.name] = case
     return cases

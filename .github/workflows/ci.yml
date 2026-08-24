@@ -43,6 +43,12 @@ jobs:
       - name: Cargo test
         run: cargo test --locked --quiet
 
+      - name: Install Icarus Verilog
+        run: sudo apt-get update && sudo apt-get install --yes iverilog
+
+      - name: RTL-backed board simulations
+        run: python3 scripts/board_e2e.py simulate --out-root "${RUNNER_TEMP}/board-rtl-sim"
+
       - name: End-to-end smoke
         shell: bash
         run: |

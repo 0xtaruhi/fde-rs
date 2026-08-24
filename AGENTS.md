@@ -34,6 +34,8 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Board EDF dry run: `find examples/board-e2e -mindepth 2 -maxdepth 2 -name '*.edf' | sort | while read -r edf; do case_dir=$(dirname "${edf}"); name=$(basename "${case_dir}"); cargo run --bin fde -- impl --input "${edf}" --constraints "${case_dir}/constraints.xml" --resource-root resources/hw_lib --out-dir "build/board-e2e/${name}"; done`
 - Live board run: `python3 scripts/board_e2e.py run`
 - Live board single-case run: `python3 scripts/board_e2e.py run sticky16-check`
+- RTL-backed board simulation: `python3 scripts/board_e2e.py simulate`
+- RTL-backed live board run: `python3 scripts/board_e2e.py run --rtl-only`
 - Board baseline diff: `python3 scripts/board_diff.py run`
 - Random board/model diff: `python3 scripts/random_board_diff.py --count 5 --seed 20260322 --keep-going`
 - Dense router benchmark: `python3 scripts/generate_dense_benchmark.py --width 192 --synthesize`

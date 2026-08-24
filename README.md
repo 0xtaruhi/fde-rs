@@ -301,6 +301,8 @@ cargo test --locked --quiet
 ### Useful scripts
 
 - `python3 scripts/board_e2e.py run`
+- `python3 scripts/board_e2e.py simulate`
+- `python3 scripts/board_e2e.py run --rtl-only`
 - `python3 scripts/random_board_diff.py --count 5 --seed 20260322 --keep-going`
 - `python3 scripts/generate_dense_benchmark.py --width 192 --synthesize`
 - `python3 scripts/slice_config_diff.py --packed <02-packed.xml> --sidecar <06-output.sidecar.txt>`
