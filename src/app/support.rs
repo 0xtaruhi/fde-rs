@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use crate::{
     bitgen::BitgenOptions,
     cil::{Cil, load_cil},
-    constraints::{ConstraintEntry, SharedConstraints, load_constraints},
+    constraints::{ConstraintEntry, ConstraintSet, SharedConstraints, load_constraint_set},
     io::DesignWriteContext,
     ir::Design,
     resource::{Arch, load_arch},
@@ -16,9 +16,13 @@ pub(crate) struct PreparedBitgen {
 }
 
 pub(crate) fn load_constraints_or_empty(path: Option<&Path>) -> Result<SharedConstraints> {
+    load_constraint_set_or_empty(path).map(|constraints| Arc::from(constraints.pins))
+}
+
+pub(crate) fn load_constraint_set_or_empty(path: Option<&Path>) -> Result<ConstraintSet> {
     match path {
-        Some(path) => load_constraints(path).map(Arc::<[_]>::from),
-        None => Ok(Arc::from([])),
+        Some(path) => load_constraint_set(path),
+        None => Ok(ConstraintSet::default()),
     }
 }
 

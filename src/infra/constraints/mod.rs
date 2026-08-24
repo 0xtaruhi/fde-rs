@@ -1,10 +1,11 @@
 use crate::{ir::Design, resource::Arch};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path, sync::Arc};
+use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 pub type SharedConstraints = Arc<[ConstraintEntry]>;
+pub type SharedClockConstraints = Arc<[ClockConstraint]>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConstraintEntry {
@@ -12,12 +13,29 @@ pub struct ConstraintEntry {
     pub pin_name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClockConstraint {
+    pub name: String,
+    pub port_name: String,
+    pub period_ns: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConstraintSet {
+    pub pins: Vec<ConstraintEntry>,
+    pub clocks: Vec<ClockConstraint>,
+}
+
 pub fn load_constraints(path: &Path) -> Result<Vec<ConstraintEntry>> {
+    Ok(load_constraint_set(path)?.pins)
+}
+
+pub fn load_constraint_set(path: &Path) -> Result<ConstraintSet> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read constraint file {}", path.display()))?;
     let doc = Document::parse(&text)
         .with_context(|| format!("failed to parse constraint file {}", path.display()))?;
-    let mut entries = Vec::new();
+    let mut pins = Vec::new();
     for node in doc.descendants().filter(|node| node.has_tag_name("port")) {
         let Some(name) = node.attribute("name") else {
             continue;
@@ -25,12 +43,46 @@ pub fn load_constraints(path: &Path) -> Result<Vec<ConstraintEntry>> {
         let Some(position) = node.attribute("position") else {
             continue;
         };
-        entries.push(ConstraintEntry {
+        pins.push(ConstraintEntry {
             port_name: name.to_string(),
             pin_name: position.to_string(),
         });
     }
-    Ok(entries)
+
+    let clocks = parse_clock_constraints(&doc)?;
+    Ok(ConstraintSet { pins, clocks })
+}
+
+fn parse_clock_constraints(doc: &Document<'_>) -> Result<Vec<ClockConstraint>> {
+    let mut clocks = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut ports = BTreeSet::new();
+    for node in doc.descendants().filter(|node| node.has_tag_name("clock")) {
+        let port_name = node
+            .attribute("port")
+            .ok_or_else(|| anyhow!("clock constraint is missing its 'port' attribute"))?;
+        let name = node.attribute("name").unwrap_or(port_name);
+        let period_ns = node
+            .attribute("period")
+            .ok_or_else(|| anyhow!("clock '{name}' is missing its 'period' attribute"))?
+            .parse::<f64>()
+            .with_context(|| format!("clock '{name}' has an invalid period"))?;
+        if !period_ns.is_finite() || period_ns <= 0.0 {
+            bail!("clock '{name}' period must be a positive finite value");
+        }
+        if !names.insert(name.to_string()) {
+            bail!("duplicate clock constraint name '{name}'");
+        }
+        if !ports.insert(port_name.to_string()) {
+            bail!("multiple clock constraints target port '{port_name}'");
+        }
+        clocks.push(ClockConstraint {
+            name: name.to_string(),
+            port_name: port_name.to_string(),
+            period_ns,
+        });
+    }
+    Ok(clocks)
 }
 
 pub fn apply_constraint_file(
@@ -132,7 +184,9 @@ pub fn ensure_cluster_positions(design: &Design) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConstraintEntry, apply_constraints_checked, ensure_port_positions};
+    use super::{
+        ConstraintEntry, apply_constraints_checked, ensure_port_positions, load_constraint_set,
+    };
     use crate::{
         ir::{Design, Port},
         resource::{Arch, Pad},
@@ -206,5 +260,37 @@ mod tests {
         let port = &design.ports[0];
         assert_eq!(port.pin.as_deref(), Some("P3"));
         assert_eq!((port.x, port.y, port.z), (Some(1), Some(2), Some(3)));
+    }
+
+    #[test]
+    fn loads_pin_and_clock_constraints_together() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(
+            file.path(),
+            "<design><port name=\"clk\" position=\"P3\"/><clock name=\"sys\" port=\"clk\" period=\"10.5\"/></design>",
+        )
+        .expect("write constraints");
+
+        let constraints = load_constraint_set(file.path()).expect("constraint set");
+
+        assert_eq!(constraints.pins.len(), 1);
+        assert_eq!(constraints.clocks.len(), 1);
+        assert_eq!(constraints.clocks[0].name, "sys");
+        assert_eq!(constraints.clocks[0].port_name, "clk");
+        assert!((constraints.clocks[0].period_ns - 10.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rejects_non_positive_clock_periods() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(
+            file.path(),
+            "<design><clock port=\"clk\" period=\"0\"/></design>",
+        )
+        .expect("write constraints");
+
+        let error = load_constraint_set(file.path()).expect_err("zero period must fail");
+
+        assert!(error.to_string().contains("positive finite"));
     }
 }

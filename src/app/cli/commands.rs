@@ -7,8 +7,8 @@ use std::{fs, sync::Arc};
 
 use crate::{
     app::support::{
-        load_constraints_or_empty, place_write_context, prepare_bitgen,
-        prepare_route_device_design, route_write_context, sta_write_context,
+        load_constraint_set_or_empty, load_constraints_or_empty, place_write_context,
+        prepare_bitgen, prepare_route_device_design, route_write_context, sta_write_context,
     },
     bitgen,
     cil::load_cil,
@@ -20,9 +20,9 @@ use crate::{
     pack::{self, PackOptions},
     place::{self, PlaceOptions},
     report::print_stage_report,
-    resource::{load_arch, load_delay_model},
+    resource::{load_arch, load_cell_timing_model, load_delay_model},
     route::{self, RouteOptions},
-    sta::{self, StaOptions},
+    sta::{self, StaOptions, StaTimingContext},
 };
 
 use super::{
@@ -173,22 +173,29 @@ pub(crate) fn run_sta(args: StaArgs, emit_report: bool) -> Result<()> {
         None => None,
     };
     let delay = load_delay_model(args.delay.as_deref())?;
+    let constraint_set = load_constraint_set_or_empty(args.constraints.as_deref())?;
+    let cell_timing = args
+        .cell_library
+        .as_deref()
+        .map(load_cell_timing_model)
+        .transpose()?;
     let options = StaOptions {
         arch: arch.clone().map(Arc::new),
         delay: delay.map(Arc::new),
     };
+    let timing = StaTimingContext {
+        clocks: Arc::from(constraint_set.clocks),
+        cell_timing: cell_timing.map(Arc::new),
+    };
     let design_with_reporter = design.clone();
-    let mut result = run_cli_stage(
+    let result = run_cli_stage(
         "sta",
         emit_report,
-        || sta::run(design, &options),
-        |reporter| sta::run_with_reporter(design_with_reporter, &options, reporter),
+        || sta::run_with_timing(design, &options, &timing),
+        |reporter| {
+            sta::run_with_timing_and_reporter(design_with_reporter, &options, &timing, reporter)
+        },
     )?;
-    if let Some(path) = args.timing_library.as_ref() {
-        result
-            .report
-            .push(format!("Referenced timing library {}", path.display()));
-    }
     save_design_with_context(
         &result.value.design,
         &args.output,

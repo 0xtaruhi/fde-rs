@@ -1,15 +1,16 @@
 use crate::{
-    domain::{EndpointKind, TimingPathCategory},
+    domain::TimingPathCategory,
     ir::{
-        Cell, Design, DesignIndex, Endpoint, EndpointKey, TimingEdge, TimingGraph, TimingNode,
-        TimingPath, TimingSummary,
+        Design, DesignIndex, Endpoint, EndpointKey, EndpointTarget, TimingEdge, TimingGraph,
+        TimingNode, TimingPath, TimingSummary,
     },
     resource::{Arch, DelayModel},
 };
 use std::{cmp::Ordering, collections::HashSet};
 
 use super::{
-    delay::{intrinsic_cell_delay_ns, net_delay_ns},
+    constraints::TimingRequirements,
+    delay::{cell_input_is_functional, combinational_cell_delay_ns, net_delay_ns},
     error::StaError,
     keys::{
         ArrivalMap, TimingEndpoint, TimingKey, cell_arrival_key, endpoint_arrival_key,
@@ -37,19 +38,25 @@ pub(crate) fn timing_summary(
     design: &Design,
     index: &DesignIndex<'_>,
     arrival: &ArrivalMap,
+    requirements: &TimingRequirements,
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
 ) -> Result<TimingSummary, StaError> {
     let mut paths = Vec::new();
     let mut critical: f64 = 0.0;
+    let mut minimum_clock_period: f64 = 0.0;
     for net in &design.nets {
         for sink in &net.sinks {
-            let category = path_category(design, index, sink);
-            let delay_ns = arrival
-                .get(&endpoint_arrival_key(index, sink))
-                .copied()
-                .unwrap_or(0.0);
+            if !is_path_endpoint(design, index, sink) {
+                continue;
+            }
+            let category = path_category(index, sink);
+            let key = endpoint_arrival_key(index, sink);
+            let delay_ns = arrival.get(&key).copied().unwrap_or(0.0) + requirements.setup_ns(&key);
             critical = critical.max(delay_ns);
+            if category == TimingPathCategory::RegisterInput {
+                minimum_clock_period = minimum_clock_period.max(delay_ns);
+            }
             let trace = trace_path(design, index, arrival, sink, arch, delay);
             paths.push(TimingPath {
                 category,
@@ -74,8 +81,13 @@ pub(crate) fn timing_summary(
         return Err(StaError::NonFiniteCriticalPath { value: critical });
     }
 
-    let fmax_mhz = if critical > 0.0 {
-        1_000.0 / critical
+    let fmax_reference = if minimum_clock_period > 0.0 {
+        minimum_clock_period
+    } else {
+        critical
+    };
+    let fmax_mhz = if fmax_reference > 0.0 {
+        1_000.0 / fmax_reference
     } else {
         0.0
     };
@@ -95,11 +107,12 @@ pub(crate) fn build_timing_graph(
     index: &DesignIndex<'_>,
     arrival: &ArrivalMap,
     _summary: &TimingSummary,
+    requirements: &TimingRequirements,
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
 ) -> TimingGraph {
     let typed_edges = collect_timing_edges(design, index, arch, delay);
-    let required = compute_required_times(&typed_edges, arrival);
+    let required = compute_required_times(&typed_edges, arrival, requirements);
     render_timing_graph(design, index, arrival, &required, typed_edges)
 }
 
@@ -129,8 +142,11 @@ fn collect_timing_edges(
             continue;
         }
         let cell_id = cell_index.into();
-        let cell_delay = intrinsic_cell_delay_ns(cell, delay);
+        let cell_delay = combinational_cell_delay_ns(cell, delay);
         for input in &cell.inputs {
+            if !cell_input_is_functional(cell, &input.port) {
+                continue;
+            }
             let from = cell_arrival_key(cell_id, &input.port);
             for output in &cell.outputs {
                 typed_edges.push(TypedTimingEdge {
@@ -148,31 +164,24 @@ type RequiredMap = std::collections::BTreeMap<TimingKey, f64>;
 
 /// Backward required-time propagation.
 ///
-/// Every graph sink (a node with no outgoing timing edge) is seeded with the
-/// global worst arrival - the classic zero-constraint reference period - and
-/// requirements are then relaxed upstream through
+/// Constrained register inputs are seeded from their capture-clock period
+/// minus setup time. Other nodes use the global worst arrival as an
+/// unconstrained reference period. Requirements are then relaxed upstream through
 /// `required(from) <= required(to) - delay(edge)` until they settle. The
 /// result is a real per-node required time, so slacks distinguish parallel
 /// branches instead of reporting the global critical path everywhere.
-fn compute_required_times(edges: &[TypedTimingEdge], arrival: &ArrivalMap) -> RequiredMap {
-    use std::collections::BTreeMap;
-
+fn compute_required_times(
+    edges: &[TypedTimingEdge],
+    arrival: &ArrivalMap,
+    requirements: &TimingRequirements,
+) -> RequiredMap {
     let mut required = RequiredMap::new();
-    let mut outgoing_count = BTreeMap::<&TimingKey, usize>::new();
-    for edge in edges {
-        *outgoing_count.entry(&edge.from).or_insert(0) += 1;
-    }
-
     let worst_arrival = arrival.values().copied().fold(f64::NEG_INFINITY, f64::max);
-    for edge in edges {
-        if !outgoing_count.contains_key(&edge.to) {
-            required.insert(edge.to.clone(), worst_arrival);
-        }
-    }
-    // Nodes that are neither endpoints nor reachable backwards keep the
-    // reference too, matching the previous uniform behaviour.
     for key in arrival.keys() {
-        required.entry(key.clone()).or_insert(worst_arrival);
+        required.insert(
+            key.clone(),
+            requirements.required_ns(key).unwrap_or(worst_arrival),
+        );
     }
 
     let mut changed = true;
@@ -193,21 +202,22 @@ fn compute_required_times(edges: &[TypedTimingEdge], arrival: &ArrivalMap) -> Re
     required
 }
 
-fn path_category(design: &Design, index: &DesignIndex<'_>, sink: &Endpoint) -> TimingPathCategory {
-    match sink.endpoint_kind() {
-        EndpointKind::Cell => {
-            if index
-                .cell_id(&sink.name)
-                .map(|cell_id| index.cell(design, cell_id))
-                .is_some_and(Cell::is_sequential)
-            {
-                TimingPathCategory::RegisterInput
-            } else {
-                TimingPathCategory::Combinational
-            }
+fn is_path_endpoint(design: &Design, index: &DesignIndex<'_>, sink: &Endpoint) -> bool {
+    match index.resolve_endpoint(sink) {
+        EndpointTarget::Port(port_id) => index.port(design, port_id).direction.is_output_like(),
+        EndpointTarget::Cell(cell_id) => {
+            let cell = index.cell(design, cell_id);
+            cell.primitive_kind().is_register_data_pin(&sink.pin)
         }
-        EndpointKind::Port => TimingPathCategory::PrimaryOutput,
-        EndpointKind::Unknown => TimingPathCategory::Endpoint,
+        EndpointTarget::Unknown => false,
+    }
+}
+
+fn path_category(index: &DesignIndex<'_>, sink: &Endpoint) -> TimingPathCategory {
+    match index.resolve_endpoint(sink) {
+        EndpointTarget::Cell(_) => TimingPathCategory::RegisterInput,
+        EndpointTarget::Port(_) => TimingPathCategory::PrimaryOutput,
+        EndpointTarget::Unknown => TimingPathCategory::Endpoint,
     }
 }
 
@@ -252,6 +262,9 @@ fn trace_path(
         }
         let mut best_input = None::<(Endpoint, f64)>;
         for input in &cell.inputs {
+            if !cell_input_is_functional(cell, &input.port) {
+                continue;
+            }
             if let Some(input_net_id) = index.net_id(&input.net)
                 && let Some(input_driver) = &index.net(design, input_net_id).driver
             {

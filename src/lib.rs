@@ -37,7 +37,10 @@ pub use bitgen::{
 pub use bitgen::{BitgenOptions, run as run_bitgen, run_with_reporter as run_bitgen_with_reporter};
 pub(crate) use bitgen::{DeviceDesignIndex, DeviceEndpointRef};
 pub use cil::{Cil, load_cil};
-pub use constraints::{ConstraintEntry, apply_constraints_checked, load_constraints};
+pub use constraints::{
+    ClockConstraint, ConstraintEntry, ConstraintSet, apply_constraints_checked,
+    load_constraint_set, load_constraints,
+};
 pub use domain::{
     CellKind, ClusterKind, ConstantKind, EndpointKind, NetOrigin, PinRole, PrimitiveKind, SiteKind,
     TimingPathCategory,
@@ -63,7 +66,10 @@ pub use report::{
     ImplementationReport, LineStageReporter, ReportStatus, StageEvent, StageLogLevel, StageOutput,
     StageReport, StageReporter, format_stage_event_line, format_stage_status_name,
 };
-pub use resource::{Arch, DelayModel, ResourceBundle, load_arch, load_delay_model};
+pub use resource::{
+    Arch, CellTimingModel, DelayModel, ResourceBundle, SequentialTiming, load_arch,
+    load_cell_timing_model, load_delay_model,
+};
 pub use route::{
     DeviceRouteImage, DeviceRoutePip, RouteBit, RouteNegotiationStats, RouteOptions, RoutedNetPip,
     load_route_pips, load_route_pips_xml, lower_design, materialize_route_image,
@@ -71,5 +77,7 @@ pub use route::{
     run_with_artifacts_and_reporter, run_with_reporter as run_route_with_reporter,
 };
 pub use sta::{
-    StaArtifact, StaError, StaOptions, run as run_sta, run_with_reporter as run_sta_with_reporter,
+    StaArtifact, StaError, StaOptions, StaTimingContext, run as run_sta,
+    run_with_reporter as run_sta_with_reporter, run_with_timing as run_sta_with_timing,
+    run_with_timing_and_reporter as run_sta_with_timing_and_reporter,
 };

@@ -163,7 +163,9 @@ cargo run --bin fde -- route --input build/03-placed.xml --output build/04-route
 cargo run --bin fde -- sta --input build/04-routed.xml --output build/05-timed.xml \
   --report build/05-timing.rpt \
   --arch resources/hw_lib/fdp3p7_arch.xml \
-  --delay resources/hw_lib/fdp3p7_dly.xml
+  --delay resources/hw_lib/fdp3p7_dly.xml \
+  --cell-library resources/hw_lib/fdp3_cell.xml \
+  --constraints constraints.xml
 cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-output.bit \
   --arch resources/hw_lib/fdp3p7_arch.xml \
   --cil resources/hw_lib/fdp3p7_cil.xml
@@ -172,6 +174,26 @@ cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-outp
 Constraint entries are validated against both the design ports and the selected
 architecture package. Unknown ports or package pins fail explicitly; unconstrained
 ports bind deterministically to one complete `(pin, x, y, z)` pad site.
+
+The same file can define clock periods for setup analysis:
+
+```xml
+<design name="example">
+  <port name="clk" position="P77"/>
+  <clock name="sys" port="clk" period="10.0"/>
+</design>
+```
+
+Clock periods and delays are in nanoseconds. Constrained register inputs use
+`period - setup` as their required time, while register outputs start at the
+clock-to-Q value parsed from the cell library. Without a `<clock>` entry, STA
+clearly reports that its result is a delay estimate rather than a pass/fail timing
+check.
+
+Constrained STA currently accepts one synchronous flip-flop clock domain. It
+rejects partial/multiple clock domains, latches, and block RAM timing instead of
+silently producing an invalid setup result; those require explicit clock-domain
+and primitive timing models in a future extension.
 
 Emit the optional debug sidecar:
 
