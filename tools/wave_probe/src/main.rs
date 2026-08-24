@@ -91,8 +91,17 @@ fn parse_options(mut args: impl Iterator<Item = String>) -> Result<Options> {
     })
 }
 
-fn frame(chunk: &[u16]) -> VeriCommFrame {
-    VeriCommFrame::from_words([chunk[0], chunk[1], chunk[2], chunk[3]])
+fn frames(words: &[u16]) -> &[[u16; VeriCommFrame::WORDS]] {
+    let (frames, remainder) = words.as_chunks();
+    debug_assert!(
+        remainder.is_empty(),
+        "VeriComm words must form whole frames"
+    );
+    frames
+}
+
+fn frame(words: &[u16; VeriCommFrame::WORDS]) -> VeriCommFrame {
+    VeriCommFrame::from_words(*words)
 }
 
 fn decoded_frame(rx: &[u16]) -> VeriCommFrame {
@@ -100,8 +109,8 @@ fn decoded_frame(rx: &[u16]) -> VeriCommFrame {
     let high_threshold = sample_count.saturating_mul(7) / 8;
     let mut decoded = VeriCommFrame::ZERO;
     for lane in 0..VeriCommFrame::LANES {
-        let high = rx
-            .chunks_exact(VeriCommFrame::WORDS)
+        let high = frames(rx)
+            .iter()
             .filter(|sample| frame(sample).lane(lane) == Some(true))
             .count()
             > high_threshold;
@@ -113,15 +122,15 @@ fn decoded_frame(rx: &[u16]) -> VeriCommFrame {
 fn summarize_segment(index: usize, segment: &Segment, rx: &[u16]) {
     let decoded = decoded_frame(rx);
     let samples = rx.len() / VeriCommFrame::WORDS;
-    let low_nibble_hist = rx.chunks_exact(VeriCommFrame::WORDS).fold(
-        BTreeMap::<u16, usize>::new(),
-        |mut hist, words| {
-            *hist.entry(words[0] & 0x000f).or_default() += 1;
-            hist
-        },
-    );
-    let preview = rx
-        .chunks_exact(VeriCommFrame::WORDS)
+    let low_nibble_hist =
+        frames(rx)
+            .iter()
+            .fold(BTreeMap::<u16, usize>::new(), |mut hist, words| {
+                *hist.entry(words[0] & 0x000f).or_default() += 1;
+                hist
+            });
+    let preview = frames(rx)
+        .iter()
         .take(8)
         .map(|words| format!("{:016x}", frame(words).bits()))
         .collect::<Vec<_>>()
@@ -252,12 +261,7 @@ fn write_trace(path: &Path, batch: &TraceBatch<'_>) -> Result<()> {
     )?;
     writeln!(writer)?;
 
-    for (index, (tx, rx)) in batch
-        .tx
-        .chunks_exact(VeriCommFrame::WORDS)
-        .zip(batch.rx.chunks_exact(VeriCommFrame::WORDS))
-        .enumerate()
-    {
+    for (index, (tx, rx)) in frames(batch.tx).iter().zip(frames(batch.rx)).enumerate() {
         let segment = batch
             .ranges
             .iter()

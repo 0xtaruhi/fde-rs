@@ -49,12 +49,13 @@ fn main() -> Result<()> {
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     println!("sample | raw               | cnt(nibble)");
-    for (index, words) in rx
-        .chunks_exact(VeriCommFrame::WORDS)
-        .enumerate()
-        .take(n_samples)
-    {
-        let sample = VeriCommFrame::from_words([words[0], words[1], words[2], words[3]]);
+    let (samples, remainder) = rx.as_chunks::<{ VeriCommFrame::WORDS }>();
+    debug_assert!(
+        remainder.is_empty(),
+        "VeriComm words must form whole frames"
+    );
+    for (index, words) in samples.iter().enumerate().take(n_samples) {
+        let sample = VeriCommFrame::from_words(*words);
         let nibble = sample.words()[0] & 0xf;
         println!(
             "{index:6} | {:016x} | {nibble:x} {}",
