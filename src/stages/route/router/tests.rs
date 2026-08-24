@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::super::types::{RouteNode, SearchState, WireInterner};
-use super::{SinkRouteSpec, ordered_start_nodes};
+use super::{RoutingState, SinkRouteSpec, ordered_start_nodes, validate_final_routing};
 use crate::route::guide::GuideDistances;
 use crate::route::{
     guide::OrderedGuide,
@@ -175,6 +175,58 @@ fn real_arch_stitched_component_claims_are_contested_across_tiles() {
 
     assert_eq!(claims.contested_resources().count(), 1);
     assert_eq!(claims.overuse_count(), 1);
+}
+
+#[test]
+fn final_validation_rejects_overused_resources() {
+    let stitched_components = StitchedComponentDb::default();
+    let mut wires = WireInterner::default();
+    let track = RouteNode::new(5, 7, wires.intern("H6W2"));
+    let device = crate::DeviceDesign {
+        nets: ["data", "clock"]
+            .into_iter()
+            .map(|name| crate::DeviceNet::new(name, NetOrigin::Logical))
+            .collect(),
+        ..crate::DeviceDesign::default()
+    };
+    let mut state = RoutingState::new(device.nets.len());
+    for net_index in 0..device.nets.len() {
+        reserve_route_path(
+            &stitched_components,
+            &mut state.claims,
+            net_index,
+            NetOrigin::Logical,
+            &[track],
+            &[],
+        );
+    }
+
+    let error = validate_final_routing(&device, &state, &wires)
+        .expect_err("overused route resource must fail");
+
+    assert!(error.to_string().contains("H6W2"));
+    assert!(error.to_string().contains("data"));
+    assert!(error.to_string().contains("clock"));
+}
+
+#[test]
+fn final_validation_rejects_incomplete_nets() {
+    let wires = WireInterner::default();
+    let device = crate::DeviceDesign {
+        nets: vec![crate::DeviceNet::new("data", NetOrigin::Logical)],
+        ..crate::DeviceDesign::default()
+    };
+    let mut state = RoutingState::new(device.nets.len());
+    state.routes[0].failed = true;
+    state.routes[0]
+        .notes
+        .push("Net data could not reach sink q.".to_string());
+
+    let error =
+        validate_final_routing(&device, &state, &wires).expect_err("incomplete route must fail");
+
+    assert!(error.to_string().contains("data"));
+    assert!(error.to_string().contains("could not reach sink q"));
 }
 
 #[test]

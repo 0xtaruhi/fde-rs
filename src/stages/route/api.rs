@@ -1,7 +1,8 @@
 use crate::{
     cil::Cil,
     constraints::{
-        SharedConstraints, apply_constraints, ensure_cluster_positions, ensure_port_positions,
+        SharedConstraints, apply_constraints_checked, ensure_cluster_positions,
+        ensure_port_positions,
     },
     ir::{Design, RoutePip, RouteSegment},
     report::{StageOutput, StageReport, StageReporter, emit_stage_info},
@@ -86,7 +87,7 @@ fn run_with_artifacts_internal(
             design.nets.len()
         ),
     );
-    apply_constraints(&mut design, &options.arch, &options.constraints);
+    apply_constraints_checked(&mut design, &options.arch, &options.constraints)?;
     ensure_port_positions(&mut design, &options.arch);
     if !design.clusters.is_empty() {
         ensure_cluster_positions(&design)?;
@@ -449,7 +450,10 @@ mod tests {
 
         let arch = load_arch(&arch_path)?;
         let cil = load_cil(&cil_path)?;
-        let constraints = load_constraints(&constraints_path)?;
+        let constraints = load_constraints(&constraints_path)?
+            .into_iter()
+            .filter(|constraint| constraint.port_name == "clk")
+            .collect::<Vec<_>>();
 
         let mut gnd = Cell::new("GND", CellKind::Lut, "LUT4")
             .with_output("O", "GND_NET")

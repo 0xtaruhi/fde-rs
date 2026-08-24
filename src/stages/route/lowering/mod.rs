@@ -6,7 +6,7 @@ use crate::{
     DeviceCell, DeviceDesign, DevicePort,
     cil::Cil,
     constraints::{
-        ConstraintEntry, apply_constraints, ensure_cluster_positions, ensure_port_positions,
+        ConstraintEntry, apply_constraints_checked, ensure_cluster_positions, ensure_port_positions,
     },
     domain::SiteKind,
     ir::{CellId, Design, DesignIndex, PortId},
@@ -20,7 +20,7 @@ pub fn lower_design(
     cil: Option<&Cil>,
     constraints: &[ConstraintEntry],
 ) -> Result<DeviceDesign> {
-    apply_constraints(&mut design, arch, constraints);
+    apply_constraints_checked(&mut design, arch, constraints)?;
     ensure_port_positions(&mut design, arch);
     if !design.clusters.is_empty() {
         ensure_cluster_positions(&design)?;

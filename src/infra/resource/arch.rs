@@ -251,8 +251,7 @@ impl Arch {
     }
 
     pub fn fallback_port_position(&self, index: usize, input: bool) -> (usize, usize) {
-        if !self.pads.is_empty() {
-            let pad = &self.pads[index % self.pads.len()];
+        if let Some(pad) = self.fallback_pad(index) {
             return (pad.x, pad.y);
         }
         if input {
@@ -263,6 +262,10 @@ impl Arch {
                 (index + 1).min(self.height.saturating_sub(1)),
             )
         }
+    }
+
+    pub(crate) fn fallback_pad(&self, index: usize) -> Option<&Pad> {
+        (!self.pads.is_empty()).then(|| &self.pads[index % self.pads.len()])
     }
 
     pub fn edge_capacity(&self, lhs: (usize, usize), rhs: (usize, usize)) -> usize {
@@ -501,7 +504,7 @@ fn parse_point3(raw: &str) -> Option<(usize, usize, usize)> {
     let mut parts = raw.split(',').map(str::trim);
     let x = parts.next()?.parse().ok()?;
     let y = parts.next()?.parse().ok()?;
-    let z = parts.next()?.parse().ok()?;
+    let z = parts.next().map_or(Some(0), |part| part.parse().ok())?;
     Some((x, y, z))
 }
 
@@ -522,7 +525,7 @@ fn resolve_edge_capacity(lhs: usize, rhs: usize, fallback: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arch, TileInstance, TileKind};
+    use super::{Arch, TileInstance, TileKind, parse_point3};
     use std::collections::BTreeMap;
 
     #[test]
@@ -563,5 +566,11 @@ mod tests {
 
         assert_eq!(arch.logic_sites(), vec![(1, 1)]);
         assert_eq!(arch.tiles[&(1, 1)].kind(), TileKind::Logic);
+    }
+
+    #[test]
+    fn two_dimensional_pad_positions_default_to_slot_zero() {
+        assert_eq!(parse_point3("4, 7"), Some((4, 7, 0)));
+        assert_eq!(parse_point3("4, 7, 2"), Some((4, 7, 2)));
     }
 }
