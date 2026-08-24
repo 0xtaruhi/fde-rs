@@ -4,11 +4,12 @@ use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Instant};
 
 use crate::{
     app::support::{
-        load_constraints_or_empty, place_write_context, prepare_route_device_design,
+        load_constraint_set_or_empty, place_write_context, prepare_route_device_design,
         route_write_context, sta_write_context,
     },
     bitgen::{self, BitgenOptions},
     cil::load_cil,
+    constraints::SharedConstraints,
     io::{DesignWriteContext, save_design, save_design_with_context},
     map::{self, MapOptions},
     pack::{self, PackOptions},
@@ -17,13 +18,13 @@ use crate::{
         ImplementationReport, StageEvent, StageReport, StageReporter, format_stage_event_line,
         run_stage_with_reporter,
     },
-    resource::{load_arch, load_delay_model},
+    resource::{load_arch, load_cell_timing_model, load_delay_model},
     route::{self, RouteOptions},
-    sta::{self, StaOptions},
+    sta::{self, StaOptions, StaTimingContext},
 };
 
 use super::{
-    options::ImplementationOptions,
+    options::{ImplementationOptions, ResolvedResources},
     report::{
         FlowArtifacts, ReportContext, build_report, write_log_with_runtime, write_report,
         write_summary,
@@ -57,7 +58,7 @@ fn run_internal(
     let inputs = report_inputs(options);
     let resource_paths = report_resources(options, &resources);
 
-    let constraints = load_constraints_or_empty(options.constraints.as_deref())?;
+    let (constraints, sta_timing) = load_flow_constraints(options, &resources)?;
     let arch = Arc::new(load_arch(&resources.arch)?);
     let delay_model = load_delay_model(resources.delay.as_deref())?.map(Arc::new);
     let loaded_cil = match resources.cil.as_ref() {
@@ -186,14 +187,16 @@ fn run_internal(
     let mut sta_result = run_stage_with_reporter(
         "sta",
         &mut runtime_reporter_option,
-        || sta::run(routed_design.clone(), &sta_options),
-        |reporter| sta::run_with_reporter(routed_design.clone(), &sta_options, reporter),
+        || sta::run_with_timing(routed_design.clone(), &sta_options, &sta_timing),
+        |reporter| {
+            sta::run_with_timing_and_reporter(
+                routed_design.clone(),
+                &sta_options,
+                &sta_timing,
+                reporter,
+            )
+        },
     )?;
-    if let Some(sta_lib) = resources.sta_lib.as_ref() {
-        sta_result
-            .report
-            .push(format!("Referenced timing library {}", sta_lib.display()));
-    }
     save_design_stage_artifact_with_context(
         &mut sta_result.report,
         "design",
@@ -274,6 +277,26 @@ fn run_internal(
     write_summary(&artifacts.summary, &report)?;
     write_log_with_runtime(&artifacts.log, &report, runtime_reporter.runtime_log())?;
     Ok(report)
+}
+
+fn load_flow_constraints(
+    options: &ImplementationOptions,
+    resources: &ResolvedResources,
+) -> Result<(SharedConstraints, StaTimingContext)> {
+    let constraints = load_constraint_set_or_empty(options.constraints.as_deref())?;
+    let cell_timing = resources
+        .sta_lib
+        .as_deref()
+        .map(load_cell_timing_model)
+        .transpose()?
+        .map(Arc::new);
+    Ok((
+        Arc::from(constraints.pins),
+        StaTimingContext {
+            clocks: Arc::from(constraints.clocks),
+            cell_timing,
+        },
+    ))
 }
 
 struct RuntimeLogReporter<'a> {

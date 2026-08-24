@@ -1,10 +1,11 @@
 use crate::{
+    domain::PrimitiveKind,
     ir::{Design, DesignIndex},
-    resource::{Arch, DelayModel},
+    resource::{Arch, CellTimingModel, DelayModel},
 };
 
 use super::{
-    delay::{intrinsic_cell_delay_ns, net_delay_ns},
+    delay::{cell_input_is_functional, combinational_cell_delay_ns, net_delay_ns},
     error::StaError,
     keys::{
         ArrivalMap, cell_arrival_key, endpoint_arrival_key, net_arrival_key, port_arrival_key,
@@ -16,6 +17,7 @@ pub(crate) fn compute_arrivals(
     design: &Design,
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
+    cell_timing: &CellTimingModel,
 ) -> Result<ArrivalMap, StaError> {
     let index = design.index();
     let mut arrival = ArrivalMap::new();
@@ -32,8 +34,13 @@ pub(crate) fn compute_arrivals(
             }
         }
         if cell.is_sequential() {
+            let clock_to_q_ns = if matches!(cell.primitive_kind(), PrimitiveKind::FlipFlop) {
+                cell_timing.sequential.clock_to_q_ns
+            } else {
+                crate::resource::SequentialTiming::default().clock_to_q_ns
+            };
             for output in &cell.outputs {
-                arrival.insert(cell_arrival_key(cell_id, &output.port), 0.2);
+                arrival.insert(cell_arrival_key(cell_id, &output.port), clock_to_q_ns);
             }
         }
     }
@@ -51,6 +58,9 @@ pub(crate) fn compute_arrivals(
             let cell_id = cell_index.into();
             let mut input_arrival: f64 = 0.0;
             for input in &cell.inputs {
+                if !cell_input_is_functional(cell, &input.port) {
+                    continue;
+                }
                 let Some(net_id) = index.net_id(&input.net) else {
                     continue;
                 };
@@ -63,7 +73,7 @@ pub(crate) fn compute_arrivals(
                 let net_delay = net_delay_ns(design, &index, net, arch, delay);
                 input_arrival = input_arrival.max(src_arrival + net_delay);
             }
-            let output_arrival = input_arrival + intrinsic_cell_delay_ns(cell, delay);
+            let output_arrival = input_arrival + combinational_cell_delay_ns(cell, delay);
             for output in &cell.outputs {
                 let key = cell_arrival_key(cell_id, &output.port);
                 if output_arrival > *arrival.get(&key).unwrap_or(&-1.0) {

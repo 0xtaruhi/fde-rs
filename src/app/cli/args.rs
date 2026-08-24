@@ -145,8 +145,10 @@ pub(crate) struct StaArgs {
     pub(crate) arch: Option<PathBuf>,
     #[arg(long, short = 'd')]
     pub(crate) delay: Option<PathBuf>,
-    #[arg(long)]
-    pub(crate) timing_library: Option<PathBuf>,
+    #[arg(long, short = 'c')]
+    pub(crate) constraints: Option<PathBuf>,
+    #[arg(long = "cell-library", visible_alias = "timing-library")]
+    pub(crate) cell_library: Option<PathBuf>,
 }
 
 #[derive(Args)]

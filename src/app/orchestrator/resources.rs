@@ -45,7 +45,9 @@ pub(crate) fn resolve_resources(options: &ImplementationOptions) -> Result<Resol
         pack_config: resolve_optional(&options.pack_config, |bundle| &bundle.pack_config),
         arch,
         delay: resolve_optional(&options.delay, |bundle| &bundle.delay),
-        sta_lib: resolve_optional(&options.sta_lib, |bundle| &bundle.sta_lib),
+        // The STA cell arcs live in the same FDP3 cell library used by pack.
+        // Keep the explicit override for API/CLI compatibility.
+        sta_lib: resolve_optional(&options.sta_lib, |bundle| &bundle.pack_cell),
         cil: resolve_optional(&options.cil, |bundle| &bundle.cil),
     })
 }

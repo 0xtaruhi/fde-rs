@@ -38,18 +38,48 @@ pub(crate) fn net_delay_ns(
     }
 }
 
-pub(crate) fn intrinsic_cell_delay_ns(cell: &Cell, model: Option<&DelayModel>) -> f64 {
+pub(crate) fn combinational_cell_delay_ns(cell: &Cell, model: Option<&DelayModel>) -> f64 {
     let delays = model.map_or_else(Default::default, |model| model.cell_delays);
     let input_count = cell.inputs.len() as f64;
     if cell.is_lut() {
         delays.lut_base_ns + input_count * delays.lut_per_input_ns
     } else if cell.is_buffer() {
         delays.buffer_delay_ns
-    } else if cell.is_sequential() {
-        delays.ff_delay_ns
     } else {
         delays.other_base_ns + input_count * delays.other_per_input_ns
     }
+}
+
+pub(crate) fn cell_input_is_functional(cell: &Cell, input_port: &str) -> bool {
+    let primitive = cell.primitive_kind();
+    let Some(input_index) = primitive.lut_input_index(input_port) else {
+        return true;
+    };
+    let Some(init) = cell.property("lut_init").and_then(parse_lut_init) else {
+        return true;
+    };
+    let input_count = primitive.lut_input_count().unwrap_or(cell.inputs.len());
+    let Ok(shift) = u32::try_from(input_count) else {
+        return true;
+    };
+    let Some(entries) = 1usize.checked_shl(shift) else {
+        return true;
+    };
+    if input_index >= input_count || entries > 128 {
+        return true;
+    }
+    let mask = 1usize << input_index;
+    (0..entries)
+        .filter(|address| address & mask == 0)
+        .any(|address| ((init >> address) & 1) != ((init >> (address | mask)) & 1))
+}
+
+fn parse_lut_init(value: &str) -> Option<u128> {
+    let value = value.trim();
+    let digits = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))?;
+    u128::from_str_radix(digits, 16).ok()
 }
 
 pub(crate) fn estimate_route_delay(route: &[RouteSegment], wire_r: f64, wire_c: f64) -> f64 {

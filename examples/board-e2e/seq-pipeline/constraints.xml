@@ -9,4 +9,5 @@
   <port name="y1" position="P6"/>
   <port name="y2" position="P5"/>
   <port name="y3" position="P4"/>
+  <clock name="sys" port="clk" period="20.0"/>
 </design>

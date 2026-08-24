@@ -1,9 +1,10 @@
-use super::{StaOptions, run, run_with_reporter};
+use super::{StaOptions, StaTimingContext, run, run_with_reporter, run_with_timing};
 use crate::{
+    constraints::ClockConstraint,
     domain::TimingPathCategory,
     ir::{Cell, Cluster, Design, Endpoint, Net, Port, RouteSegment},
     report::{StageEvent, StageReporter, run_stage_with_reporter},
-    resource::{Arch, DelayModel},
+    resource::{Arch, CellTimingModel, DelayModel, SequentialTiming},
 };
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
@@ -215,10 +216,131 @@ fn sta_takes_slowest_fanin_arrival() -> Result<()> {
         .iter()
         .map(|path| path.delay_ns)
         .collect::<Vec<_>>();
-    assert_eq!(delays.len(), 3);
+    assert_eq!(delays.len(), 1);
     assert!((delays[0] - 0.79).abs() < 1e-9);
-    assert!((delays[1] - 0.40).abs() < 1e-9);
-    assert!((delays[2] - 0.32).abs() < 1e-9);
+
+    Ok(())
+}
+
+#[test]
+fn sta_applies_clock_period_setup_and_clock_to_q() -> Result<()> {
+    let design = Design {
+        name: "sta-constrained".to_string(),
+        stage: "routed".to_string(),
+        ports: vec![Port::input("clk").at(0, 0)],
+        cells: vec![
+            Cell::ff("launch", "DFFHQ")
+                .with_input("CK", "clk_net")
+                .with_output("Q", "q_net")
+                .in_cluster("clb0"),
+            Cell::lut("logic", "LUT4")
+                .with_input("A", "q_net")
+                .with_output("O", "data_net")
+                .in_cluster("clb1"),
+            Cell::ff("capture", "DFFHQ")
+                .with_input("D", "data_net")
+                .with_input("CK", "clk_net")
+                .in_cluster("clb2"),
+        ],
+        nets: vec![
+            Net::new("clk_net")
+                .with_driver(Endpoint::port("clk", "IN"))
+                .with_sink(Endpoint::cell("launch", "CK"))
+                .with_sink(Endpoint::cell("capture", "CK")),
+            Net::new("q_net")
+                .with_driver(Endpoint::cell("launch", "Q"))
+                .with_sink(Endpoint::cell("logic", "A"))
+                .with_route_segment(RouteSegment::new((1, 1), (2, 1))),
+            Net::new("data_net")
+                .with_driver(Endpoint::cell("logic", "O"))
+                .with_sink(Endpoint::cell("capture", "D"))
+                .with_route_segment(RouteSegment::new((2, 1), (3, 1))),
+        ],
+        clusters: vec![
+            Cluster::logic("clb0")
+                .with_member("launch")
+                .with_capacity(1)
+                .at(1, 1),
+            Cluster::logic("clb1")
+                .with_member("logic")
+                .with_capacity(1)
+                .at(2, 1),
+            Cluster::logic("clb2")
+                .with_member("capture")
+                .with_capacity(1)
+                .at(3, 1),
+        ],
+        ..Design::default()
+    };
+    let timing = StaTimingContext {
+        clocks: Arc::from([ClockConstraint {
+            name: "sys".to_string(),
+            port_name: "clk".to_string(),
+            period_ns: 2.0,
+        }]),
+        cell_timing: Some(Arc::new(CellTimingModel {
+            sequential: SequentialTiming {
+                clock_to_q_ns: 1.0,
+                setup_ns: 0.5,
+            },
+        })),
+    };
+
+    let options = StaOptions {
+        arch: Some(mini_arch().into()),
+        delay: None,
+    };
+    let artifact = run_with_timing(design.clone(), &options, &timing)?.value;
+
+    let summary = artifact.design.timing.expect("timing summary");
+    assert!((summary.critical_path_ns - 1.87).abs() < 1e-9);
+    let capture = artifact
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "cell:capture:D")
+        .expect("capture D timing node");
+    assert!((capture.arrival_ns - 1.37).abs() < 1e-9);
+    assert!((capture.required_ns - 1.5).abs() < 1e-9);
+    assert!((capture.slack_ns - 0.13).abs() < 1e-9);
+    assert!(artifact.report_text.contains("Worst Slack: 0.130 ns (MET)"));
+
+    let violating_timing = StaTimingContext {
+        clocks: Arc::from([ClockConstraint {
+            name: "sys".to_string(),
+            port_name: "clk".to_string(),
+            period_ns: 1.5,
+        }]),
+        ..timing
+    };
+    let violation = run_with_timing(design.clone(), &options, &violating_timing)?.value;
+    assert!(
+        violation
+            .report_text
+            .contains("Worst Slack: -0.370 ns (VIOLATED)")
+    );
+
+    let multiple_clocks = StaTimingContext {
+        clocks: Arc::from([
+            ClockConstraint {
+                name: "a".to_string(),
+                port_name: "clk".to_string(),
+                period_ns: 2.0,
+            },
+            ClockConstraint {
+                name: "b".to_string(),
+                port_name: "other_clk".to_string(),
+                period_ns: 3.0,
+            },
+        ]),
+        cell_timing: None,
+    };
+    let error = run_with_timing(design, &options, &multiple_clocks)
+        .expect_err("multiple clock domains must not be analyzed as synchronous");
+    assert!(matches!(
+        error,
+        super::StaError::MultipleClockDomains { count: 2 }
+    ));
 
     Ok(())
 }
@@ -409,14 +531,25 @@ fn intrinsic_cell_delay_follows_overridable_cell_delays() {
     let lut = Cell::lut("lut0", "LUT4").with_input("A", "a");
 
     // Legacy defaults: 0.15 base + 0.04 per input for a single-input LUT.
-    let default = super::delay::intrinsic_cell_delay_ns(&lut, None);
+    let default = super::delay::combinational_cell_delay_ns(&lut, None);
     assert!((default - 0.19).abs() < 1e-9);
 
     let mut model = DelayModel::default();
     model.cell_delays.lut_base_ns = 0.5;
     model.cell_delays.lut_per_input_ns = 0.01;
-    let overridden = super::delay::intrinsic_cell_delay_ns(&lut, Some(&model));
+    let overridden = super::delay::combinational_cell_delay_ns(&lut, Some(&model));
     assert!((overridden - 0.51).abs() < 1e-9);
+}
+
+#[test]
+fn lut_timing_arcs_follow_truth_table_dependencies() {
+    let mut gate = Cell::lut("gate", "LUT2")
+        .with_input("ADR0", "data")
+        .with_input("ADR1", "clock");
+    gate.set_property("lut_init", "0xA");
+
+    assert!(super::delay::cell_input_is_functional(&gate, "ADR0"));
+    assert!(!super::delay::cell_input_is_functional(&gate, "ADR1"));
 }
 
 #[test]

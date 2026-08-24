@@ -145,6 +145,13 @@ impl PrimitiveKind {
         }
     }
 
+    pub fn lut_input_count(self) -> Option<usize> {
+        match self {
+            Self::Lut { inputs } => inputs,
+            _ => None,
+        }
+    }
+
     pub fn is_lut_output_pin(self, pin: &str) -> bool {
         self.is_lut()
             && (trimmed_eq_ignore_ascii_case(pin, "O")

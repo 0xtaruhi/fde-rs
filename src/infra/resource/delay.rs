@@ -10,7 +10,6 @@ pub struct CellIntrinsicDelays {
     pub lut_base_ns: f64,
     pub lut_per_input_ns: f64,
     pub buffer_delay_ns: f64,
-    pub ff_delay_ns: f64,
     pub other_base_ns: f64,
     pub other_per_input_ns: f64,
 }
@@ -21,7 +20,6 @@ impl Default for CellIntrinsicDelays {
             lut_base_ns: 0.15,
             lut_per_input_ns: 0.04,
             buffer_delay_ns: 0.04,
-            ff_delay_ns: 0.1,
             other_base_ns: 0.08,
             other_per_input_ns: 0.02,
         }
@@ -110,11 +108,6 @@ fn parse_cell_delays(doc: &Document) -> CellIntrinsicDelays {
                     delays.buffer_delay_ns = v;
                 }
             }
-            "ff" => {
-                if let Some(v) = attribute("delay") {
-                    delays.ff_delay_ns = v;
-                }
-            }
             "other" => {
                 if let Some(v) = attribute("base") {
                     delays.other_base_ns = v;
@@ -170,7 +163,6 @@ mod tests {
         assert!((model.lookup(1, 1) - 0.4).abs() < f64::EPSILON);
         let delays = model.cell_delays;
         assert!((delays.lut_base_ns - 0.15).abs() < 1e-9);
-        assert!((delays.ff_delay_ns - 0.1).abs() < 1e-9);
     }
 
     #[test]
@@ -189,7 +181,6 @@ mod tests {
         assert!((delays.lut_base_ns - 0.3).abs() < 1e-9);
         assert!((delays.lut_per_input_ns - 0.01).abs() < 1e-9);
         assert!((delays.buffer_delay_ns - 0.02).abs() < 1e-9);
-        assert!((delays.ff_delay_ns - 0.2).abs() < 1e-9);
         assert!((delays.other_base_ns - 0.05).abs() < 1e-9);
         assert!((delays.other_per_input_ns - 0.03).abs() < 1e-9);
     }
