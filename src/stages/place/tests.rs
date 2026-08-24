@@ -570,7 +570,7 @@ fn incremental_evaluator_matches_full_recompute_for_move_and_swap() {
     let move_updates = vec![(clb1, (3usize, 1usize))];
     let move_candidate = evaluator.evaluate_candidate(&move_updates);
     let repeated_move_candidate = evaluator.evaluate_candidate(&move_updates);
-    let mut moved = placements.clone();
+    let mut moved = placements;
     moved[clb1.index()] = Some(Point::new(3, 1));
     let moved_metrics = evaluate(&model, &graph, &moved, &arch, Some(&delay), mode);
     assert_metrics_close(move_candidate.metrics(), &moved_metrics);
@@ -607,7 +607,7 @@ fn placement_assigns_block_ram_clusters_to_block_ram_sites() -> Result<()> {
 
     assert!(matches!(
         placed_sites(&placed).as_slice(),
-        [(_, 1, 0, 0)] | [(_, 6, 7, 0)]
+        [(_, 1, 0, 0) | (_, 6, 7, 0)]
     ));
     assert!(
         !placed.clusters[0].fixed,
@@ -628,7 +628,7 @@ fn large_synthetic_design_places_legally_and_deterministically() -> Result<()> {
         delay: Some(delay.into()),
         constraints: Vec::new().into(),
         mode: PlaceMode::TimingDriven,
-        seed: 0xC0FFEE,
+        seed: 0x00C0_FFEE,
     };
 
     let placed_a = run(design.clone(), &options)?.value;

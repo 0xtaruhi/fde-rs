@@ -74,7 +74,7 @@ impl ResourceBundle {
 fn candidate_roots(start: &Path) -> Vec<PathBuf> {
     let mut roots = BTreeSet::new();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for base in [start.to_path_buf(), manifest_dir.clone()] {
+    for base in [start.to_path_buf(), manifest_dir] {
         insert_bundle_layouts(&mut roots, &base);
         if let Some(parent) = base.parent() {
             insert_bundle_layouts(&mut roots, parent);

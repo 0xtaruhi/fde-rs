@@ -19,6 +19,27 @@ impl BitgenCircuit {
     }
 }
 
+pub(super) fn serialize_net_route(net: &Net) -> String {
+    if net.route.is_empty() {
+        net.route_pips
+            .iter()
+            .map(|pip| format!("{}:{}@{},{}", pip.from_net, pip.to_net, pip.x, pip.y))
+            .collect::<Vec<_>>()
+            .join("|")
+    } else {
+        net.route
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{}:{}-{}:{}",
+                    segment.x0, segment.y0, segment.x1, segment.y1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+}
+
 fn sorted_clusters(design: &Design) -> Vec<Cluster> {
     let mut clusters = design.clusters.clone();
     clusters.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));

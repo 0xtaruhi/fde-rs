@@ -418,7 +418,7 @@ fn register_uses_local_lut(
 }
 
 fn physical_block_ram_pin_name(pin: &str) -> Option<String> {
-    BlockRamPin::parse(pin)?.physical_port_name()
+    BlockRamPin::parse(pin).map(BlockRamPin::physical_port_name)
 }
 
 fn push_unique_endpoint(endpoints: &mut Vec<PhysicalEndpoint>, endpoint: PhysicalEndpoint) {

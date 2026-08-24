@@ -1,3 +1,23 @@
+// Pedantic/nursery policy: retain explicit crate boundaries; avoid annotation
+// churn for query/builders and speculative const APIs; keep domain terminology
+// and branch structure readable; allow exact-in-practice EDA counts in `f64`
+// heuristics and allocation-only formatting in cold report generation. Preserve
+// established non-FMA rounding in fixed-seed algorithms.
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::format_push_string,
+    clippy::if_not_else,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::option_if_let_else,
+    clippy::redundant_pub_crate,
+    clippy::return_self_not_must_use,
+    clippy::struct_excessive_bools,
+    clippy::struct_field_names,
+    clippy::suboptimal_flops
+)]
+
 mod app;
 mod core;
 mod infra;

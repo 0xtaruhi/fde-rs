@@ -502,10 +502,10 @@ fn lowering_and_device_router_preserve_logical_route_guidance_when_resources_are
     let bitstream_detour = run_bitgen(
         with_route_pips(guided_logic_design(src, dst, &detour_guide), &route_detour),
         &BitgenOptions {
-            arch_name: Some(arch.name.clone()),
+            arch_name: Some(arch.name),
             arch_path: Some(arch_path),
             cil_path: Some(cil_path),
-            cil: Some(cil.clone()),
+            cil: Some(cil),
             device_design: Some(lowered_detour),
             route_image: Some(route_detour),
         },

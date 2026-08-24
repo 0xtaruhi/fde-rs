@@ -59,8 +59,10 @@ impl PinRole {
             | SiteKind::BlockRam
             | SiteKind::Const
             | SiteKind::Unplaced
-            | SiteKind::Unknown => Self::Unknown,
-            SiteKind::Iob | SiteKind::GclkIob | SiteKind::Gclk => Self::Unknown,
+            | SiteKind::Unknown
+            | SiteKind::Iob
+            | SiteKind::GclkIob
+            | SiteKind::Gclk => Self::Unknown,
         }
     }
 

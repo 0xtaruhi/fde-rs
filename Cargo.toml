@@ -29,6 +29,10 @@ rustc-hash = "2.1"
 [dev-dependencies]
 tempfile = "3.15"
 
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

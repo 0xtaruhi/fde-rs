@@ -40,7 +40,7 @@ pub(super) fn all_zeros_truth_table(lut_size: usize) -> String {
 }
 
 pub(super) fn all_ones_truth_table(lut_size: usize) -> String {
-    let bits = 1usize.checked_shl(lut_size.min(7) as u32).unwrap_or(128);
+    let bits = 1usize << lut_size.min(7);
     if bits >= 128 {
         return format!("0x{:X}", u128::MAX);
     }
@@ -90,7 +90,7 @@ fn parse_verilog_lut_init(raw: &str) -> Option<u128> {
 }
 
 pub(super) fn format_lut_init_hex(value: u128, lut_width: usize) -> String {
-    let bit_count = 1usize.checked_shl(lut_width.min(7) as u32).unwrap_or(128);
+    let bit_count = 1usize << lut_width.min(7);
     let masked = if bit_count >= 128 {
         value
     } else {

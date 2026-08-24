@@ -68,7 +68,7 @@ fn materializes_route_image_from_explicit_pips() {
 </architecture>
 "#;
     let cil = parse_cil_str(
-        r##"
+        r#"
 <device name="mini">
   <element_library>
     <element name="SW2">
@@ -101,7 +101,7 @@ fn materializes_route_image_from_explicit_pips() {
     </tile>
   </tile_library>
 </device>
-"##,
+"#,
     )
     .expect("parse mini cil");
     let arch_graph_xml = r#"

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 #[test]
 fn applies_default_transmission_bits_into_frame_images() {
     let cil = parse_cil_str(
-        r##"
+        r#"
             <device name="mini">
               <transmission_library>
                 <signal_transmission name="CNTX" type="GSB_CNT"/>
@@ -30,7 +30,7 @@ fn applies_default_transmission_bits_into_frame_images() {
                 </tile>
               </tile_library>
             </device>
-            "##,
+            "#,
     )
     .expect("parse mini cil");
 
@@ -52,15 +52,14 @@ fn applies_default_transmission_bits_into_frame_images() {
         )]),
         ..Arch::default()
     };
-    let transmission_defaults = [(
+    let transmission_defaults = std::iter::once((
         "GSB_CNT".to_string(),
         vec![RouteBit {
             basic_cell: "sw0".to_string(),
             sram_name: "EN".to_string(),
             value: 0,
         }],
-    )]
-    .into_iter()
+    ))
     .collect::<HashMap<_, _>>();
 
     let mut notes = Vec::new();
@@ -84,7 +83,7 @@ fn applies_default_transmission_bits_into_frame_images() {
 #[test]
 fn relocates_default_site_bits_into_owner_tiles() {
     let cil = parse_cil_str(
-        r##"
+        r#"
             <device name="mini">
               <site_library>
                 <block_site name="SRC">
@@ -115,7 +114,7 @@ fn relocates_default_site_bits_into_owner_tiles() {
                 </tile>
               </tile_library>
             </device>
-            "##,
+            "#,
     )
     .expect("parse mini cil");
 
@@ -181,7 +180,7 @@ fn relocates_default_site_bits_into_owner_tiles() {
 #[test]
 fn relocates_config_assignments_into_owner_tiles() {
     let cil = parse_cil_str(
-        r##"
+        r#"
             <device name="mini">
               <site_library>
                 <block_site name="SRC">
@@ -212,7 +211,7 @@ fn relocates_config_assignments_into_owner_tiles() {
                 </tile>
               </tile_library>
             </device>
-            "##,
+            "#,
     )
     .expect("parse mini cil");
 

@@ -127,10 +127,7 @@ fn parse_hex_literal(raw_value: &str) -> Result<String> {
     let trimmed = raw_value.trim();
     let digits = if let Some((_, radix, digits)) = split_verilog_literal(trimmed) {
         if radix != 'h' {
-            bail!(
-                "unsupported BRAM INIT literal radix '{}' in {trimmed}",
-                radix
-            );
+            bail!("unsupported BRAM INIT literal radix '{radix}' in {trimmed}");
         }
         digits
     } else {
@@ -299,13 +296,13 @@ mod tests {
     #[test]
     fn build_memory_payloads_orders_tiles_by_arch_bit_position() {
         let cil = parse_cil_str(
-            r##"
+            r#"
         <device name="mini">
           <bstrcmd_library>
             <parameter name="mem_amount" value="2"/>
           </bstrcmd_library>
         </device>
-        "##,
+        "#,
         )
         .expect("parse mini cil");
         let arch = Arch {

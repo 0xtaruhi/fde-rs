@@ -9,7 +9,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-impl<'a> DeviceLowering<'a> {
+impl DeviceLowering<'_> {
     pub(super) fn materialize_cells(&mut self) {
         let lowered = lower_original_cells(self.design, &self.index, self.arch, self.cil);
         let mut seen_names = self

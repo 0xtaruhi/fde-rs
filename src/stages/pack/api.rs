@@ -85,6 +85,9 @@ pub fn run_with_reporter(
     run_internal(design, options, Some(reporter))
 }
 
+// Keep the internal entry point fallible so the pack stage shares one stable
+// result shape with the other stage APIs and can regain validation errors.
+#[allow(clippy::unnecessary_wraps)]
 fn run_internal(
     mut design: Design,
     options: &PackOptions,
@@ -102,12 +105,8 @@ fn run_internal(
         ),
     );
     if let Some(family) = &options.family {
-        design.metadata.family = family.clone();
-        emit_stage_info(
-            &mut reporter,
-            "pack",
-            format!("targeting family {}", family),
-        );
+        design.metadata.family.clone_from(family);
+        emit_stage_info(&mut reporter, "pack", format!("targeting family {family}"));
     }
     if let Some(cell_library) = &options.cell_library {
         design.note_once(format!(
@@ -222,7 +221,7 @@ fn build_cluster_plans(design: &Design, capacity: usize) -> Vec<ClusterPlan> {
     let lanes = build_lanes(design, &index);
     let topology = build_lane_topology(design, &index, &lanes);
     let mut seed_lanes = (0..lanes.len()).collect::<Vec<_>>();
-    seed_lanes.sort_by(|lhs, rhs| compare_seed_lanes(lhs, rhs, &topology));
+    seed_lanes.sort_by(|lhs, rhs| compare_seed_lanes(*lhs, *rhs, &topology));
 
     let mut used = vec![false; lanes.len()];
     let mut clusters = Vec::<Vec<CellId>>::new();
@@ -256,7 +255,7 @@ fn build_cluster_plans(design: &Design, capacity: usize) -> Vec<ClusterPlan> {
             used[next] = true;
             usage = merge_lane_usage(usage, lane_usage(&lanes[next]));
             if control_set.is_none() {
-                control_set = lanes[next].control_set.clone();
+                control_set.clone_from(&lanes[next].control_set);
             }
             cluster_lane_ids.push(next);
         }
@@ -406,15 +405,15 @@ fn build_lane_topology(design: &Design, index: &DesignIndex<'_>, lanes: &[Lane])
     }
 }
 
-fn compare_seed_lanes(lhs: &usize, rhs: &usize, topology: &LaneTopology) -> std::cmp::Ordering {
-    topology.degree[*rhs]
-        .cmp(&topology.degree[*lhs])
+fn compare_seed_lanes(lhs: usize, rhs: usize, topology: &LaneTopology) -> std::cmp::Ordering {
+    topology.degree[rhs]
+        .cmp(&topology.degree[lhs])
         .then_with(|| {
-            topology.conn_factor[*lhs]
-                .partial_cmp(&topology.conn_factor[*rhs])
+            topology.conn_factor[lhs]
+                .partial_cmp(&topology.conn_factor[rhs])
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .then_with(|| lhs.cmp(rhs))
+        .then_with(|| lhs.cmp(&rhs))
 }
 
 fn lane_usage(lane: &Lane) -> LaneUsage {
@@ -490,7 +489,7 @@ fn best_cluster_candidate(
                 Some((best_score, best_lane))
                     if score < best_score
                         || (score == best_score
-                            && compare_seed_lanes(&candidate, &best_lane, topology)
+                            && compare_seed_lanes(candidate, best_lane, topology)
                                 == std::cmp::Ordering::Greater) => {}
                 _ => best_connected = Some((score, candidate)),
             }
@@ -499,7 +498,7 @@ fn best_cluster_candidate(
         if cluster_kind == LaneKind::Lut {
             match best_unconnected_lut {
                 Some(best_lane)
-                    if compare_seed_lanes(&candidate, &best_lane, topology)
+                    if compare_seed_lanes(candidate, best_lane, topology)
                         == std::cmp::Ordering::Greater => {}
                 _ => best_unconnected_lut = Some(candidate),
             }

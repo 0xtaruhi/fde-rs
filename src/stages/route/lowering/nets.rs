@@ -7,7 +7,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-impl<'a> DeviceLowering<'a> {
+impl DeviceLowering<'_> {
     pub(super) fn materialize_nets(&mut self) {
         self.materialize_input_nets();
         self.materialize_logical_nets();
@@ -100,7 +100,7 @@ impl<'a> DeviceLowering<'a> {
             EndpointTarget::Port(port_id) => {
                 let port = self.device_port(port_id)?;
                 if is_driver {
-                    return self.lowered_driver_port_endpoint(port_id, port);
+                    return Some(self.lowered_driver_port_endpoint(port_id, port));
                 }
                 if port.direction.is_output_like()
                     && let Some(io_cell) = self.io_cell(port_id)
@@ -113,21 +113,17 @@ impl<'a> DeviceLowering<'a> {
         }
     }
 
-    fn lowered_driver_port_endpoint(
-        &self,
-        port_id: PortId,
-        port: &DevicePort,
-    ) -> Option<DeviceEndpoint> {
+    fn lowered_driver_port_endpoint(&self, port_id: PortId, port: &DevicePort) -> DeviceEndpoint {
         if !port.direction.is_input_like() {
-            return Some(port_endpoint(port));
+            return port_endpoint(port);
         }
         if let Some(gclk_cell) = self.gclk_cell(port_id) {
-            return Some(cell_endpoint(gclk_cell, "OUT"));
+            return cell_endpoint(gclk_cell, "OUT");
         }
         if let Some(io_cell) = self.io_cell(port_id) {
-            return Some(cell_endpoint(io_cell, "IN"));
+            return cell_endpoint(io_cell, "IN");
         }
-        Some(port_endpoint(port))
+        port_endpoint(port)
     }
 }
 
@@ -271,22 +267,33 @@ fn append_segment_tiles(tiles: &mut Vec<(usize, usize)>, segment: &RouteSegment)
         .x0
         .abs_diff(segment.x1)
         .max(segment.y0.abs_diff(segment.y1));
-    let mut x = segment.x0 as isize;
-    let mut y = segment.y0 as isize;
+    let mut point = (segment.x0, segment.y0);
 
-    for _ in 0..=steps {
-        let point = (x as usize, y as usize);
+    for step in 0..=steps {
         if tiles.last().copied() != Some(point) {
             tiles.push(point);
         }
-        x += dx;
-        y += dy;
+        if step == steps {
+            break;
+        }
+        if point.0 != segment.x1 {
+            point.0 = point
+                .0
+                .checked_add_signed(dx)
+                .expect("route segment x coordinate overflow");
+        }
+        if point.1 != segment.y1 {
+            point.1 = point
+                .1
+                .checked_add_signed(dy)
+                .expect("route segment y coordinate overflow");
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_endpoint, sink_guides};
+    use super::{append_segment_tiles, cell_endpoint, sink_guides};
     use crate::{DeviceCell, DeviceEndpoint, domain::SiteKind, ir::RouteSegment};
 
     fn endpoint(name: &str, pin: &str, x: usize, y: usize) -> DeviceEndpoint {
@@ -309,6 +316,13 @@ mod tests {
         assert_eq!(guides[0].tiles, vec![(0, 0), (0, 1), (0, 2)]);
         assert_eq!(guides[1].sink, sinks[1]);
         assert_eq!(guides[1].tiles, vec![(0, 0), (0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn diagonal_segment_stops_each_axis_at_its_target() {
+        let mut tiles = Vec::new();
+        append_segment_tiles(&mut tiles, &RouteSegment::new((1, 2), (0, 0)));
+        assert_eq!(tiles, vec![(1, 2), (0, 1), (0, 0)]);
     }
 
     #[test]

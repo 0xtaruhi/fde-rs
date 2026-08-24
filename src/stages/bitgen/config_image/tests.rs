@@ -35,6 +35,7 @@ fn programmed_site(
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One declarative CIL fixture exercises all supported site kinds.
 fn builds_tile_assignments_for_slice_iob_and_gclk_programming_requests() {
     let cil = parse_cil_str(
         r##"
@@ -210,7 +211,7 @@ fn builds_tile_assignments_for_slice_iob_and_gclk_programming_requests() {
         ..ProgrammingImage::default()
     };
 
-    let image = encode_config_image(&programming, &cil, None).expect("encode config image");
+    let image = encode_config_image(&programming, &cil, None);
     assert_eq!(image.tiles.len(), 3);
 
     let center = image
@@ -300,7 +301,7 @@ fn builds_tile_assignments_for_slice_iob_and_gclk_programming_requests() {
 #[test]
 fn encodes_addressed_lut_requests_into_site_srams() {
     let cil = parse_cil_str(
-        r##"
+        r#"
         <device name="mini">
           <site_library>
             <block_site name="SLICE">
@@ -360,7 +361,7 @@ fn encodes_addressed_lut_requests_into_site_srams() {
             </tile>
           </tile_library>
         </device>
-        "##,
+        "#,
     )
     .expect("parse mini cil");
 
@@ -377,7 +378,7 @@ fn encodes_addressed_lut_requests_into_site_srams() {
         ..ProgrammingImage::default()
     };
 
-    let image = encode_config_image(&programming, &cil, None).expect("encode config image");
+    let image = encode_config_image(&programming, &cil, None);
     let center = image
         .tiles
         .iter()
@@ -492,7 +493,7 @@ fn owner_tile_assignments_move_into_target_tile_when_arch_is_available() {
         ..Arch::default()
     };
 
-    let image = encode_config_image(&programming, &cil, Some(&arch)).expect("encode config image");
+    let image = encode_config_image(&programming, &cil, Some(&arch));
     assert_eq!(image.tiles.len(), 2);
 
     let source = image
@@ -533,7 +534,7 @@ fn owner_tile_assignments_move_into_target_tile_when_arch_is_available() {
 #[test]
 fn block_ram_site_requests_encode_into_owner_tiles() {
     let cil = parse_cil_str(
-        r##"
+        r#"
         <device name="mini">
           <site_library>
             <block_site name="BRAM">
@@ -570,7 +571,7 @@ fn block_ram_site_requests_encode_into_owner_tiles() {
             </tile>
           </tile_library>
         </device>
-        "##,
+        "#,
     )
     .expect("parse mini cil");
 
@@ -620,7 +621,7 @@ fn block_ram_site_requests_encode_into_owner_tiles() {
         ..Arch::default()
     };
 
-    let image = encode_config_image(&programming, &cil, Some(&arch)).expect("encode config image");
+    let image = encode_config_image(&programming, &cil, Some(&arch));
 
     let source = image
         .tiles
@@ -767,7 +768,7 @@ fn explicit_slice_requests_override_default_alias_configs_on_shared_srams() {
         ..ProgrammingImage::default()
     };
 
-    let image = encode_config_image(&programming, &cil, None).expect("encode config image");
+    let image = encode_config_image(&programming, &cil, None);
     let center = image
         .tiles
         .iter()

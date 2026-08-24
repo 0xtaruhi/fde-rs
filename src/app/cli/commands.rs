@@ -1,3 +1,7 @@
+// Clap transfers owned command payloads into these handlers. Retaining that
+// ownership boundary avoids borrowing the top-level command enum unnecessarily.
+#![allow(clippy::needless_pass_by_value)]
+
 use anyhow::{Context, Result};
 use std::{fs, sync::Arc};
 
@@ -256,13 +260,13 @@ pub(crate) fn run_impl(args: ImplArgs) -> Result<()> {
         print_stage_report(stage);
     }
     if let Some(summary_path) = report.artifacts.get("summary") {
-        println!("[impl] Wrote summary to {}", summary_path);
+        println!("[impl] Wrote summary to {summary_path}");
     }
     if let Some(log_path) = report.artifacts.get("log") {
-        println!("[impl] Wrote log to {}", log_path);
+        println!("[impl] Wrote log to {log_path}");
     }
     if let Some(report_path) = report.artifacts.get("report") {
-        println!("[impl] Wrote report to {}", report_path);
+        println!("[impl] Wrote report to {report_path}");
     }
     Ok(())
 }

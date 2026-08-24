@@ -360,7 +360,7 @@ fn physical_import_merges_clock_bridge_pips_back_into_clock_net() {
 
 #[test]
 fn physical_import_preserves_port_pin_and_site_slot() {
-    let xml = r##"
+    let xml = r#"
 <design name="port_import">
   <external name="template_work_lib">
     <module name="iob" type="IOB">
@@ -416,7 +416,7 @@ fn physical_import_preserves_port_pin_and_site_slot() {
   </library>
   <topModule libraryRef="work_lib" name="port_import"/>
 </design>
-"##;
+"#;
 
     let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
     let design = load_fde_physical_design_xml(document.root_element())
@@ -441,7 +441,7 @@ fn physical_import_preserves_port_pin_and_site_slot() {
 
 #[test]
 fn physical_import_expands_cpp_bus_ports_into_bit_ports() {
-    let xml = r##"
+    let xml = r#"
 <design name="bus_import">
   <external name="template_work_lib">
     <module name="iob" type="IOB">
@@ -480,7 +480,7 @@ fn physical_import_expands_cpp_bus_ports_into_bit_ports() {
   </library>
   <topModule libraryRef="work_lib" name="bus_import"/>
 </design>
-"##;
+"#;
 
     let document = roxmltree::Document::parse(xml).expect("physical XML should parse");
     let design = load_fde_physical_design_xml(document.root_element())

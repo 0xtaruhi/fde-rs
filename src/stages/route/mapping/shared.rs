@@ -8,9 +8,9 @@ pub(crate) type WireSet = SmallVec<[WireId; 1]>;
 pub(super) fn bel_slot(bel: &str) -> Option<usize> {
     bel.chars()
         .rev()
-        .find(|ch| ch.is_ascii_digit())
+        .find(char::is_ascii_digit)
         .and_then(|ch| ch.to_digit(10))
-        .map(|digit| digit as usize)
+        .and_then(|digit| usize::try_from(digit).ok())
 }
 
 pub(super) fn pin_map_indices(cell: &DeviceCell, logical_index: usize) -> Vec<usize> {

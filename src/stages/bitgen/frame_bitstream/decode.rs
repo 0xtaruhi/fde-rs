@@ -10,7 +10,8 @@ use super::{
 
 pub(crate) fn decode_text_bitstream(arch: &Arch, cil: &Cil, text: &str) -> Result<TileColumns> {
     let mut columns = build_empty_tile_columns(arch, cil);
-    let mut blocks_by_address = group_fdri_blocks(parse_fdri_blocks(parse_words(text)?)?);
+    let words = parse_words(text)?;
+    let mut blocks_by_address = group_fdri_blocks(parse_fdri_blocks(&words)?);
     let bits_per_group = parameter_usize(cil, "bits_per_grp_reversed")?;
     let major_shift = parameter_u32(cil, "major_shift")?;
 
@@ -110,7 +111,7 @@ fn parse_words(text: &str) -> Result<Vec<u32>> {
         .collect()
 }
 
-fn parse_fdri_blocks(words: Vec<u32>) -> Result<Vec<FdriBlock>> {
+fn parse_fdri_blocks(words: &[u32]) -> Result<Vec<FdriBlock>> {
     let mut blocks = Vec::new();
     let mut index = 0usize;
 
@@ -120,14 +121,15 @@ fn parse_fdri_blocks(words: Vec<u32>) -> Result<Vec<FdriBlock>> {
             && (words[index + 3] >> 28) == 0x5
         {
             let address = words[index + 1];
-            let count = (words[index + 3] & 0x0fff_ffff) as usize;
+            let count = usize::try_from(words[index + 3] & 0x0fff_ffff)
+                .context("FDRI word count does not fit usize")?;
             let payload_start = index + 4;
-            let payload_end = payload_start + count;
+            let payload_end = payload_start
+                .checked_add(count)
+                .context("FDRI payload range overflows usize")?;
             if payload_end > words.len() {
                 bail!(
-                    "FDRI block at word {} declares {} payload words, but stream ends early",
-                    index,
-                    count
+                    "FDRI block at word {index} declares {count} payload words, but stream ends early"
                 );
             }
             blocks.push(FdriBlock {

@@ -68,7 +68,7 @@ impl TileKind {
     pub fn canonical_name(self) -> Option<&'static str> {
         match self {
             Self::Logic => Some("CENTER"),
-            Self::BlockRam => None,
+            Self::BlockRam | Self::Unknown => None,
             Self::LeftIo => Some("LEFT"),
             Self::RightIo => Some("RIGHT"),
             Self::TopIo => Some("TOP"),
@@ -78,7 +78,6 @@ impl TileKind {
             Self::ClockCenter => Some("CLKC"),
             Self::ClockVertical => Some("CLKV"),
             Self::ClockHorizontal => Some("CLKH"),
-            Self::Unknown => None,
         }
     }
 }

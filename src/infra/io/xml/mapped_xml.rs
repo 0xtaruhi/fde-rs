@@ -280,14 +280,14 @@ fn mapped_net_endpoints(
 
 fn attach_mapped_cell_pins(cells: &mut BTreeMap<String, Cell>, net: &Net, net_name: &str) {
     if let Some(driver) = &net.driver
-        && let EndpointKind::Cell = driver.kind
+        && driver.kind == EndpointKind::Cell
         && let Some(cell) = cells.get_mut(&driver.name)
     {
         cell.outputs
             .push(CellPin::new(driver.pin.clone(), net_name.to_string()));
     }
     for sink in &net.sinks {
-        if let EndpointKind::Cell = sink.kind
+        if sink.kind == EndpointKind::Cell
             && let Some(cell) = cells.get_mut(&sink.name)
         {
             cell.inputs
@@ -494,7 +494,7 @@ fn mapped_constant_lut_init(cell: &Cell, lut_size: usize) -> Option<String> {
     match cell.constant_kind()? {
         crate::domain::ConstantKind::Zero => Some(format_lut_init_hex(0, lut_size)),
         crate::domain::ConstantKind::One => {
-            let bits = 1usize.checked_shl(lut_size.min(7) as u32).unwrap_or(128);
+            let bits = 1usize << lut_size.min(7);
             let value = if bits >= 128 {
                 u128::MAX
             } else {
@@ -507,7 +507,7 @@ fn mapped_constant_lut_init(cell: &Cell, lut_size: usize) -> Option<String> {
 }
 
 fn format_lut_init_hex(value: u128, lut_width: usize) -> String {
-    let bit_count = 1usize.checked_shl(lut_width.min(7) as u32).unwrap_or(128);
+    let bit_count = 1usize << lut_width.min(7);
     let masked = if bit_count >= 128 {
         value
     } else {

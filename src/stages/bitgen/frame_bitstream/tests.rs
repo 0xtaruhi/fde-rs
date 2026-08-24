@@ -19,7 +19,7 @@ use crate::{
 #[test]
 fn roundtrips_text_bitstream_back_into_tile_columns() {
     let cil = parse_cil_str(
-        r##"
+        r#"
         <device name="mini">
           <tile_library>
             <tile name="CENTER" sram_amount="R2C4"/>
@@ -43,7 +43,7 @@ fn roundtrips_text_bitstream_back_into_tile_columns() {
             <command cmd="writeNomalTiles"/>
           </bstrcmd_library>
         </device>
-        "##,
+        "#,
     )
     .expect("parse mini cil");
 

@@ -3,7 +3,7 @@ use super::parse_source;
 #[test]
 fn parses_renamed_instance_references() {
     let design = parse_source(
-        r#"
+        r"
             (edif top
               (library DESIGN
                 (cell top
@@ -22,7 +22,7 @@ fn parses_renamed_instance_references() {
                         (joined
                           (portRef O (instanceRef id00001))
                           (portRef y))))))))
-            "#,
+            ",
     )
     .expect("parse rename");
 
@@ -83,7 +83,7 @@ fn resolves_renamed_external_library_cells_before_classifying_instances() {
 #[test]
 fn classifies_block_ram_instances_and_preserves_output_drivers() {
     let design = parse_source(
-        r#"
+        r"
             (edif top
               (library DESIGN
                 (cell top
@@ -102,7 +102,7 @@ fn classifies_block_ram_instances_and_preserves_output_drivers() {
                         (joined
                           (portRef DO0 (instanceRef mem0))
                           (portRef q))))))))
-            "#,
+            ",
     )
     .expect("parse block ram");
 
@@ -157,7 +157,7 @@ fn parses_string_properties_and_comments() {
 #[test]
 fn parses_integer_properties_on_structural_luts() {
     let design = parse_source(
-        r#"
+        r"
             (edif top
               (library DESIGN
                 (cell top
@@ -167,7 +167,7 @@ fn parses_integer_properties_on_structural_luts() {
                       (instance u0
                         (viewRef NETLIST (cellRef LUT2 (libraryRef LIB)))
                         (property INIT (integer 10))))))))
-            "#,
+            ",
     )
     .expect("parse integer property");
 
@@ -182,7 +182,7 @@ fn parses_integer_properties_on_structural_luts() {
 #[test]
 fn parses_array_ports_and_member_references() {
     let design = parse_source(
-        r#"
+        r"
             (edif top
               (library DESIGN
                 (cell top
@@ -206,7 +206,7 @@ fn parses_array_ports_and_member_references() {
                         (joined
                           (portRef O (instanceRef u0))
                           (portRef (member bus_out 1)))))))))
-            "#,
+            ",
     )
     .expect("parse array ports");
 
@@ -301,7 +301,7 @@ fn resolves_renamed_array_ports_using_member_ordinals() {
 #[test]
 fn resolves_instance_port_array_members_using_library_port_order() {
     let design = parse_source(
-        r#"
+        r"
             (edif top
               (external LIB
                 (cell RAMB4_S8
@@ -334,7 +334,7 @@ fn resolves_instance_port_array_members_using_library_port_order() {
                         (joined
                           (portRef addr0)
                           (portRef (member ADDR 8) (instanceRef mem0)))))))))
-            "#,
+            ",
     )
     .expect("parse instance array members");
 

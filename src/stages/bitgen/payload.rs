@@ -1,20 +1,25 @@
-use super::{ConfigImage, api::BitgenOptions, circuit::BitgenCircuit};
+use super::{
+    ConfigImage,
+    api::BitgenOptions,
+    circuit::{BitgenCircuit, serialize_net_route},
+};
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 pub(super) fn build_deterministic_payload(
     circuit: &BitgenCircuit,
     options: &BitgenOptions,
     config_image: Option<&ConfigImage>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"FDEBIT24");
-    write_chunk(&mut bytes, "design", circuit.design_name.as_bytes());
-    write_chunk(&mut bytes, "stage", circuit.stage_name.as_bytes());
+    write_chunk(&mut bytes, "design", circuit.design_name.as_bytes())?;
+    write_chunk(&mut bytes, "stage", circuit.stage_name.as_bytes())?;
     if let Some(arch_name) = options.arch_name.as_ref() {
-        write_chunk(&mut bytes, "arch", arch_name.as_bytes());
+        write_chunk(&mut bytes, "arch", arch_name.as_bytes())?;
     }
     if let Some(cil_path) = options.cil_path.as_ref() {
-        write_chunk(&mut bytes, "cil", cil_path.to_string_lossy().as_bytes());
+        write_chunk(&mut bytes, "cil", cil_path.to_string_lossy().as_bytes())?;
     }
 
     for cluster in &circuit.clusters {
@@ -25,7 +30,7 @@ pub(super) fn build_deterministic_payload(
             cluster.y.unwrap_or(0),
             cluster.members.join(",")
         );
-        write_chunk(&mut bytes, "clb", payload.as_bytes());
+        write_chunk(&mut bytes, "clb", payload.as_bytes())?;
     }
 
     for net in &circuit.nets {
@@ -35,19 +40,19 @@ pub(super) fn build_deterministic_payload(
             net.route_length(),
             serialize_net_route(net)
         );
-        write_chunk(&mut bytes, "net", payload.as_bytes());
+        write_chunk(&mut bytes, "net", payload.as_bytes())?;
     }
 
     if let Some(config_image) = config_image {
-        append_config_image_chunks(&mut bytes, config_image);
+        append_config_image_chunks(&mut bytes, config_image)?;
     }
 
     let digest = Sha256::digest(&bytes);
     bytes.extend_from_slice(&digest);
-    bytes
+    Ok(bytes)
 }
 
-fn append_config_image_chunks(bytes: &mut Vec<u8>, config_image: &ConfigImage) {
+fn append_config_image_chunks(bytes: &mut Vec<u8>, config_image: &ConfigImage) -> Result<()> {
     for tile in &config_image.tiles {
         let header = format!(
             "{}:{}@{},{}:{}x{}",
@@ -57,34 +62,18 @@ fn append_config_image_chunks(bytes: &mut Vec<u8>, config_image: &ConfigImage) {
         payload.extend_from_slice(header.as_bytes());
         payload.push(0);
         payload.extend_from_slice(&tile.packed_bits());
-        write_chunk(bytes, "tile", &payload);
+        write_chunk(bytes, "tile", &payload)?;
     }
+    Ok(())
 }
 
-fn write_chunk(bytes: &mut Vec<u8>, tag: &str, payload: &[u8]) {
-    bytes.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+fn write_chunk(bytes: &mut Vec<u8>, tag: &str, payload: &[u8]) -> Result<()> {
+    let tag_len = u32::try_from(tag.len()).context("bitstream chunk tag exceeds u32 capacity")?;
+    let payload_len =
+        u32::try_from(payload.len()).context("bitstream chunk payload exceeds u32 capacity")?;
+    bytes.extend_from_slice(&tag_len.to_le_bytes());
     bytes.extend_from_slice(tag.as_bytes());
-    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&payload_len.to_le_bytes());
     bytes.extend_from_slice(payload);
-}
-
-fn serialize_net_route(net: &crate::ir::Net) -> String {
-    if !net.route.is_empty() {
-        net.route
-            .iter()
-            .map(|segment| {
-                format!(
-                    "{}:{}-{}:{}",
-                    segment.x0, segment.y0, segment.x1, segment.y1
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    } else {
-        net.route_pips
-            .iter()
-            .map(|pip| format!("{}:{}@{},{}", pip.from_net, pip.to_net, pip.x, pip.y))
-            .collect::<Vec<_>>()
-            .join("|")
-    }
+    Ok(())
 }

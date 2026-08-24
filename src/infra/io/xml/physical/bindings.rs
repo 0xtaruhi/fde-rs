@@ -83,10 +83,12 @@ pub(super) fn build_slice_configs(
             configs.insert(
                 SliceSequentialConfigKey::ClockInvert.as_str().to_string(),
                 cell.property(SliceSequentialConfigKey::ClockInvert.as_str())
-                    .unwrap_or(if cell.register_clock_is_inverted() {
-                        "1"
-                    } else {
-                        "#OFF"
+                    .unwrap_or_else(|| {
+                        if cell.register_clock_is_inverted() {
+                            "1"
+                        } else {
+                            "#OFF"
+                        }
                     })
                     .to_string(),
             );

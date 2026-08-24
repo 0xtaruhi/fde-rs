@@ -523,9 +523,7 @@ pub(crate) fn evaluate(
     delay: Option<&DelayModel>,
     mode: PlaceMode,
 ) -> PlacementMetrics {
-    build_evaluation_state(model, graph, placements, arch, delay, mode)
-        .metrics
-        .clone()
+    build_evaluation_state(model, graph, placements, arch, delay, mode).metrics
 }
 
 pub(crate) fn evaluate_positions(
@@ -536,9 +534,7 @@ pub(crate) fn evaluate_positions(
     delay: Option<&DelayModel>,
     mode: PlaceMode,
 ) -> PlacementMetrics {
-    build_evaluation_state(model, graph, placements, arch, delay, mode)
-        .metrics
-        .clone()
+    build_evaluation_state(model, graph, placements, arch, delay, mode).metrics
 }
 
 fn candidate_net_metrics_with_scratch(
@@ -825,10 +821,7 @@ fn weighted_centroid_with_overrides(
     if weight_total == 0.0 {
         None
     } else {
-        Some(Point::new(
-            (x_total / weight_total).round() as usize,
-            (y_total / weight_total).round() as usize,
-        ))
+        Point::from_weighted_coordinates(x_total / weight_total, y_total / weight_total)
     }
 }
 

@@ -35,11 +35,11 @@ pub(crate) struct WireId(u32);
 
 impl WireId {
     fn new(index: usize) -> Self {
-        Self(index as u32)
+        Self(u32::try_from(index).expect("wire table exceeds u32 capacity"))
     }
 
     pub(crate) fn index(self) -> usize {
-        self.0 as usize
+        usize::try_from(self.0).expect("u32 wire ID does not fit usize")
     }
 }
 
@@ -169,8 +169,7 @@ impl SiteRouteGraph {
     pub(crate) fn adjacency(&self, wire: WireId) -> &[usize] {
         self.adjacency
             .get(wire.index())
-            .map(SmallVec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], SmallVec::as_slice)
     }
 
     pub(crate) fn has_adjacency(&self, wire: WireId) -> bool {
@@ -256,8 +255,7 @@ impl StitchedComponentDb {
     pub(crate) fn neighbors(&self, node: &RouteNode) -> &[RouteNode] {
         self.neighbors_by_node
             .get(node)
-            .map(SmallVec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], SmallVec::as_slice)
     }
 
     pub(crate) fn has_neighbors(&self, node: &RouteNode) -> bool {

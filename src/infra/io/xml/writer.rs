@@ -186,7 +186,7 @@ pub(super) const GCLKIOB_DEFAULT_CONFIGS: &[(&str, &str)] = &[
 pub(super) struct XmlWriteContext<'a> {
     pub(super) arch: Option<&'a Arch>,
     pub(super) _cil: Option<&'a Cil>,
-    pub(super) _constraints: &'a [ConstraintEntry],
+    pub(super) constraints: &'a [ConstraintEntry],
     pub(super) cil_path: Option<&'a Path>,
 }
 
@@ -392,7 +392,7 @@ impl DesignXmlWriter {
         self.write_event(Event::End(BytesEnd::new(tag)))
     }
 
-    fn write_event<'a>(&mut self, event: Event<'a>) -> Result<()> {
+    fn write_event(&mut self, event: Event<'_>) -> Result<()> {
         self.writer
             .write_event(event)
             .context("failed to serialize design xml")
@@ -415,12 +415,12 @@ pub(super) fn default_config_map(defaults: &[(&str, &str)]) -> BTreeMap<String, 
 
 pub(super) fn ordered_configs(
     defaults: &[(&str, &str)],
-    values: BTreeMap<String, String>,
+    mut values: BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
     let mut ordered = Vec::new();
     for (name, _) in defaults {
-        if let Some(value) = values.get(*name) {
-            ordered.push(((*name).to_string(), value.clone()));
+        if let Some(value) = values.remove(*name) {
+            ordered.push(((*name).to_string(), value));
         }
     }
     ordered

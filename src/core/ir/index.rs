@@ -144,8 +144,7 @@ impl<'a> DesignIndex<'a> {
     pub fn cluster_members(&self, cluster_id: ClusterId) -> &[CellId] {
         self.cluster_members
             .get(cluster_id.index())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn resolve_endpoint(&self, endpoint: &Endpoint) -> EndpointTarget {

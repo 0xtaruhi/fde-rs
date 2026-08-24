@@ -27,7 +27,7 @@ pub(crate) struct TileRouteCache<'a> {
     entries: Vec<Option<CachedTileRouteContext<'a>>>,
 }
 
-impl<'a> TileRouteContext<'a> {
+impl TileRouteContext<'_> {
     pub(crate) fn graph<'g>(&self, graphs: &'g SiteRouteGraphs) -> Option<&'g SiteRouteGraph> {
         graphs.get(self.site_type)
     }
@@ -63,7 +63,7 @@ impl<'a> TileRouteContext<'a> {
     }
 }
 
-impl<'a> CachedTileRouteContext<'a> {
+impl CachedTileRouteContext<'_> {
     pub(crate) fn pip(
         &self,
         net_name: String,

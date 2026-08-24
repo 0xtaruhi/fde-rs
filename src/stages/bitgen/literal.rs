@@ -66,7 +66,7 @@ pub(crate) fn normalized_site_lut_truth_table_bits(
     primitive: PrimitiveKind,
     site_input_count: usize,
 ) -> Option<Vec<u8>> {
-    let site_truth_table_bits = 1usize.checked_shl(site_input_count as u32)?;
+    let site_truth_table_bits = 1usize.checked_shl(site_input_count.try_into().ok()?)?;
     if let Some(raw_bits) =
         raw_init.and_then(|value| parse_compact_hex_digit_literal(value, site_truth_table_bits))
     {
@@ -123,7 +123,7 @@ fn logical_truth_table_bits(primitive: PrimitiveKind) -> Option<usize> {
         | PrimitiveKind::Generic
         | PrimitiveKind::Unknown => return None,
     };
-    1usize.checked_shl(inputs as u32)
+    1usize.checked_shl(inputs.try_into().ok()?)
 }
 
 #[cfg(test)]

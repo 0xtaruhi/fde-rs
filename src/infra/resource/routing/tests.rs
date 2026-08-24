@@ -12,7 +12,7 @@ use tempfile::NamedTempFile;
 #[test]
 fn extracts_default_transmission_bits_from_arch_instances() {
     let cil = parse_cil_str(
-        r##"
+        r#"
             <device name="mini">
               <element_library>
                 <element name="SW2">
@@ -41,7 +41,7 @@ fn extracts_default_transmission_bits_from_arch_instances() {
                 </tile>
               </tile_library>
             </device>
-            "##,
+            "#,
     )
     .expect("parse mini cil");
     let arch_xml = r#"
@@ -76,7 +76,7 @@ fn extracts_default_transmission_bits_from_arch_instances() {
 #[test]
 fn site_route_graphs_sort_instances_by_name_for_stable_arc_order() {
     let cil = parse_cil_str(
-        r##"
+        r#"
             <device name="mini">
               <element_library>
                 <element name="SW2">
@@ -98,7 +98,7 @@ fn site_route_graphs_sort_instances_by_name_for_stable_arc_order() {
                 </tile>
               </tile_library>
             </device>
-            "##,
+            "#,
     )
     .expect("parse mini cil");
     let arch_xml = r#"
@@ -358,19 +358,19 @@ fn clock_spine_stitching_reaches_center_and_clkv_tiles() {
     let mut wires = WireInterner::default();
     let _db = load_tile_stitch_db(&arch_path, &mut wires).expect("load stitch db");
 
-    let from_clkb = RouteNode::new(34, 27, wires.intern("CLKB_GCLK0"));
-    let clkb_neighbors = clock_spine_neighbors(&arch, &wires, &from_clkb);
+    let horizontal_source = RouteNode::new(34, 27, wires.intern("CLKB_GCLK0"));
+    let horizontal_neighbors = clock_spine_neighbors(&arch, &wires, &horizontal_source);
     assert!(
-        clkb_neighbors
+        horizontal_neighbors
             .iter()
             .any(|&(x, y, wire)| x == 17 && y == 27 && wires.resolve(wire) == "CLKC_GCLK0")
     );
 
     let db = load_tile_stitch_db(&arch_path, &mut wires).expect("load stitch db");
-    let from_clkc = RouteNode::new(17, 27, wires.intern("CLKC_VGCLK0"));
-    let clkc_neighbors = stitched_neighbors(&db, &arch, &wires, &from_clkc);
+    let vertical_source = RouteNode::new(17, 27, wires.intern("CLKC_VGCLK0"));
+    let vertical_neighbors = stitched_neighbors(&db, &arch, &wires, &vertical_source);
     assert!(
-        clkc_neighbors
+        vertical_neighbors
             .iter()
             .any(|&(x, y, wire)| x == 16 && y == 27 && wires.resolve(wire) == "CLKV_VGCLK0")
     );

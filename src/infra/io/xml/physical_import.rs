@@ -631,7 +631,6 @@ fn physical_logical_endpoints(
                 )]
             })
             .unwrap_or_default(),
-        crate::domain::SiteKind::GclkIob => Vec::new(),
         _ => Vec::new(),
     }
 }
