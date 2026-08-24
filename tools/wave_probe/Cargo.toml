@@ -7,4 +7,4 @@ publish = false
 
 [dependencies]
 anyhow = "1.0"
-vlfd-rs = "1.0.0"
+vlfd-rs = "3.0.1"

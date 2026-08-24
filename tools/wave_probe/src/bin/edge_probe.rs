@@ -5,7 +5,7 @@
 //! rx gives one sampled nibble per word slot -> watch cnt evolve.
 
 use anyhow::Result;
-use vlfd_rs::{Device, IoSettings};
+use vlfd_rs::{Board, IoConfig};
 
 fn main() -> Result<()> {
     let _bitstream = std::env::args()
@@ -16,22 +16,22 @@ fn main() -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(24);
 
-    let mut device = Device::connect()?;
+    let mut board = Board::open()?;
     println!(
         "device programmed={} fifo={} vericomm={} clock_continues={}",
-        device.config().is_programmed(),
-        device.config().fifo_size(),
-        device.config().vericomm_ability(),
-        device.config().vericomm_clock_continues()
+        board.config().is_programmed(),
+        board.config().fifo_size_words(),
+        board.config().vericomm_ability(),
+        board.config().vericomm_clock_continues()
     );
-    device.enter_io_mode(&IoSettings::default())?;
+    let mut io = board.configure_io(&IoConfig::default())?;
 
     let mut tx = vec![0u16; 1024];
     let mut rx = vec![0u16; 1024];
     tx[0] = 0x0008; // rst high for first word only
     // words 1..n_words: rst low (counter counts), rest stay zero (still count!)
 
-    device.transfer_io(&mut tx, &mut rx)?;
+    io.transfer_into(&tx, &mut rx)?;
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     println!("word | raw    | cnt(nibble)");
@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         );
     }
 
-    device.exit_io_mode()?;
+    io.finish()?;
+    board.close()?;
     Ok(())
 }
