@@ -1,6 +1,6 @@
 use super::{StaOptions, StaTimingContext, run, run_with_reporter, run_with_timing};
 use crate::{
-    constraints::ClockConstraint,
+    constraints::{ClockConstraint, ClockUncertaintyConstraint, IoDelayConstraint},
     domain::TimingPathCategory,
     ir::{Cell, Cluster, Design, Endpoint, Net, Port, RouteSegment},
     report::{StageEvent, StageReporter, run_stage_with_reporter},
@@ -85,6 +85,23 @@ fn sta_computes_expected_critical_path_and_graph_shape() -> Result<()> {
         Some("out:OUT")
     );
     assert!(artifact.report_text.contains("Critical Path: 0.790 ns"));
+    let path = summary.top_paths.first().expect("critical path");
+    assert_eq!(path.startpoint, "in:IN");
+    assert_eq!(path.logic_levels, 2);
+    assert!(!path.points.is_empty());
+    assert!(
+        (path.points.last().expect("last timing point").cumulative_ns - path.delay_ns).abs() < 1e-9,
+        "path point increments must reconcile to the reported path delay"
+    );
+    assert!(artifact.report_text.contains("Data arrival time"));
+    let timing_json: serde_json::Value =
+        serde_json::from_str(&artifact.report_json).expect("timing report json");
+    assert_eq!(
+        timing_json
+            .get("constraint_status")
+            .and_then(serde_json::Value::as_str),
+        Some("unconstrained")
+    );
     assert_eq!(artifact.graph.edges.len(), 5);
     assert!(
         artifact
@@ -284,6 +301,7 @@ fn sta_applies_clock_period_setup_and_clock_to_q() -> Result<()> {
                 setup_ns: 0.5,
             },
         })),
+        ..StaTimingContext::default()
     };
 
     let options = StaOptions {
@@ -334,13 +352,189 @@ fn sta_applies_clock_period_setup_and_clock_to_q() -> Result<()> {
             },
         ]),
         cell_timing: None,
+        ..StaTimingContext::default()
     };
     let error = run_with_timing(design, &options, &multiple_clocks)
-        .expect_err("multiple clock domains must not be analyzed as synchronous");
+        .expect_err("unknown clock ports must be rejected");
     assert!(matches!(
         error,
-        super::StaError::MultipleClockDomains { count: 2 }
+        super::StaError::UnknownClockPort { port, .. } if port == "other_clk"
     ));
+
+    Ok(())
+}
+
+#[test]
+fn sta_groups_paths_across_multiple_clock_domains() -> Result<()> {
+    let design = Design {
+        name: "sta-multiclock".to_string(),
+        stage: "routed".to_string(),
+        ports: vec![
+            Port::input("clk_a").at(0, 0),
+            Port::input("clk_b").at(0, 1),
+            Port::input("din").at(0, 2),
+        ],
+        cells: vec![
+            Cell::ff("launch", "DFFHQ")
+                .with_input("D", "din_net")
+                .with_input("CK", "clk_a_net")
+                .with_output("Q", "q_net")
+                .in_cluster("clb0"),
+            Cell::ff("capture", "DFFHQ")
+                .with_input("D", "q_net")
+                .with_input("CK", "clk_b_net")
+                .in_cluster("clb1"),
+        ],
+        nets: vec![
+            Net::new("clk_a_net")
+                .with_driver(Endpoint::port("clk_a", "IN"))
+                .with_sink(Endpoint::cell("launch", "CK")),
+            Net::new("clk_b_net")
+                .with_driver(Endpoint::port("clk_b", "IN"))
+                .with_sink(Endpoint::cell("capture", "CK")),
+            Net::new("din_net")
+                .with_driver(Endpoint::port("din", "IN"))
+                .with_sink(Endpoint::cell("launch", "D")),
+            Net::new("q_net")
+                .with_driver(Endpoint::cell("launch", "Q"))
+                .with_sink(Endpoint::cell("capture", "D")),
+        ],
+        clusters: vec![
+            Cluster::logic("clb0")
+                .with_member("launch")
+                .with_capacity(1)
+                .at(1, 1),
+            Cluster::logic("clb1")
+                .with_member("capture")
+                .with_capacity(1)
+                .at(2, 1),
+        ],
+        ..Design::default()
+    };
+    let timing = StaTimingContext {
+        clocks: Arc::from([
+            ClockConstraint {
+                name: "a".to_string(),
+                port_name: "clk_a".to_string(),
+                period_ns: 5.0,
+            },
+            ClockConstraint {
+                name: "b".to_string(),
+                port_name: "clk_b".to_string(),
+                period_ns: 8.0,
+            },
+        ]),
+        cell_timing: None,
+        ..StaTimingContext::default()
+    };
+
+    let artifact = run_with_timing(design, &StaOptions::default(), &timing)?.value;
+    let summary = artifact.design.timing.expect("timing summary");
+    assert_eq!(summary.clocks.len(), 2);
+    assert!(summary.path_groups.iter().any(|group| group.name == "a"));
+    assert!(summary.path_groups.iter().any(|group| group.name == "b"));
+    let crossing = summary
+        .top_paths
+        .iter()
+        .find(|path| path.endpoint == "capture:D")
+        .expect("cross-domain path");
+    assert_eq!(crossing.launch_clock.as_deref(), Some("a"));
+    assert_eq!(crossing.capture_clock.as_deref(), Some("b"));
+
+    Ok(())
+}
+
+#[test]
+fn sta_applies_sdc_io_delays_uncertainty_and_reports_full_coverage() -> Result<()> {
+    let design = Design {
+        name: "sta-io-delays".to_string(),
+        stage: "routed".to_string(),
+        ports: vec![
+            Port::input("clk").at(1, 1),
+            Port::input("din").at(1, 1),
+            Port::output("dout").at(1, 1),
+        ],
+        cells: vec![
+            Cell::ff("reg", "DFFHQ")
+                .with_input("D", "din_net")
+                .with_input("CK", "clk_net")
+                .with_output("Q", "dout_net")
+                .in_cluster("clb0"),
+        ],
+        nets: vec![
+            Net::new("clk_net")
+                .with_driver(Endpoint::port("clk", "clk"))
+                .with_sink(Endpoint::cell("reg", "CK")),
+            Net::new("din_net")
+                .with_driver(Endpoint::port("din", "din"))
+                .with_sink(Endpoint::cell("reg", "D")),
+            Net::new("dout_net")
+                .with_driver(Endpoint::cell("reg", "Q"))
+                .with_sink(Endpoint::port("dout", "dout")),
+        ],
+        clusters: vec![
+            Cluster::logic("clb0")
+                .with_member("reg")
+                .with_capacity(1)
+                .at(1, 1),
+        ],
+        ..Design::default()
+    };
+    let timing = StaTimingContext {
+        clocks: Arc::from([ClockConstraint {
+            name: "sys".to_string(),
+            port_name: "clk".to_string(),
+            period_ns: 10.0,
+        }]),
+        input_delays: Arc::from([IoDelayConstraint {
+            port_name: "din".to_string(),
+            clock_name: "sys".to_string(),
+            delay_ns: 2.0,
+        }]),
+        output_delays: Arc::from([IoDelayConstraint {
+            port_name: "dout".to_string(),
+            clock_name: "sys".to_string(),
+            delay_ns: 2.5,
+        }]),
+        clock_uncertainties: Arc::from([ClockUncertaintyConstraint {
+            clock_name: "sys".to_string(),
+            setup_ns: 0.2,
+        }]),
+        cell_timing: Some(Arc::new(CellTimingModel {
+            sequential: SequentialTiming {
+                clock_to_q_ns: 1.0,
+                setup_ns: 0.5,
+            },
+        })),
+    };
+
+    let artifact = run_with_timing(design, &StaOptions::default(), &timing)?.value;
+    let summary = artifact.design.timing.expect("timing summary");
+
+    assert_eq!(
+        summary.constraint_status,
+        crate::ir::TimingConstraintStatus::Met
+    );
+    assert_eq!(summary.coverage.constrained_primary_inputs, 1);
+    assert_eq!(summary.coverage.constrained_primary_outputs, 1);
+    assert!((summary.clocks[0].setup_uncertainty_ns - 0.2).abs() < f64::EPSILON);
+    let input_path = summary
+        .top_paths
+        .iter()
+        .find(|path| path.endpoint == "reg:D")
+        .expect("input-to-register path");
+    assert!(
+        (input_path.data_arrival_ns - 2.0).abs() < 1e-9,
+        "arrival was {}",
+        input_path.data_arrival_ns
+    );
+    assert!((input_path.data_required_ns.unwrap() - 9.3).abs() < 1e-9);
+    let output_path = summary
+        .top_paths
+        .iter()
+        .find(|path| path.endpoint == "dout:dout")
+        .expect("register-to-output path");
+    assert!((output_path.data_required_ns.unwrap() - 7.3).abs() < 1e-9);
 
     Ok(())
 }
@@ -456,6 +650,34 @@ fn sta_nan_delay_surfaces_typed_error() {
     .expect_err("nan delay must fail");
 
     assert!(matches!(error, super::StaError::NonFiniteArrival { .. }));
+}
+
+#[test]
+fn sta_rejects_positive_delay_combinational_loops() {
+    let design = Design {
+        name: "sta-loop".to_string(),
+        stage: "routed".to_string(),
+        cells: vec![
+            Cell::lut("a", "LUT1")
+                .with_input("ADR0", "b_to_a")
+                .with_output("O", "a_to_b"),
+            Cell::lut("b", "LUT1")
+                .with_input("ADR0", "a_to_b")
+                .with_output("O", "b_to_a"),
+        ],
+        nets: vec![
+            Net::new("a_to_b")
+                .with_driver(Endpoint::cell("a", "O"))
+                .with_sink(Endpoint::cell("b", "ADR0")),
+            Net::new("b_to_a")
+                .with_driver(Endpoint::cell("b", "O"))
+                .with_sink(Endpoint::cell("a", "ADR0")),
+        ],
+        ..Design::default()
+    };
+
+    let error = run(design, &StaOptions::default()).expect_err("loop must fail");
+    assert!(matches!(error, super::StaError::CombinationalLoop { .. }));
 }
 
 #[test]

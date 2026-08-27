@@ -289,6 +289,14 @@ fn import_physical_net(
     imported.sinks = sinks;
     imported.route_pips = route_pips;
     imported.route = route;
+    imported.sink_routes = net
+        .children()
+        .find(|node| {
+            node.has_tag_name("property") && node.attribute("name") == Some("fde_sink_routes")
+        })
+        .and_then(|node| node.attribute("value"))
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default();
     (imported.driver.is_some() || !imported.sinks.is_empty()).then_some(imported)
 }
 

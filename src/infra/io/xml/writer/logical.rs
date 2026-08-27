@@ -3,7 +3,7 @@ use crate::{
     domain::{CellKind, PrimitiveKind, parse_pin_map_indices, pin_map_property_name},
     ir::{Cell, Design, Endpoint, Net, Port, PortDirection, RoutePip, RouteSegment},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use quick_xml::events::{BytesDecl, BytesStart, Event};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -178,6 +178,11 @@ impl DesignXmlWriter {
         }
         if net.criticality != 0.0 {
             self.write_property("fde_criticality", &format!("{:.6}", net.criticality), None)?;
+        }
+        if !net.sink_routes.is_empty() {
+            let sink_routes_json = serde_json::to_string(&net.sink_routes)
+                .context("failed to serialize per-sink routes")?;
+            self.write_property("fde_sink_routes", &sink_routes_json, None)?;
         }
         for property in &net.properties {
             self.write_property(&format!("fde_net_{}", property.key), &property.value, None)?;

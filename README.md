@@ -127,6 +127,7 @@ A normal implementation run emits:
 04-device.json
 05-timed.xml
 05-timing.rpt
+05-timing.json
 06-output.bit
 report.json
 summary.rpt
@@ -162,10 +163,12 @@ cargo run --bin fde -- route --input build/03-placed.xml --output build/04-route
   --constraints constraints.xml
 cargo run --bin fde -- sta --input build/04-routed.xml --output build/05-timed.xml \
   --report build/05-timing.rpt \
+  --json-report build/05-timing.json \
   --arch resources/hw_lib/fdp3p7_arch.xml \
   --delay resources/hw_lib/fdp3p7_dly.xml \
   --cell-library resources/hw_lib/fdp3_cell.xml \
-  --constraints constraints.xml
+  --constraints constraints.xml \
+  --sdc timing.sdc
 cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-output.bit \
   --arch resources/hw_lib/fdp3p7_arch.xml \
   --cil resources/hw_lib/fdp3p7_cil.xml
@@ -184,16 +187,42 @@ The same file can define clock periods for setup analysis:
 </design>
 ```
 
-Clock periods and delays are in nanoseconds. Constrained register inputs use
-`period - setup` as their required time, while register outputs start at the
-clock-to-Q value parsed from the cell library. Without a `<clock>` entry, STA
-clearly reports that its result is a delay estimate rather than a pass/fail timing
-check.
+Clock periods and delays are in nanoseconds. STA accepts multiple clock domains,
+reports launch/capture clocks and path groups, and preserves the router's exact
+per-sink branches instead of charging every sink for the whole multi-fanout net.
+Without a clock entry, the result is explicitly `UNCONSTRAINED`; missing I/O
+delays produce `PARTIALLY CONSTRAINED`, never a misleading timing pass.
 
-Constrained STA currently accepts one synchronous flip-flop clock domain. It
-rejects partial/multiple clock domains, latches, and block RAM timing instead of
-silently producing an invalid setup result; those require explicit clock-domain
-and primitive timing models in a future extension.
+The strict SDC subset supports:
+
+```tcl
+create_clock -name sys -period 10.0 [get_ports clk]
+set_input_delay -clock sys 1.2 [get_ports din]
+set_output_delay -clock sys 2.0 [get_ports dout]
+set_clock_uncertainty -setup 0.15 [get_clocks sys]
+```
+
+Unsupported SDC commands fail with a source line instead of being ignored.
+Setup analysis is implemented; hold remains explicitly `NOT ANALYZED`. Latches
+and block RAM timing are rejected until their timing models are available.
+
+### Output and CI behavior
+
+Human-readable progress goes to stderr; machine-readable JSON events go to
+stdout. Global output switches work before or after the subcommand:
+
+```bash
+fde -v impl ...                         # phases and detail
+fde -q impl ...                         # diagnostics and final result only
+fde --color never --progress never ... # stable non-interactive text
+fde --message-format json impl ...      # one typed JSON event per line
+fde impl ... --fail-on-timing           # write all artifacts, exit 5 on violation
+```
+
+`summary.rpt` is the short QoR result, `run.log` is the chronological trace,
+`report.json` is the complete flow record, and `05-timing.{rpt,json}` contain
+the detailed human/machine timing views. See [docs/reporting.md](docs/reporting.md)
+for schemas, diagnostic codes, timing-status rules, and exit codes.
 
 Emit the optional debug sidecar:
 

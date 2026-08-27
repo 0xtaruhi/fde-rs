@@ -1,50 +1,256 @@
-use crate::{
-    constraints::ClockConstraint,
-    ir::{Design, TimingSummary},
+use crate::ir::{
+    Design, TimingConstraintStatus, TimingDelaySource, TimingPath, TimingPointKind, TimingSummary,
 };
 
-pub(crate) fn format_timing_report(
-    design: &Design,
-    summary: &TimingSummary,
-    clocks: &[ClockConstraint],
-    worst_slack_ns: Option<f64>,
-) -> String {
+pub(crate) fn format_timing_report(design: &Design, summary: &TimingSummary) -> String {
     let mut report = String::new();
-    report.push_str("Static Timing Report\n");
-    report.push_str(&format!("Design: {}\n", design.name));
-    report.push_str(&format!("Stage: {}\n", design.stage));
+    report.push_str("FDE Static Timing Analysis\n");
+    report.push_str("==========================\n");
+    report.push_str(&format!("Design              : {}\n", design.name));
+    report.push_str(&format!("Analysis stage      : {}\n", design.stage));
+    report.push_str(&format!(
+        "Timing status       : {}\n",
+        summary.constraint_status.as_str()
+    ));
     report.push_str(&format!(
         "Critical Path: {:.3} ns\n",
         summary.critical_path_ns
     ));
     report.push_str(&format!("Estimated Fmax: {:.2} MHz\n", summary.fmax_mhz));
-    if clocks.is_empty() {
-        report.push_str("Timing Constraints: none (delay estimate only)\n");
+    let total_arcs = summary.coverage.modeled_arc_count + summary.coverage.fallback_arc_count;
+    let modeled_percent = if total_arcs == 0 {
+        100.0
     } else {
-        for clock in clocks {
+        summary.coverage.modeled_arc_count as f64 / total_arcs as f64 * 100.0
+    };
+    report.push_str(&format!(
+        "Delay coverage      : {modeled_percent:.1}% modeled ({} fallback arcs)\n",
+        summary.coverage.fallback_arc_count
+    ));
+
+    if summary.clocks.is_empty() {
+        report.push_str("Timing Constraints: none (delay estimate only)\n");
+        report.push_str(
+            "WARNING [FDE-STA-0001] No clock constraint was found; this is not a timing pass/fail check.\n",
+        );
+        report.push_str(
+            "  help: add <clock name=\"sys\" port=\"clk\" period=\"10.0\"/> to the constraint file.\n",
+        );
+    } else {
+        report.push_str("\nClock Summary\n");
+        report.push_str("-------------\n");
+        report.push_str(
+            "Clock                Source               Period    Uncertainty    Frequency   Registers\n",
+        );
+        for clock in &summary.clocks {
             report.push_str(&format!(
-                "Clock: {} on {} ({:.3} ns, {:.2} MHz)\n",
-                clock.name,
-                clock.port_name,
+                "{:<20} {:<20} {:>8.3} ns {:>8.3} ns {:>8.2} MHz {:>9}\n",
+                short_name(&clock.name, 20),
+                short_name(&clock.source, 20),
                 clock.period_ns,
-                1_000.0 / clock.period_ns
+                clock.setup_uncertainty_ns,
+                1_000.0 / clock.period_ns,
+                clock.register_count
             ));
         }
-        if let Some(slack_ns) = worst_slack_ns {
-            let status = if slack_ns >= 0.0 { "MET" } else { "VIOLATED" };
-            report.push_str(&format!("Worst Slack: {slack_ns:.3} ns ({status})\n"));
+        if summary.constraint_status == TimingConstraintStatus::PartiallyConstrained {
+            report.push_str("WARNING [FDE-STA-0004] Timing analysis is partially constrained.\n");
+            report.push_str(
+                "  help: constrain all synchronous data inputs and outputs with set_input_delay/set_output_delay.\n",
+            );
+        }
+        if let Some(worst_slack_ns) = summary.setup.worst_slack_ns {
+            report.push_str(&format!(
+                "Worst Slack: {worst_slack_ns:.3} ns ({})\n",
+                summary.setup.status.as_str()
+            ));
         }
     }
-    report.push('\n');
+
+    report.push_str("\nSetup Summary\n");
+    report.push_str("-------------\n");
+    push_optional_time(&mut report, "WNS", summary.setup.worst_slack_ns);
+    report.push_str(&format!(
+        "{:<24}: {:+.3} ns\n",
+        "TNS", summary.setup.total_negative_slack_ns
+    ));
+    report.push_str(&format!(
+        "{:<24}: {} / {}\n",
+        "Failing endpoints",
+        summary.setup.failing_endpoint_count,
+        summary.setup.analyzed_endpoint_count
+    ));
+    let estimated_min_period_ns = if summary.fmax_mhz > 0.0 {
+        1_000.0 / summary.fmax_mhz
+    } else {
+        0.0
+    };
+    report.push_str(&format!(
+        "{:<24}: {:.3} ns\n",
+        "Estimated min period", estimated_min_period_ns
+    ));
+    report.push_str(&format!(
+        "{:<24}: {:.2} MHz\n",
+        "Estimated Fmax", summary.fmax_mhz
+    ));
+
+    report.push_str("\nConstraint Coverage\n");
+    report.push_str("-------------------\n");
+    report.push_str(&format!(
+        "{:<24}: {} / {} constrained\n",
+        "Register endpoints",
+        summary.coverage.constrained_register_endpoints,
+        summary.coverage.register_endpoints
+    ));
+    report.push_str(&format!(
+        "{:<24}: {} / {} constrained\n",
+        "Primary inputs",
+        summary.coverage.constrained_primary_inputs,
+        summary.coverage.primary_inputs
+    ));
+    report.push_str(&format!(
+        "{:<24}: {} / {} constrained\n",
+        "Primary outputs",
+        summary.coverage.constrained_primary_outputs,
+        summary.coverage.primary_outputs
+    ));
+    report.push_str(&format!(
+        "{:<24}: {}\n",
+        "Hold analysis",
+        summary.hold.status.as_str()
+    ));
+
+    if !summary.path_groups.is_empty() {
+        report.push_str("\nPath Group Summary\n");
+        report.push_str("------------------\n");
+        report.push_str("Group                    Endpoints          WNS          TNS   Failing\n");
+        for group in &summary.path_groups {
+            let wns = group
+                .worst_slack_ns
+                .map_or_else(|| "-".to_string(), |value| format!("{value:+.3}"));
+            report.push_str(&format!(
+                "{:<24} {:>9} {:>12} {:>12.3} {:>9}\n",
+                short_name(&group.name, 24),
+                group.endpoint_count,
+                wns,
+                group.total_negative_slack_ns,
+                group.failing_endpoint_count
+            ));
+        }
+    }
+
     for (index, path) in summary.top_paths.iter().enumerate() {
-        report.push_str(&format!(
-            "Path {} [{}] {:.3} ns -> {}\n",
-            index + 1,
-            path.category.as_str(),
-            path.delay_ns,
-            path.endpoint
-        ));
-        report.push_str(&format!("  {}\n", path.hops.join(" -> ")));
+        render_path(&mut report, index + 1, path);
     }
     report
+}
+
+fn render_path(report: &mut String, index: usize, path: &TimingPath) {
+    let status = path.slack_ns.map_or(
+        "ESTIMATE",
+        |slack| {
+            if slack >= 0.0 { "MET" } else { "VIOLATED" }
+        },
+    );
+    report.push_str(&format!("\nPath {index}: {status}"));
+    if let Some(slack_ns) = path.slack_ns {
+        report.push_str(&format!(" ({slack_ns:+.3} ns)"));
+    }
+    report.push('\n');
+    report.push_str(&"-".repeat(72));
+    report.push('\n');
+    report.push_str(&format!("Startpoint : {}\n", path.startpoint));
+    report.push_str(&format!("Endpoint   : {}\n", path.endpoint));
+    report.push_str(&format!("Group      : {}\n", path.path_group));
+    report.push_str(&format!(
+        "Check      : {:?} ({})\n",
+        path.check,
+        path.category.as_str()
+    ));
+    report.push_str(&format!("Logic      : {} level(s)\n", path.logic_levels));
+    report.push_str(
+        "\nPoint                                        Fanout  Increment    Arrival  Source\n",
+    );
+    for point in &path.points {
+        let fanout = point
+            .fanout
+            .map_or_else(|| "-".to_string(), |value| value.to_string());
+        report.push_str(&format!(
+            "{:<44} {:>6} {:>9.3} {:>10.3}  {}\n",
+            short_name(&format_point(point.kind, &point.object), 44),
+            fanout,
+            point.increment_ns,
+            point.cumulative_ns,
+            delay_source_name(point.delay_source)
+        ));
+    }
+    report.push_str(&format!(
+        "{:<52} {:>9.3} ns\n",
+        "Data arrival time", path.data_arrival_ns
+    ));
+    if let Some(required_ns) = path.data_required_ns {
+        report.push_str(&format!(
+            "{:<52} {:>9.3} ns\n",
+            "Data required time", required_ns
+        ));
+    }
+    if let Some(slack_ns) = path.slack_ns {
+        report.push_str(&format!(
+            "{:<52} {:+9.3} ns  {}\n",
+            "Slack",
+            slack_ns,
+            if slack_ns >= 0.0 { "MET" } else { "VIOLATED" }
+        ));
+    }
+}
+
+fn push_optional_time(report: &mut String, label: &str, value: Option<f64>) {
+    match value {
+        Some(value) => report.push_str(&format!("{label:<24}: {value:+.3} ns\n")),
+        None => report.push_str(&format!("{label:<24}: N/A\n")),
+    }
+}
+
+fn format_point(kind: TimingPointKind, object: &str) -> String {
+    match kind {
+        TimingPointKind::CellArc => format!("cell {object}"),
+        TimingPointKind::Net => format!("net  {object}"),
+        TimingPointKind::ClockToQ => format!("c2q  {object}"),
+        TimingPointKind::SetupCheck => format!("setup {object}"),
+        TimingPointKind::Port | TimingPointKind::Endpoint => object.to_string(),
+    }
+}
+
+fn delay_source_name(source: TimingDelaySource) -> &'static str {
+    match source {
+        TimingDelaySource::Constraint => "constraint",
+        TimingDelaySource::CellLibrary => "cell-library",
+        TimingDelaySource::RoutedRc => "routed-rc",
+        TimingDelaySource::DelayTable => "delay-table",
+        TimingDelaySource::GeometricEstimate => "geometry",
+        TimingDelaySource::Constant => "fallback",
+        TimingDelaySource::Unknown => "unknown",
+    }
+}
+
+fn short_name(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_string();
+    }
+    if width <= 3 {
+        return ".".repeat(width);
+    }
+    let prefix = value.chars().take(width - 3).collect::<String>();
+    format!("{prefix}...")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_name;
+
+    #[test]
+    fn shortens_long_object_names_without_splitting_unicode() {
+        assert_eq!(short_name("abcdefgh", 6), "abc...");
+        assert_eq!(short_name("abc", 6), "abc");
+    }
 }

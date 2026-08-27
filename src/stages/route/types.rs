@@ -10,9 +10,19 @@ pub struct DeviceRouteImage {
     #[serde(default)]
     pub pips: Vec<DeviceRoutePip>,
     #[serde(default)]
+    pub sink_paths: Vec<DeviceRouteSinkPath>,
+    #[serde(default)]
     pub notes: Vec<String>,
     #[serde(default)]
     pub negotiation: RouteNegotiationStats,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceRouteSinkPath {
+    pub net_name: String,
+    pub sink: crate::DeviceEndpoint,
+    #[serde(default)]
+    pub pips: Vec<DeviceRoutePip>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,40 +1,98 @@
 use crate::{
-    ir::{Cell, Design, DesignIndex, Endpoint, EndpointTarget, Net, RoutePip, RouteSegment},
+    ir::{
+        Cell, Design, DesignIndex, Endpoint, EndpointTarget, Net, RoutePip, RouteSegment,
+        TimingDelaySource,
+    },
     resource::{Arch, DelayModel},
 };
 
-pub(crate) fn net_delay_ns(
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DelayEstimate {
+    pub(crate) delay_ns: f64,
+    pub(crate) source: TimingDelaySource,
+}
+
+pub(crate) fn net_delay_to_sink_ns(
     design: &Design,
     index: &DesignIndex<'_>,
     net: &Net,
+    sink: &Endpoint,
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
 ) -> f64 {
+    net_delay_estimate(design, index, net, Some(sink), arch, delay).delay_ns
+}
+
+pub(crate) fn net_delay_estimate(
+    design: &Design,
+    index: &DesignIndex<'_>,
+    net: &Net,
+    sink: Option<&Endpoint>,
+    arch: Option<&Arch>,
+    delay: Option<&DelayModel>,
+) -> DelayEstimate {
+    if let Some(sink) = sink
+        && let Some(path) = net.route_for_sink(sink)
+    {
+        return DelayEstimate {
+            delay_ns: path.estimated_delay_ns,
+            source: TimingDelaySource::RoutedRc,
+        };
+    }
     if !net.route.is_empty() {
-        return estimate_route_delay(
-            &net.route,
-            arch.map_or(0.04, |arch| arch.wire_r),
-            arch.map_or(0.03, |arch| arch.wire_c),
-        );
+        return DelayEstimate {
+            delay_ns: estimate_route_delay(
+                &net.route,
+                arch.map_or(0.04, |arch| arch.wire_r),
+                arch.map_or(0.03, |arch| arch.wire_c),
+            ),
+            source: TimingDelaySource::RoutedRc,
+        };
     }
     if !net.route_pips.is_empty() {
-        return estimate_pip_delay(
-            &net.route_pips,
-            arch.map_or(0.04, |arch| arch.wire_r),
-            arch.map_or(0.03, |arch| arch.wire_c),
-        );
+        return DelayEstimate {
+            delay_ns: estimate_pip_delay(
+                &net.route_pips,
+                arch.map_or(0.04, |arch| arch.wire_r),
+                arch.map_or(0.03, |arch| arch.wire_c),
+            ),
+            source: TimingDelaySource::RoutedRc,
+        };
     }
     let Some(driver) = &net.driver else {
-        return 0.0;
+        return DelayEstimate {
+            delay_ns: 0.0,
+            source: TimingDelaySource::Unknown,
+        };
     };
-    let Some(sink) = net.sinks.first() else {
-        return 0.0;
+    let Some(sink) = sink.or_else(|| net.sinks.first()) else {
+        return DelayEstimate {
+            delay_ns: 0.0,
+            source: TimingDelaySource::Unknown,
+        };
     };
     let dxdy = endpoint_distance(driver, sink, design, index);
     if let Some(delay) = delay {
-        delay.lookup(dxdy.0, dxdy.1)
+        DelayEstimate {
+            delay_ns: delay.lookup(dxdy.0, dxdy.1),
+            source: TimingDelaySource::DelayTable,
+        }
     } else {
-        (dxdy.0 + dxdy.1) as f64 * 0.08
+        DelayEstimate {
+            delay_ns: (dxdy.0 + dxdy.1) as f64 * 0.08,
+            source: TimingDelaySource::GeometricEstimate,
+        }
+    }
+}
+
+pub(crate) fn cell_delay_estimate(cell: &Cell, model: Option<&DelayModel>) -> DelayEstimate {
+    DelayEstimate {
+        delay_ns: combinational_cell_delay_ns(cell, model),
+        source: if model.is_some() {
+            TimingDelaySource::DelayTable
+        } else {
+            TimingDelaySource::Constant
+        },
     }
 }
 

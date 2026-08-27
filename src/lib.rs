@@ -38,8 +38,9 @@ pub use bitgen::{BitgenOptions, run as run_bitgen, run_with_reporter as run_bitg
 pub(crate) use bitgen::{DeviceDesignIndex, DeviceEndpointRef};
 pub use cil::{Cil, load_cil};
 pub use constraints::{
-    ClockConstraint, ConstraintEntry, ConstraintSet, apply_constraints_checked,
-    load_constraint_set, load_constraints,
+    ClockConstraint, ClockUncertaintyConstraint, ConstraintEntry, ConstraintSet, IoDelayConstraint,
+    SdcConstraintSet, apply_constraints_checked, load_constraint_set, load_constraints,
+    load_sdc_clocks, load_sdc_constraints, merge_clock_constraints,
 };
 pub use domain::{
     CellKind, ClusterKind, ConstantKind, EndpointKind, NetOrigin, PinRole, PrimitiveKind, SiteKind,
@@ -47,7 +48,10 @@ pub use domain::{
 };
 pub use import::{ImportOptions, run_path as run_import};
 pub use ir::{
-    BitstreamImage, Design, Placement, PlacementSite, RouteSegment, TimingGraph, TimingSummary,
+    BitstreamImage, Design, Placement, PlacementSite, RouteSegment, RouteSinkPath, TimingCheckKind,
+    TimingCheckSummary, TimingClockSummary, TimingConstraintStatus, TimingCoverage,
+    TimingDelaySource, TimingGraph, TimingPath, TimingPathGroupSummary, TimingPathPoint,
+    TimingPointKind, TimingSummary,
 };
 pub use map::{
     MapOptions, load_input as load_map_input, run as run_map,
@@ -55,7 +59,7 @@ pub use map::{
 };
 pub use normalize::{NormalizeOptions, run as run_normalize};
 pub use orchestrator::{
-    ImplementationOptions, run as run_implementation,
+    ImplementationOptions, ImplementationRunError, run as run_implementation,
     run_with_reporter as run_implementation_with_reporter,
 };
 pub use pack::{PackOptions, run as run_pack, run_with_reporter as run_pack_with_reporter};
@@ -63,8 +67,10 @@ pub use place::{
     PlaceMode, PlaceOptions, run as run_place, run_with_reporter as run_place_with_reporter,
 };
 pub use report::{
-    ImplementationReport, LineStageReporter, ReportStatus, StageEvent, StageLogLevel, StageOutput,
-    StageReport, StageReporter, format_stage_event_line, format_stage_status_name,
+    Diagnostic, DiagnosticSeverity, ImplementationReport, LineStageReporter, MessageFormat,
+    ProgressUpdate, ReportStatus, StageEvent, StageLogLevel, StageOutput, StageReport,
+    StageReporter, TerminalOutputOptions, TerminalStageReporter, Verbosity, WorkUnit,
+    format_stage_event_line, format_stage_status_name,
 };
 pub use resource::{
     Arch, CellTimingModel, DelayModel, ResourceBundle, SequentialTiming, load_arch,

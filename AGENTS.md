@@ -62,6 +62,8 @@ This repository is the standalone Rust 2024 implementation flow for FDE.
 - Keep board-specific long-cycle probe overrides in `examples/board-e2e/manifest.json` so regressions remain reproducible from the checked-in manifest.
 - Keep string handling at parsing and reporting boundaries; do not add new raw string branching in core stage logic when a typed enum or helper can model it.
 - Prefer semantic helper modules in `domain/` over repeating `eq_ignore_ascii_case`, `to_ascii_lowercase`, or string literal matches across stage code.
+- Reporting events, diagnostics, metrics, and timing paths are typed public contracts. Keep human output on stderr, JSONL on stdout, preserve stable diagnostic codes, and update `docs/reporting.md` when their schema or semantics change.
+- STA must never turn missing constraints or unsupported checks into a pass. Use `UNCONSTRAINED`, `PARTIALLY CONSTRAINED`, or `NOT ANALYZED`, and keep routed delay per sink rather than using the whole-net PIP union.
 
 ## Algorithm modernization status (2026-08-22, COMPLETE)
 

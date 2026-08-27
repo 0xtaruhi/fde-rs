@@ -1,5 +1,6 @@
 use fde::{
-    ImplementationOptions, load_arch, load_map_input, resource::ResourceBundle, run_implementation,
+    ImplementationOptions, io::load_design, load_arch, load_map_input, resource::ResourceBundle,
+    run_implementation,
 };
 use roxmltree::Document;
 use serde_json::Value;
@@ -195,6 +196,7 @@ fn end_to_end_impl_generates_artifacts() {
         "route",
         "sta",
         "sta_report",
+        "sta_report_json",
         "bitstream",
         "summary",
         "log",
@@ -227,6 +229,17 @@ fn end_to_end_impl_generates_artifacts() {
 
     assert!(report.timing.is_some());
     assert!(report.bitstream_sha256.is_some());
+    let reloaded_routed = load_design(Path::new(
+        report.artifacts.get("route").expect("route artifact"),
+    ))
+    .expect("reload routed design");
+    assert!(
+        reloaded_routed
+            .nets
+            .iter()
+            .any(|net| !net.sink_routes.is_empty()),
+        "routed artifact must preserve per-sink route branches for standalone STA"
+    );
 }
 
 #[test]
@@ -293,6 +306,102 @@ fn end_to_end_impl_report_records_pipeline_stage_order() {
         report_stage_names(&report_json),
         vec!["map", "pack", "place", "route", "sta", "bitgen"]
     );
+}
+
+#[test]
+fn failed_implementation_writes_a_partial_report_and_marks_remaining_stages_skipped() {
+    let (temp, out_dir) = temp_out("impl-failure-report");
+    let missing_resources = temp.path().join("missing-resources");
+    let error = run_implementation(&ImplementationOptions {
+        input: fixture("tests/fixtures/simple.edf"),
+        out_dir: out_dir.clone(),
+        resource_root: Some(missing_resources),
+        constraints: Some(fixture("tests/fixtures/constraints.xml")),
+        ..ImplementationOptions::default()
+    })
+    .expect_err("missing resources must fail");
+
+    assert!(error.to_string().contains("partial report written"));
+    for name in ["report.json", "summary.rpt", "run.log"] {
+        assert!(
+            out_dir.join(name).is_file(),
+            "missing failure artifact {name}"
+        );
+    }
+    let report = report_json(&out_dir.join("report.json"));
+    assert_eq!(
+        report.get("schema_version").and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(report.get("status").and_then(Value::as_str), Some("failed"));
+    assert!(
+        report
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                diagnostic.get("code").and_then(Value::as_str) == Some("FDE-FLOW-0001")
+            }))
+    );
+    assert!(
+        report
+            .get("stages")
+            .and_then(Value::as_array)
+            .is_some_and(|stages| stages
+                .iter()
+                .all(|stage| { stage.get("status").and_then(Value::as_str) == Some("skipped") }))
+    );
+}
+
+#[test]
+fn fail_on_timing_writes_complete_artifacts_and_returns_exit_code_five() {
+    let (temp, out_dir) = temp_out("impl-fail-on-timing");
+    let sdc = temp.path().join("violated.sdc");
+    fs::write(
+        &sdc,
+        "create_clock -name sys -period 1.0 [get_ports clk]\n\
+         set_input_delay -clock sys 1.0 [get_ports a]\n\
+         set_input_delay -clock sys 1.5 [get_ports b]\n\
+         set_output_delay -clock sys 0.2 [get_ports y]\n",
+    )
+    .expect("write SDC");
+
+    let error = run_implementation(&ImplementationOptions {
+        input: fixture("tests/fixtures/simple.edf"),
+        out_dir: out_dir.clone(),
+        resource_root: Some(fixture("resources/hw_lib")),
+        constraints: Some(fixture("tests/fixtures/constraints.xml")),
+        sdc: Some(sdc),
+        fail_on_timing: true,
+        ..ImplementationOptions::default()
+    })
+    .expect_err("violated timing must fail when requested");
+
+    let run_error = error
+        .downcast_ref::<fde::ImplementationRunError>()
+        .expect("typed implementation error");
+    assert_eq!(run_error.exit_code(), 5);
+    for name in [
+        "04-routed.xml",
+        "05-timing.rpt",
+        "05-timing.json",
+        "06-output.bit",
+        "report.json",
+        "summary.rpt",
+        "run.log",
+    ] {
+        assert!(
+            out_dir.join(name).is_file(),
+            "missing complete artifact {name}"
+        );
+    }
+    let report = report_json(&out_dir.join("report.json"));
+    assert_eq!(report["status"], "failed");
+    assert_eq!(report["timing"]["constraint_status"], "violated");
+    assert!(report["diagnostics"].as_array().is_some_and(|diagnostics| {
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "FDE-STA-0003")
+    }));
 }
 
 #[test]

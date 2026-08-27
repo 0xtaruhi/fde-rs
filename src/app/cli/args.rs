@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 use crate::{
@@ -19,8 +19,49 @@ use crate::{
     propagate_version = true
 )]
 pub(crate) struct FdeCli {
+    #[command(flatten)]
+    pub(crate) output: CliOutputArgs,
     #[command(subcommand)]
     pub(crate) command: Command,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum CliColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum CliProgressChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum CliMessageFormat {
+    Human,
+    Json,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct CliOutputArgs {
+    /// Show stage-level detail
+    #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
+    pub(crate) verbose: u8,
+    /// Show only warnings, errors, and the final result
+    #[arg(short = 'q', long, global = true, conflicts_with = "verbose")]
+    pub(crate) quiet: bool,
+    /// Control ANSI colors in human-readable output
+    #[arg(long, global = true, value_enum, default_value = "auto")]
+    pub(crate) color: CliColorChoice,
+    /// Control live progress rendering
+    #[arg(long, global = true, value_enum, default_value = "auto")]
+    pub(crate) progress: CliProgressChoice,
+    /// Select human-readable output or a JSON event stream
+    #[arg(long, global = true, value_enum, default_value = "human")]
+    pub(crate) message_format: CliMessageFormat,
 }
 
 #[derive(Subcommand)]
@@ -141,14 +182,22 @@ pub(crate) struct StaArgs {
     pub(crate) output: PathBuf,
     #[arg(long, short = 'r')]
     pub(crate) report: PathBuf,
+    #[arg(long)]
+    pub(crate) json_report: Option<PathBuf>,
     #[arg(long, short = 'a')]
     pub(crate) arch: Option<PathBuf>,
     #[arg(long, short = 'd')]
     pub(crate) delay: Option<PathBuf>,
     #[arg(long, short = 'c')]
     pub(crate) constraints: Option<PathBuf>,
+    /// Strict SDC timing constraints (clocks, I/O delays, setup uncertainty)
+    #[arg(long)]
+    pub(crate) sdc: Option<PathBuf>,
     #[arg(long = "cell-library", visible_alias = "timing-library")]
     pub(crate) cell_library: Option<PathBuf>,
+    /// Return exit code 5 after writing reports when setup timing is violated
+    #[arg(long)]
+    pub(crate) fail_on_timing: bool,
 }
 
 #[derive(Args)]
@@ -197,6 +246,9 @@ pub(crate) struct ImplArgs {
     pub(crate) resource_root: Option<PathBuf>,
     #[arg(long)]
     pub(crate) constraints: Option<PathBuf>,
+    /// Strict SDC timing constraints (clocks, I/O delays, setup uncertainty)
+    #[arg(long)]
+    pub(crate) sdc: Option<PathBuf>,
     #[arg(long)]
     pub(crate) dc_cell: Option<PathBuf>,
     #[arg(long)]
@@ -225,6 +277,9 @@ pub(crate) struct ImplArgs {
     pub(crate) place_mode: CliPlaceMode,
     #[arg(long, default_value_t = DEFAULT_PLACE_SEED)]
     pub(crate) seed: u64,
+    /// Complete the flow and artifacts, then fail with exit code 5 on setup violations
+    #[arg(long)]
+    pub(crate) fail_on_timing: bool,
 }
 
 impl From<ImplArgs> for ImplementationOptions {
@@ -234,6 +289,7 @@ impl From<ImplArgs> for ImplementationOptions {
             out_dir: value.out_dir,
             resource_root: value.resource_root,
             constraints: value.constraints,
+            sdc: value.sdc,
             dc_cell: value.dc_cell,
             pack_cell: value.pack_cell,
             pack_lib: value.pack_lib,
@@ -248,6 +304,7 @@ impl From<ImplArgs> for ImplementationOptions {
             pack_capacity: value.pack_capacity,
             place_mode: value.place_mode.into(),
             seed: value.seed,
+            fail_on_timing: value.fail_on_timing,
         }
     }
 }

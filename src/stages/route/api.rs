@@ -4,7 +4,7 @@ use crate::{
         SharedConstraints, apply_constraints_checked, ensure_cluster_positions,
         ensure_port_positions,
     },
-    ir::{Design, RoutePip, RouteSegment},
+    ir::{Design, Endpoint, RoutePip, RouteSegment, RouteSinkPath},
     report::{StageOutput, StageReport, StageReporter, emit_stage_info},
     resource::{Arch, SharedArch},
 };
@@ -14,7 +14,10 @@ use std::{
     path::PathBuf,
 };
 
-use super::{DeviceRouteImage, route_device_design, route_device_design_with_reporter};
+use super::{
+    DeviceRouteImage, route_device_design, route_device_design_with_reporter,
+    router::route_note_diagnostic,
+};
 
 #[derive(Debug, Clone)]
 pub struct RouteStageArtifacts {
@@ -154,8 +157,8 @@ fn run_with_artifacts_internal(
         device_net_count,
     ));
     for note in &route_image.notes {
-        if is_route_warning(note) {
-            report.warn(note.clone());
+        if let Some(diagnostic) = route_note_diagnostic(note) {
+            report.diagnostic(diagnostic);
         } else {
             report.push(note.clone());
         }
@@ -171,14 +174,6 @@ fn run_with_artifacts_internal(
     })
 }
 
-fn is_route_warning(note: &str) -> bool {
-    let lowered = note.to_ascii_lowercase();
-    lowered.contains("could not find a rust route")
-        || lowered.contains("has no routed driver")
-        || lowered.contains("not a routable cell")
-        || lowered.contains("has no route-source mapping")
-}
-
 fn apply_route_image(design: &mut Design, route_image: &DeviceRouteImage, arch: &Arch) {
     let mut by_net = BTreeMap::<String, Vec<RoutePip>>::new();
     for pip in &route_image.pips {
@@ -191,15 +186,51 @@ fn apply_route_image(design: &mut Design, route_image: &DeviceRouteImage, arch: 
                 pip.to_net.clone(),
             ));
     }
+    let mut sink_paths_by_net = BTreeMap::<String, Vec<RouteSinkPath>>::new();
+    for sink_path in &route_image.sink_paths {
+        let route_pips = sink_path
+            .pips
+            .iter()
+            .map(|pip| RoutePip::new((pip.x, pip.y), pip.from_net.clone(), pip.to_net.clone()))
+            .collect::<Vec<_>>();
+        let route = derive_segments_from_pips(&route_pips);
+        let estimated_delay_ns = if route.is_empty() {
+            estimate_pip_delay(&route_pips, arch)
+        } else {
+            estimate_segment_delay(&route, arch)
+        };
+        sink_paths_by_net
+            .entry(logical_route_net_name(&sink_path.net_name).to_string())
+            .or_default()
+            .push(RouteSinkPath {
+                sink: Endpoint::new(
+                    sink_path.sink.kind,
+                    sink_path.sink.name.clone(),
+                    sink_path.sink.pin.clone(),
+                ),
+                route,
+                route_pips,
+                estimated_delay_ns,
+            });
+    }
 
     for net in &mut design.nets {
         net.route_pips = by_net.remove(net.name.as_str()).unwrap_or_default();
         net.route = derive_segments_from_pips(&net.route_pips);
-        net.estimated_delay_ns = if net.route.is_empty() {
+        net.sink_routes = sink_paths_by_net
+            .remove(net.name.as_str())
+            .unwrap_or_default();
+        let whole_net_delay_ns = if net.route.is_empty() {
             estimate_pip_delay(&net.route_pips, arch)
         } else {
             estimate_segment_delay(&net.route, arch)
         };
+        net.estimated_delay_ns = net
+            .sink_routes
+            .iter()
+            .map(|path| path.estimated_delay_ns)
+            .max_by(f64::total_cmp)
+            .unwrap_or(whole_net_delay_ns);
     }
 }
 
@@ -250,6 +281,28 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{DeviceRouteImage, RouteOptions, apply_route_image, derive_segments_from_pips};
+    use crate::route::DeviceRouteSinkPath;
+
+    fn device_pip(
+        net_name: &str,
+        x: usize,
+        y: usize,
+        from: &str,
+        to: &str,
+    ) -> crate::route::DeviceRoutePip {
+        crate::route::DeviceRoutePip {
+            net_name: net_name.to_string(),
+            tile_name: String::new(),
+            tile_type: String::new(),
+            site_name: String::new(),
+            site_type: String::new(),
+            x,
+            y,
+            from_net: from.to_string(),
+            to_net: to.to_string(),
+            bits: Vec::new(),
+        }
+    }
 
     #[test]
     fn apply_route_image_merges_synthetic_gclk_pips_into_logical_clock_net() {
@@ -322,6 +375,67 @@ mod tests {
                 RouteSegment::new((2, 2), (2, 3)),
             ]
         );
+    }
+
+    #[test]
+    fn apply_route_image_preserves_independent_sink_branches() {
+        let sink_near = Endpoint::cell("near", "I");
+        let sink_far = Endpoint::cell("far", "I");
+        let mut design = Design {
+            nets: vec![
+                Net::new("n")
+                    .with_driver(Endpoint::cell("driver", "O"))
+                    .with_sink(sink_near.clone())
+                    .with_sink(sink_far.clone()),
+            ],
+            ..Design::default()
+        };
+        let route_image = DeviceRouteImage {
+            pips: vec![
+                device_pip("n", 0, 0, "a", "b"),
+                device_pip("n", 1, 0, "b", "c"),
+                device_pip("n", 3, 0, "b", "d"),
+            ],
+            sink_paths: vec![
+                DeviceRouteSinkPath {
+                    net_name: "n".to_string(),
+                    sink: crate::DeviceEndpoint {
+                        kind: crate::domain::EndpointKind::Cell,
+                        name: "near".to_string(),
+                        pin: "I".to_string(),
+                        ..crate::DeviceEndpoint::default()
+                    },
+                    pips: vec![
+                        device_pip("n", 0, 0, "a", "b"),
+                        device_pip("n", 1, 0, "b", "c"),
+                    ],
+                },
+                DeviceRouteSinkPath {
+                    net_name: "n".to_string(),
+                    sink: crate::DeviceEndpoint {
+                        kind: crate::domain::EndpointKind::Cell,
+                        name: "far".to_string(),
+                        pin: "I".to_string(),
+                        ..crate::DeviceEndpoint::default()
+                    },
+                    pips: vec![
+                        device_pip("n", 0, 0, "a", "b"),
+                        device_pip("n", 3, 0, "b", "d"),
+                    ],
+                },
+            ],
+            ..DeviceRouteImage::default()
+        };
+
+        apply_route_image(&mut design, &route_image, &crate::resource::Arch::default());
+
+        let net = &design.nets[0];
+        assert_eq!(net.sink_routes.len(), 2);
+        assert!(
+            net.route_for_sink(&sink_far).unwrap().estimated_delay_ns
+                > net.route_for_sink(&sink_near).unwrap().estimated_delay_ns
+        );
+        assert_eq!(net.route_for_sink(&sink_near).unwrap().route_pips.len(), 2);
     }
 
     #[test]

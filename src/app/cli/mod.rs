@@ -3,4 +3,4 @@ mod commands;
 mod dispatch;
 mod helpers;
 
-pub use dispatch::run;
+pub use dispatch::{CliExitError, run};

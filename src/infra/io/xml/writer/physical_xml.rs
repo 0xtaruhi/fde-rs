@@ -168,6 +168,9 @@ impl DesignXmlWriter {
             }
             self.empty_element(port_ref)?;
         }
+        if let Some(sink_routes_json) = net.sink_routes_json.as_deref() {
+            self.write_property("fde_sink_routes", sink_routes_json, None)?;
+        }
         self.write_pips(&net.pips)?;
         self.end_element("net")
     }

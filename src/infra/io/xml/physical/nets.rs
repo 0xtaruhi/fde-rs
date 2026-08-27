@@ -82,6 +82,9 @@ fn build_internal_physical_net(
         net_type: is_clock_buffer_binding(driver_port_binding).then_some("clock"),
         endpoints,
         pips: internal_net_pips(net, driver_port_binding),
+        sink_routes_json: (!net.sink_routes.is_empty())
+            .then(|| serde_json::to_string(&net.sink_routes).ok())
+            .flatten(),
     })
 }
 
@@ -193,6 +196,7 @@ fn input_port_pad_net(binding: &PortInstanceBinding) -> PhysicalNet {
             },
         ],
         pips: Vec::new(),
+        sink_routes_json: None,
     }
 }
 
@@ -212,6 +216,7 @@ fn input_clock_helper_net(design: &Design, binding: &PortInstanceBinding) -> Opt
             },
         ],
         pips: helper_clock_pips(design, binding),
+        sink_routes_json: None,
     })
 }
 
@@ -242,6 +247,7 @@ fn output_port_pad_net(binding: &PortInstanceBinding) -> PhysicalNet {
             },
         ],
         pips: Vec::new(),
+        sink_routes_json: None,
     }
 }
 

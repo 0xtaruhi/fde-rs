@@ -258,6 +258,7 @@ pub(crate) struct PhysicalNet {
     pub(crate) net_type: Option<&'static str>,
     pub(crate) endpoints: Vec<PhysicalEndpoint>,
     pub(crate) pips: Vec<RoutePip>,
+    pub(crate) sink_routes_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

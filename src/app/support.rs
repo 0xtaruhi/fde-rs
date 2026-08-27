@@ -4,7 +4,10 @@ use std::{path::Path, sync::Arc};
 use crate::{
     bitgen::BitgenOptions,
     cil::{Cil, load_cil},
-    constraints::{ConstraintEntry, ConstraintSet, SharedConstraints, load_constraint_set},
+    constraints::{
+        ConstraintEntry, ConstraintSet, SdcConstraintSet, SharedConstraints, load_constraint_set,
+        load_sdc_constraints, merge_clock_constraints,
+    },
     io::DesignWriteContext,
     ir::Design,
     resource::{Arch, load_arch},
@@ -24,6 +27,19 @@ pub(crate) fn load_constraint_set_or_empty(path: Option<&Path>) -> Result<Constr
         Some(path) => load_constraint_set(path),
         None => Ok(ConstraintSet::default()),
     }
+}
+
+pub(crate) fn load_timing_constraints(
+    constraints_path: Option<&Path>,
+    sdc_path: Option<&Path>,
+) -> Result<(ConstraintSet, SdcConstraintSet)> {
+    let mut constraints = load_constraint_set_or_empty(constraints_path)?;
+    let mut sdc = sdc_path
+        .map(load_sdc_constraints)
+        .transpose()?
+        .unwrap_or_default();
+    merge_clock_constraints(&mut constraints.clocks, std::mem::take(&mut sdc.clocks))?;
+    Ok((constraints, sdc))
 }
 
 pub(crate) fn prepare_route_device_design(
