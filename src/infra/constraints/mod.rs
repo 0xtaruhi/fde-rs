@@ -6,6 +6,8 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 pub type SharedConstraints = Arc<[ConstraintEntry]>;
 pub type SharedClockConstraints = Arc<[ClockConstraint]>;
+pub type SharedIoDelayConstraints = Arc<[IoDelayConstraint]>;
+pub type SharedClockUncertainties = Arc<[ClockUncertaintyConstraint]>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConstraintEntry {
@@ -18,6 +20,27 @@ pub struct ClockConstraint {
     pub name: String,
     pub port_name: String,
     pub period_ns: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IoDelayConstraint {
+    pub port_name: String,
+    pub clock_name: String,
+    pub delay_ns: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClockUncertaintyConstraint {
+    pub clock_name: String,
+    pub setup_ns: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SdcConstraintSet {
+    pub clocks: Vec<ClockConstraint>,
+    pub input_delays: Vec<IoDelayConstraint>,
+    pub output_delays: Vec<IoDelayConstraint>,
+    pub clock_uncertainties: Vec<ClockUncertaintyConstraint>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -53,6 +76,299 @@ pub fn load_constraint_set(path: &Path) -> Result<ConstraintSet> {
     Ok(ConstraintSet { pins, clocks })
 }
 
+/// Loads the strict SDC subset accepted by FDE.
+///
+/// Supported commands are `create_clock`, `set_input_delay`,
+/// `set_output_delay`, and setup `set_clock_uncertainty`.
+/// Unsupported commands are rejected instead of being silently ignored.
+pub fn load_sdc_constraints(path: &Path) -> Result<SdcConstraintSet> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read SDC file {}", path.display()))?;
+    let mut constraints = SdcConstraintSet::default();
+    for (line_number, line) in logical_sdc_lines(&text) {
+        let command = SdcCommand::new(path, line_number, &line);
+        match command.name {
+            "create_clock" => constraints.clocks.push(command.create_clock()?),
+            "set_input_delay" => constraints.input_delays.push(command.io_delay()?),
+            "set_output_delay" => constraints.output_delays.push(command.io_delay()?),
+            "set_clock_uncertainty" => constraints
+                .clock_uncertainties
+                .push(command.clock_uncertainty()?),
+            _ => bail!(
+                "unsupported SDC command at {}:{line_number}: {line}",
+                path.display()
+            ),
+        }
+    }
+    validate_clock_constraints(&constraints.clocks)?;
+    validate_sdc_constraints(&constraints)?;
+    Ok(constraints)
+}
+
+pub fn load_sdc_clocks(path: &Path) -> Result<Vec<ClockConstraint>> {
+    Ok(load_sdc_constraints(path)?.clocks)
+}
+
+pub fn merge_clock_constraints(
+    existing: &mut Vec<ClockConstraint>,
+    additional: Vec<ClockConstraint>,
+) -> Result<()> {
+    existing.extend(additional);
+    validate_clock_constraints(existing)
+}
+
+struct SdcCommand<'a> {
+    path: &'a Path,
+    line_number: usize,
+    name: &'a str,
+    tokens: Vec<&'a str>,
+}
+
+impl<'a> SdcCommand<'a> {
+    fn new(path: &'a Path, line_number: usize, line: &'a str) -> Self {
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        Self {
+            path,
+            line_number,
+            name: tokens.first().copied().unwrap_or_default(),
+            tokens,
+        }
+    }
+
+    fn create_clock(&self) -> Result<ClockConstraint> {
+        self.reject_options(&["-name", "-period"])?;
+        let period = self
+            .option("-period")
+            .ok_or_else(|| self.missing("-period"))?;
+        let period_ns = period
+            .parse()
+            .with_context(|| format!("{} has invalid period '{period}'", self.location()))?;
+        self.validate_time(period_ns, false)?;
+        let port_name = self.target("get_ports").ok_or_else(|| {
+            anyhow!(
+                "{} must target exactly one [get_ports <port>]",
+                self.location()
+            )
+        })?;
+        if port_name.is_empty() {
+            bail!("{} has an empty port name", self.location());
+        }
+        Ok(ClockConstraint {
+            name: self
+                .option("-name")
+                .map_or_else(|| port_name.clone(), clean_sdc_word),
+            port_name,
+            period_ns,
+        })
+    }
+
+    fn io_delay(&self) -> Result<IoDelayConstraint> {
+        self.reject_options(&["-clock"])?;
+        let clock_name = self
+            .option("-clock")
+            .ok_or_else(|| self.missing("-clock"))?;
+        let port_name = self
+            .target("get_ports")
+            .ok_or_else(|| anyhow!("{} must target [get_ports <port>]", self.location()))?;
+        let delay_ns = self
+            .number(&["-clock"])
+            .ok_or_else(|| self.missing("its delay value"))?;
+        self.validate_time(delay_ns, true)?;
+        Ok(IoDelayConstraint {
+            port_name,
+            clock_name: clean_sdc_word(clock_name),
+            delay_ns,
+        })
+    }
+
+    fn clock_uncertainty(&self) -> Result<ClockUncertaintyConstraint> {
+        self.reject_options(&["-setup", "-hold"])?;
+        if self.tokens.contains(&"-hold") {
+            bail!(
+                "{} -hold is unsupported because hold analysis is not implemented",
+                self.location()
+            );
+        }
+        let clock_name = self
+            .target("get_clocks")
+            .ok_or_else(|| anyhow!("{} must target one [get_clocks <clock>]", self.location()))?;
+        let setup_ns = self
+            .number(&[])
+            .ok_or_else(|| self.missing("its uncertainty value"))?;
+        self.validate_time(setup_ns, true)?;
+        Ok(ClockUncertaintyConstraint {
+            clock_name,
+            setup_ns,
+        })
+    }
+
+    fn option(&self, name: &str) -> Option<&'a str> {
+        self.tokens
+            .iter()
+            .position(|token| *token == name)
+            .and_then(|index| self.tokens.get(index + 1).copied())
+    }
+
+    fn target(&self, collection: &str) -> Option<String> {
+        let index = self
+            .tokens
+            .iter()
+            .position(|token| token.trim_start_matches('[') == collection)?;
+        let value = self.tokens.get(index + 1)?;
+        value.ends_with(']').then(|| clean_sdc_word(value))
+    }
+
+    fn number(&self, options_with_values: &[&str]) -> Option<f64> {
+        let mut tokens = self.tokens.iter().skip(1);
+        while let Some(token) = tokens.next() {
+            if options_with_values.contains(token) {
+                tokens.next();
+            } else if !token.starts_with('-')
+                && !token.contains("get_ports")
+                && !token.contains("get_clocks")
+                && let Ok(value) = clean_sdc_word(token).parse()
+            {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    fn reject_options(&self, allowed: &[&str]) -> Result<()> {
+        if let Some(option) = self
+            .tokens
+            .iter()
+            .skip(1)
+            .find(|token| token.starts_with('-') && !allowed.contains(token))
+        {
+            bail!(
+                "unsupported {} option '{option}' at {}:{}",
+                self.name,
+                self.path.display(),
+                self.line_number
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_time(&self, value: f64, allow_zero: bool) -> Result<()> {
+        if !value.is_finite() || value < 0.0 || (!allow_zero && value == 0.0) {
+            let requirement = if allow_zero {
+                "a non-negative finite value"
+            } else {
+                "a positive finite value"
+            };
+            bail!("{} requires {requirement}", self.location());
+        }
+        Ok(())
+    }
+
+    fn location(&self) -> String {
+        format!(
+            "{} at {}:{}",
+            self.name,
+            self.path.display(),
+            self.line_number
+        )
+    }
+
+    fn missing(&self, value: &str) -> anyhow::Error {
+        anyhow!("{} is missing {value}", self.location())
+    }
+}
+
+fn logical_sdc_lines(text: &str) -> Vec<(usize, String)> {
+    let mut lines = Vec::new();
+    let mut pending = String::new();
+    let mut start = 1;
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        if pending.is_empty() {
+            start = index + 1;
+        } else {
+            pending.push(' ');
+        }
+        let continued = line.ends_with('\\');
+        pending.push_str(line.strip_suffix('\\').unwrap_or(line).trim());
+        if !continued {
+            lines.push((start, std::mem::take(&mut pending)));
+        }
+    }
+    if !pending.is_empty() {
+        lines.push((start, pending));
+    }
+    lines
+}
+
+fn clean_sdc_word(value: &str) -> String {
+    value
+        .trim_matches(|ch| matches!(ch, '[' | ']' | '{' | '}'))
+        .to_string()
+}
+
+fn validate_sdc_constraints(constraints: &SdcConstraintSet) -> Result<()> {
+    let clock_names = constraints
+        .clocks
+        .iter()
+        .map(|clock| clock.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for delay in constraints
+        .input_delays
+        .iter()
+        .chain(&constraints.output_delays)
+    {
+        if !clock_names.contains(delay.clock_name.as_str()) {
+            bail!(
+                "I/O delay for port '{}' references unknown clock '{}'",
+                delay.port_name,
+                delay.clock_name
+            );
+        }
+    }
+    let mut uncertainty_clocks = BTreeSet::new();
+    for uncertainty in &constraints.clock_uncertainties {
+        if !clock_names.contains(uncertainty.clock_name.as_str()) {
+            bail!(
+                "clock uncertainty references unknown clock '{}'",
+                uncertainty.clock_name
+            );
+        }
+        if !uncertainty_clocks.insert(uncertainty.clock_name.as_str()) {
+            bail!(
+                "duplicate setup uncertainty for clock '{}'",
+                uncertainty.clock_name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_clock_constraints(clocks: &[ClockConstraint]) -> Result<()> {
+    let mut names = BTreeSet::new();
+    let mut ports = BTreeSet::new();
+    for clock in clocks {
+        if !clock.period_ns.is_finite() || clock.period_ns <= 0.0 {
+            bail!(
+                "clock '{}' period must be a positive finite value",
+                clock.name
+            );
+        }
+        if !names.insert(clock.name.clone()) {
+            bail!("duplicate clock constraint name '{}'", clock.name);
+        }
+        if !ports.insert(clock.port_name.clone()) {
+            bail!(
+                "multiple clock constraints target port '{}'",
+                clock.port_name
+            );
+        }
+    }
+    Ok(())
+}
+
 fn parse_clock_constraints(doc: &Document<'_>) -> Result<Vec<ClockConstraint>> {
     let mut clocks = Vec::new();
     let mut names = BTreeSet::new();
@@ -82,6 +398,7 @@ fn parse_clock_constraints(doc: &Document<'_>) -> Result<Vec<ClockConstraint>> {
             period_ns,
         });
     }
+    validate_clock_constraints(&clocks)?;
     Ok(clocks)
 }
 
@@ -186,6 +503,7 @@ pub fn ensure_cluster_positions(design: &Design) -> Result<()> {
 mod tests {
     use super::{
         ConstraintEntry, apply_constraints_checked, ensure_port_positions, load_constraint_set,
+        load_sdc_clocks, load_sdc_constraints,
     };
     use crate::{
         ir::{Design, Port},
@@ -292,5 +610,76 @@ mod tests {
         let error = load_constraint_set(file.path()).expect_err("zero period must fail");
 
         assert!(error.to_string().contains("positive finite"));
+    }
+
+    #[test]
+    fn loads_strict_sdc_create_clock_commands() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(
+            file.path(),
+            "# clocks\ncreate_clock -name sys -period 10.0 [get_ports clk]\n\
+             create_clock -period 25.0 [get_ports {aux_clk}]\n",
+        )
+        .expect("write sdc");
+
+        let clocks = load_sdc_clocks(file.path()).expect("load SDC");
+
+        assert_eq!(clocks.len(), 2);
+        assert_eq!(clocks[0].name, "sys");
+        assert_eq!(clocks[0].port_name, "clk");
+        assert_eq!(clocks[1].name, "aux_clk");
+        assert_eq!(clocks[1].port_name, "aux_clk");
+    }
+
+    #[test]
+    fn rejects_unsupported_sdc_commands() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(file.path(), "set_false_path -from a -to b\n").expect("write sdc");
+
+        let error = load_sdc_clocks(file.path()).expect_err("unsupported command must fail");
+
+        assert!(error.to_string().contains("unsupported SDC command"));
+    }
+
+    #[test]
+    fn rejects_unsupported_sdc_options_instead_of_ignoring_them() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(
+            file.path(),
+            "create_clock -period 10 [get_ports clk]\n\
+             set_input_delay -min -clock clk 1 [get_ports din]\n",
+        )
+        .expect("write sdc");
+
+        let error = load_sdc_constraints(file.path()).expect_err("-min must not be ignored");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported set_input_delay option '-min'")
+        );
+    }
+
+    #[test]
+    fn loads_sdc_io_delays_and_setup_uncertainty() {
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(
+            file.path(),
+            "create_clock -name sys -period 10 [get_ports clk]\n\
+             set_input_delay -clock sys 1.25 [get_ports din]\n\
+             set_output_delay 2.5 -clock sys [get_ports dout]\n\
+             set_clock_uncertainty -setup 0.2 [get_clocks sys]\n",
+        )
+        .expect("write sdc");
+
+        let constraints = load_sdc_constraints(file.path()).expect("load SDC");
+
+        assert_eq!(constraints.clocks.len(), 1);
+        assert_eq!(constraints.input_delays[0].port_name, "din");
+        assert!((constraints.input_delays[0].delay_ns - 1.25).abs() < f64::EPSILON);
+        assert_eq!(constraints.output_delays[0].port_name, "dout");
+        assert!((constraints.output_delays[0].delay_ns - 2.5).abs() < f64::EPSILON);
+        assert_eq!(constraints.clock_uncertainties[0].clock_name, "sys");
+        assert!((constraints.clock_uncertainties[0].setup_ns - 0.2).abs() < f64::EPSILON);
     }
 }

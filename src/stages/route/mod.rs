@@ -25,5 +25,8 @@ pub use image::{
 };
 pub use lowering::lower_design;
 pub use router::{route_device_design, route_device_design_with_reporter};
-pub use types::{DeviceRouteImage, DeviceRoutePip, RouteBit, RouteNegotiationStats, RoutedNetPip};
+pub use types::{
+    DeviceRouteImage, DeviceRoutePip, DeviceRouteSinkPath, RouteBit, RouteNegotiationStats,
+    RoutedNetPip,
+};
 pub use xml::{load_route_pips, load_route_pips_xml};

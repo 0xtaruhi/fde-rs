@@ -11,6 +11,7 @@ pub struct ImplementationOptions {
     pub out_dir: PathBuf,
     pub resource_root: Option<PathBuf>,
     pub constraints: Option<PathBuf>,
+    pub sdc: Option<PathBuf>,
     pub dc_cell: Option<PathBuf>,
     pub pack_cell: Option<PathBuf>,
     pub pack_lib: Option<PathBuf>,
@@ -25,6 +26,7 @@ pub struct ImplementationOptions {
     pub pack_capacity: usize,
     pub place_mode: PlaceMode,
     pub seed: u64,
+    pub fail_on_timing: bool,
 }
 
 impl Default for ImplementationOptions {
@@ -34,6 +36,7 @@ impl Default for ImplementationOptions {
             out_dir: PathBuf::from("build/fde-run"),
             resource_root: None,
             constraints: None,
+            sdc: None,
             dc_cell: None,
             pack_cell: None,
             pack_lib: None,
@@ -48,6 +51,7 @@ impl Default for ImplementationOptions {
             pack_capacity: DEFAULT_PACK_CAPACITY,
             place_mode: PlaceMode::BoundingBox,
             seed: DEFAULT_PLACE_SEED,
+            fail_on_timing: false,
         }
     }
 }

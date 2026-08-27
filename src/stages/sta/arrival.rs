@@ -5,7 +5,8 @@ use crate::{
 };
 
 use super::{
-    delay::{cell_input_is_functional, combinational_cell_delay_ns, net_delay_ns},
+    constraints::TimingRequirements,
+    delay::{cell_input_is_functional, combinational_cell_delay_ns, net_delay_to_sink_ns},
     error::StaError,
     keys::{
         ArrivalMap, cell_arrival_key, endpoint_arrival_key, net_arrival_key, port_arrival_key,
@@ -18,13 +19,30 @@ pub(crate) fn compute_arrivals(
     arch: Option<&Arch>,
     delay: Option<&DelayModel>,
     cell_timing: &CellTimingModel,
+    requirements: &TimingRequirements,
 ) -> Result<ArrivalMap, StaError> {
     let index = design.index();
     let mut arrival = ArrivalMap::new();
     for (port_index, port) in design.ports.iter().enumerate() {
         if port.direction.is_input_like() {
-            arrival.insert(port_arrival_key(port_index.into()), 0.0);
+            let port_id = port_index.into();
+            arrival.insert(
+                port_arrival_key(port_id),
+                requirements.input_delay_ns(port_id),
+            );
         }
+    }
+    for net in &design.nets {
+        let Some(driver) = net.driver.as_ref() else {
+            continue;
+        };
+        let crate::ir::EndpointTarget::Port(port_id) = index.resolve_endpoint(driver) else {
+            continue;
+        };
+        arrival.insert(
+            endpoint_arrival_key(&index, driver),
+            requirements.input_delay_ns(port_id),
+        );
     }
     for (cell_index, cell) in design.cells.iter().enumerate() {
         let cell_id = cell_index.into();
@@ -46,7 +64,8 @@ pub(crate) fn compute_arrivals(
     }
 
     let mut changed = true;
-    for _ in 0..design.cells.len().max(1) * 2 {
+    let iteration_limit = design.cells.len().max(1) * 2;
+    for _ in 0..iteration_limit {
         if !changed {
             break;
         }
@@ -70,7 +89,8 @@ pub(crate) fn compute_arrivals(
                     |endpoint| endpoint_arrival_key(&index, endpoint),
                 );
                 let src_arrival = arrival.get(&driver_key).copied().unwrap_or(0.0);
-                let net_delay = net_delay_ns(design, &index, net, arch, delay);
+                let sink = crate::ir::Endpoint::cell(&cell.name, &input.port);
+                let net_delay = net_delay_to_sink_ns(design, &index, net, &sink, arch, delay);
                 input_arrival = input_arrival.max(src_arrival + net_delay);
             }
             let output_arrival = input_arrival + combinational_cell_delay_ns(cell, delay);
@@ -83,6 +103,16 @@ pub(crate) fn compute_arrivals(
             }
         }
     }
+    if changed {
+        let node = arrival
+            .iter()
+            .max_by(|lhs, rhs| lhs.1.total_cmp(rhs.1))
+            .map_or_else(
+                || "unknown".to_string(),
+                |(key, _)| render_timing_key(design, &index, key),
+            );
+        return Err(StaError::CombinationalLoop { node });
+    }
 
     for net in &design.nets {
         let driver_arrival = net
@@ -91,8 +121,8 @@ pub(crate) fn compute_arrivals(
             .map(|endpoint| endpoint_arrival_key(&index, endpoint))
             .and_then(|key| arrival.get(&key).copied())
             .unwrap_or(0.0);
-        let delay_ns = net_delay_ns(design, &index, net, arch, delay);
         for sink in &net.sinks {
+            let delay_ns = net_delay_to_sink_ns(design, &index, net, sink, arch, delay);
             arrival.insert(
                 endpoint_arrival_key(&index, sink),
                 driver_arrival + delay_ns,

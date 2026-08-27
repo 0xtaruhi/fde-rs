@@ -19,6 +19,7 @@ pub(crate) struct FlowArtifacts {
     pub(crate) device: Option<PathBuf>,
     pub(crate) sta: PathBuf,
     pub(crate) sta_report: PathBuf,
+    pub(crate) sta_report_json: PathBuf,
     pub(crate) bitstream: PathBuf,
     pub(crate) bitstream_sidecar: Option<PathBuf>,
     pub(crate) report: PathBuf,
@@ -36,6 +37,7 @@ impl FlowArtifacts {
             device: Some(out_dir.join("04-device.json")),
             sta: out_dir.join("05-timed.xml"),
             sta_report: out_dir.join("05-timing.rpt"),
+            sta_report_json: out_dir.join("05-timing.json"),
             bitstream: out_dir.join("06-output.bit"),
             bitstream_sidecar: emit_sidecar.then(|| out_dir.join("06-output.sidecar.txt")),
             report: out_dir.join("report.json"),
@@ -59,6 +61,10 @@ impl FlowArtifacts {
             self.sta_report.display().to_string(),
         );
         artifacts.insert(
+            "sta_report_json".to_string(),
+            self.sta_report_json.display().to_string(),
+        );
+        artifacts.insert(
             "bitstream".to_string(),
             self.bitstream.display().to_string(),
         );
@@ -72,6 +78,15 @@ impl FlowArtifacts {
         artifacts.insert("summary".to_string(), self.summary.display().to_string());
         artifacts.insert("log".to_string(), self.log.display().to_string());
         artifacts
+    }
+
+    pub(crate) fn failure_artifact_map(&self) -> BTreeMap<String, String> {
+        self.artifact_map()
+            .into_iter()
+            .filter(|(key, value)| {
+                matches!(key.as_str(), "report" | "summary" | "log") || Path::new(value).exists()
+            })
+            .collect()
     }
 }
 
@@ -93,7 +108,7 @@ pub(crate) fn build_report(
     bitstream_sha256: Option<String>,
 ) -> ImplementationReport {
     ImplementationReport {
-        schema_version: 2,
+        schema_version: 3,
         flow: context.flow,
         design: context.design,
         out_dir: context.out_dir.display().to_string(),
@@ -103,6 +118,10 @@ pub(crate) fn build_report(
         inputs: context.inputs,
         resources: context.resources,
         artifacts: artifacts.artifact_map(),
+        diagnostics: stages
+            .iter()
+            .flat_map(|stage| stage.diagnostics.iter().cloned())
+            .collect(),
         stages,
         timing,
         bitstream_sha256,
@@ -138,6 +157,6 @@ fn render_log_with_runtime(report: &ImplementationReport, runtime_log: &str) -> 
     out.push_str("===============\n");
     out.push_str(runtime_log.trim_end());
     out.push_str("\n\n");
-    out.push_str(&render_detailed_log(report));
+    out.push_str(&render_summary_report(report));
     out
 }

@@ -1,3 +1,9 @@
+mod model;
+mod terminal;
+
+pub use model::{Diagnostic, DiagnosticSeverity, ProgressUpdate, WorkUnit};
+pub use terminal::{MessageFormat, TerminalOutputOptions, TerminalStageReporter, Verbosity};
+
 use crate::ir::TimingSummary;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -5,7 +11,8 @@ use std::{collections::BTreeMap, path::Path, time::Duration};
 
 pub type ReportMetrics = BTreeMap<String, Value>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum StageLogLevel {
     Info,
     Warning,
@@ -22,8 +29,14 @@ impl StageLogLevel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub enum StageEvent {
+    FlowStarted {
+        flow: &'static str,
+        design: String,
+        seed: u64,
+    },
     Started {
         stage: &'static str,
     },
@@ -31,6 +44,25 @@ pub enum StageEvent {
         stage: &'static str,
         level: StageLogLevel,
         message: String,
+    },
+    Progress {
+        stage: &'static str,
+        update: ProgressUpdate,
+    },
+    Diagnostic {
+        stage: &'static str,
+        diagnostic: Diagnostic,
+    },
+    Report {
+        stage: &'static str,
+        report: Box<StageReport>,
+    },
+    FlowFinished {
+        status: ReportStatus,
+        elapsed_ms: u64,
+        error_count: usize,
+        warning_count: usize,
+        artifacts: BTreeMap<String, String>,
     },
     Finished {
         stage: &'static str,
@@ -140,6 +172,26 @@ pub fn emit_stage_progress(
     emit_stage_event(reporter, stage, StageLogLevel::Progress, message);
 }
 
+pub fn emit_stage_progress_update(
+    reporter: &mut Option<&mut dyn StageReporter>,
+    stage: &'static str,
+    update: ProgressUpdate,
+) {
+    if let Some(reporter) = reporter.as_deref_mut() {
+        reporter.on_stage_event(StageEvent::Progress { stage, update });
+    }
+}
+
+pub fn emit_stage_diagnostic(
+    reporter: &mut Option<&mut dyn StageReporter>,
+    stage: &'static str,
+    diagnostic: Diagnostic,
+) {
+    if let Some(reporter) = reporter.as_deref_mut() {
+        reporter.on_stage_event(StageEvent::Diagnostic { stage, diagnostic });
+    }
+}
+
 fn emit_stage_event(
     reporter: &mut Option<&mut dyn StageReporter>,
     stage: &'static str,
@@ -164,7 +216,7 @@ pub enum ReportStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct StageReport {
     pub stage: String,
     #[serde(default)]
@@ -175,6 +227,8 @@ pub struct StageReport {
     pub messages: Vec<String>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
     #[serde(default)]
     pub metrics: ReportMetrics,
     #[serde(default)]
@@ -189,6 +243,7 @@ impl StageReport {
             elapsed_ms: None,
             messages: Vec::new(),
             warnings: Vec::new(),
+            diagnostics: Vec::new(),
             metrics: BTreeMap::new(),
             artifacts: BTreeMap::new(),
         }
@@ -200,6 +255,10 @@ impl StageReport {
 
     pub fn warn(&mut self, warning: impl Into<String>) {
         self.warnings.push(warning.into());
+    }
+
+    pub fn diagnostic(&mut self, diagnostic: Diagnostic) {
+        self.diagnostics.push(diagnostic);
     }
 
     pub fn set_elapsed(&mut self, elapsed: Duration) {
@@ -236,6 +295,7 @@ pub fn run_stage_with_reporter<T, E, Run, RunWithReporter>(
     run_with_reporter: RunWithReporter,
 ) -> Result<StageOutput<T>, E>
 where
+    E: std::fmt::Display,
     Run: FnOnce() -> Result<StageOutput<T>, E>,
     RunWithReporter: FnOnce(&mut dyn StageReporter) -> Result<StageOutput<T>, E>,
 {
@@ -250,10 +310,24 @@ where
     match result {
         Ok(mut output) => {
             output.report.set_elapsed(elapsed);
+            if let Some(reporter) = reporter.as_deref_mut() {
+                reporter.on_stage_event(StageEvent::Report {
+                    stage,
+                    report: Box::new(output.report.clone()),
+                });
+            }
             emit_stage_finished(reporter, stage, output.report.status, elapsed);
             Ok(output)
         }
         Err(err) => {
+            emit_stage_diagnostic(
+                reporter,
+                stage,
+                Diagnostic::error(
+                    format!("FDE-{}-0001", stage.to_ascii_uppercase()),
+                    err.to_string(),
+                ),
+            );
             emit_stage_finished(reporter, stage, ReportStatus::Failed, elapsed);
             Err(err)
         }
@@ -278,11 +352,34 @@ pub struct ImplementationReport {
     #[serde(default)]
     pub artifacts: BTreeMap<String, String>,
     #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
+    #[serde(default)]
     pub stages: Vec<StageReport>,
     #[serde(default)]
     pub timing: Option<TimingSummary>,
     #[serde(default)]
     pub bitstream_sha256: Option<String>,
+}
+
+impl ImplementationReport {
+    pub fn diagnostic_counts(&self) -> (usize, usize) {
+        let count = |severity| {
+            self.diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == severity)
+                .count()
+        };
+        let legacy_warnings = self
+            .stages
+            .iter()
+            .filter(|stage| stage.diagnostics.is_empty())
+            .map(|stage| stage.warnings.len())
+            .sum::<usize>();
+        (
+            count(DiagnosticSeverity::Error),
+            count(DiagnosticSeverity::Warning) + legacy_warnings,
+        )
+    }
 }
 
 pub fn print_stage_report(report: &StageReport) {
@@ -320,6 +417,9 @@ pub fn format_stage_event_line(
     include_stage_prefix: bool,
 ) -> Option<String> {
     match event {
+        StageEvent::FlowStarted { flow, design, seed } if include_lifecycle => {
+            Some(format!(">>> starting {flow} design={design} seed={seed}\n"))
+        }
         StageEvent::Started { stage } if include_lifecycle && include_stage_prefix => {
             Some(format!("[{stage}] >>> starting {stage}\n"))
         }
@@ -334,6 +434,43 @@ pub fn format_stage_event_line(
         StageEvent::Log { level, message, .. } => {
             Some(format!("{}: {}\n", level.as_str(), message))
         }
+        StageEvent::Progress { stage, update } if include_stage_prefix => Some(format!(
+            "[{stage}] progress: {} {}/{} {} ({:.0}%)\n",
+            update.phase,
+            update.current,
+            update.total,
+            update.unit.as_str(),
+            update.percent()
+        )),
+        StageEvent::Progress { update, .. } => Some(format!(
+            "progress: {} {}/{} {} ({:.0}%)\n",
+            update.phase,
+            update.current,
+            update.total,
+            update.unit.as_str(),
+            update.percent()
+        )),
+        StageEvent::Diagnostic { stage, diagnostic } if include_stage_prefix => Some(format!(
+            "[{stage}] {:?} [{}]: {}\n",
+            diagnostic.severity, diagnostic.code, diagnostic.message
+        )),
+        StageEvent::Diagnostic { diagnostic, .. } => Some(format!(
+            "{:?} [{}]: {}\n",
+            diagnostic.severity, diagnostic.code, diagnostic.message
+        )),
+        StageEvent::FlowFinished {
+            status,
+            elapsed_ms,
+            error_count,
+            warning_count,
+            ..
+        } if include_lifecycle => Some(format!(
+            ">>> flow completed ({}, {} ms, {} error(s), {} warning(s))\n",
+            format_stage_status_name(*status),
+            elapsed_ms,
+            error_count,
+            warning_count
+        )),
         StageEvent::Finished {
             stage,
             status,
@@ -354,7 +491,11 @@ pub fn format_stage_event_line(
             format_stage_status_name(*status),
             elapsed_ms
         )),
-        StageEvent::Started { .. } | StageEvent::Finished { .. } => None,
+        StageEvent::FlowStarted { .. }
+        | StageEvent::FlowFinished { .. }
+        | StageEvent::Report { .. }
+        | StageEvent::Started { .. }
+        | StageEvent::Finished { .. } => None,
     }
 }
 
@@ -377,18 +518,37 @@ pub fn render_summary_report(report: &ImplementationReport) -> String {
     if let Some(bitstream_sha256) = report.bitstream_sha256.as_deref() {
         out.push_str(&format!("Bitstream SHA  : {bitstream_sha256}\n"));
     }
+    let (error_count, warning_count) = report.diagnostic_counts();
+    out.push_str(&format!(
+        "Diagnostics    : {error_count} error(s), {warning_count} warning(s)\n"
+    ));
 
     if !report.inputs.is_empty() {
         out.push_str("\nInputs\n------\n");
         for (key, value) in &report.inputs {
-            out.push_str(&format!("{key:14}: {value}\n"));
+            out.push_str(&format!("{key:16}: {value}\n"));
         }
     }
 
     if !report.resources.is_empty() {
         out.push_str("\nResources\n---------\n");
         for (key, value) in &report.resources {
-            out.push_str(&format!("{key:14}: {value}\n"));
+            out.push_str(&format!("{key:16}: {value}\n"));
+        }
+    }
+
+    if !report.artifacts.is_empty() {
+        out.push_str("\nOutputs\n-------\n");
+        for key in [
+            "bitstream",
+            "sta_report",
+            "sta_report_json",
+            "report",
+            "log",
+        ] {
+            if let Some(value) = report.artifacts.get(key) {
+                out.push_str(&format!("{key:16}: {value}\n"));
+            }
         }
     }
 
@@ -397,7 +557,7 @@ pub fn render_summary_report(report: &ImplementationReport) -> String {
         let elapsed = stage
             .elapsed_ms
             .map_or_else(|| "-".to_string(), format_elapsed_ms);
-        out.push_str(&format!("{:14}: {}\n", stage.stage, elapsed));
+        out.push_str(&format!("{:16}: {}\n", stage.stage, elapsed));
     }
 
     out.push_str("\nQoR Summary\n-----------\n");
@@ -435,10 +595,22 @@ pub fn render_summary_report(report: &ImplementationReport) -> String {
     }
     if let Some(timing) = report.timing.as_ref() {
         out.push_str(&format!(
+            "{:14}: {}\n",
+            "Timing status",
+            timing.constraint_status.as_str()
+        ));
+        out.push_str(&format!(
             "{:14}: {:.3} ns\n",
             "Critical path", timing.critical_path_ns
         ));
         out.push_str(&format!("{:14}: {:.2} MHz\n", "Fmax", timing.fmax_mhz));
+        if let Some(worst_slack_ns) = timing.setup.worst_slack_ns {
+            out.push_str(&format!("{:14}: {worst_slack_ns:+.3} ns\n", "WNS"));
+        }
+        out.push_str(&format!(
+            "{:14}: {:+.3} ns\n",
+            "TNS", timing.setup.total_negative_slack_ns
+        ));
     }
 
     out
@@ -468,6 +640,20 @@ pub fn render_detailed_log(report: &ImplementationReport) -> String {
     push_mapping_section(&mut out, "Resources", &report.resources);
     push_mapping_section(&mut out, "Artifacts", &report.artifacts);
 
+    if !report.diagnostics.is_empty() {
+        out.push_str("Diagnostics\n-----------\n");
+        for diagnostic in &report.diagnostics {
+            out.push_str(&format!(
+                "- {:?} [{}] {}\n",
+                diagnostic.severity, diagnostic.code, diagnostic.message
+            ));
+            if let Some(help) = diagnostic.help.as_deref() {
+                out.push_str(&format!("  help: {help}\n"));
+            }
+        }
+        out.push('\n');
+    }
+
     out.push_str("Stages\n------\n");
     for stage in &report.stages {
         let elapsed = stage
@@ -495,6 +681,15 @@ pub fn render_detailed_log(report: &ImplementationReport) -> String {
             out.push_str("  Warnings:\n");
             for warning in &stage.warnings {
                 out.push_str(&format!("    - {warning}\n"));
+            }
+        }
+        if !stage.diagnostics.is_empty() {
+            out.push_str("  Diagnostics:\n");
+            for diagnostic in &stage.diagnostics {
+                out.push_str(&format!(
+                    "    - {:?} [{}] {}\n",
+                    diagnostic.severity, diagnostic.code, diagnostic.message
+                ));
             }
         }
         if !stage.messages.is_empty() {

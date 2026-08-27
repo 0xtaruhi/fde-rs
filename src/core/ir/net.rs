@@ -57,6 +57,22 @@ pub struct RoutePip {
     pub to_net: String,
 }
 
+/// The routed branch from a net driver to one concrete sink.
+///
+/// Multi-fanout nets must retain these branches independently: charging every
+/// sink for the union of all PIPs makes timing increasingly pessimistic as
+/// fanout grows and can make a detailed timing path impossible to reconcile.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RouteSinkPath {
+    pub sink: Endpoint,
+    #[serde(default)]
+    pub route: Vec<RouteSegment>,
+    #[serde(default)]
+    pub route_pips: Vec<RoutePip>,
+    #[serde(default)]
+    pub estimated_delay_ns: f64,
+}
+
 impl RoutePip {
     pub fn new(
         position: (usize, usize),
@@ -85,6 +101,10 @@ pub struct Net {
     pub route: Vec<RouteSegment>,
     #[serde(default)]
     pub route_pips: Vec<RoutePip>,
+    /// Per-sink routed branches used by STA. `route` and `route_pips` remain
+    /// the de-duplicated whole-net image used for programming and display.
+    #[serde(default)]
+    pub sink_routes: Vec<RouteSinkPath>,
     #[serde(default)]
     pub estimated_delay_ns: f64,
     #[serde(default)]
@@ -125,5 +145,16 @@ impl Net {
         } else {
             self.route.iter().map(RouteSegment::length).sum()
         }
+    }
+
+    pub fn route_for_sink(&self, sink: &Endpoint) -> Option<&RouteSinkPath> {
+        self.sink_routes
+            .iter()
+            .filter(|path| {
+                path.sink.kind == sink.kind
+                    && path.sink.name == sink.name
+                    && path.sink.pin == sink.pin
+            })
+            .max_by(|lhs, rhs| lhs.estimated_delay_ns.total_cmp(&rhs.estimated_delay_ns))
     }
 }

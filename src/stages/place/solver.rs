@@ -2,7 +2,9 @@ use crate::{
     domain::ClusterKind,
     ir::ClusterId,
     place::{PlaceMode, PlaceOptions},
-    report::{StageReporter, emit_stage_info, emit_stage_progress},
+    report::{
+        ProgressUpdate, StageReporter, WorkUnit, emit_stage_info, emit_stage_progress_update,
+    },
 };
 use anyhow::{Result, anyhow};
 use rand::RngExt;
@@ -314,19 +316,18 @@ fn emit_anneal_progress(
     current: &PlacementMetrics,
     best: &PlacementMetrics,
 ) {
-    emit_stage_progress(
+    emit_stage_progress_update(
         reporter,
         "place",
-        format!(
-            "{} anneal {}/{} ({:.0}%), temp={:.3}, current={:.3}, best={:.3}",
-            strategy,
+        ProgressUpdate::new(
+            format!("{strategy} anneal"),
             step + 1,
             iterations,
-            ((step + 1) as f64 / iterations.max(1) as f64) * 100.0,
-            temperature,
-            current.total,
-            best.total
-        ),
+            WorkUnit::Iterations,
+        )
+        .metric("temp", format!("{temperature:.3}"))
+        .metric("current", format!("{:.3}", current.total))
+        .metric("best", format!("{:.3}", best.total)),
     );
 }
 
@@ -1126,16 +1127,12 @@ fn refine_solution(
                 improved = true;
             }
         }
-        emit_stage_progress(
+        emit_stage_progress_update(
             reporter,
             "place",
-            format!(
-                "refinement pass {}/{} -> {} (cost {:.3})",
-                pass_index + 1,
-                pass_limit,
-                if improved { "improved" } else { "stable" },
-                evaluator.metrics().total
-            ),
+            ProgressUpdate::new("refinement", pass_index + 1, pass_limit, WorkUnit::Passes)
+                .metric("state", if improved { "improved" } else { "stable" })
+                .metric("cost", format!("{:.3}", evaluator.metrics().total)),
         );
         if !improved {
             break;

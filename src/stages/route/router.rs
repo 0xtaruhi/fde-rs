@@ -18,8 +18,8 @@ use super::{
         should_skip_unmapped_sink, sink_requires_all_wires,
     },
     types::{
-        DeviceRouteImage, DeviceRoutePip, RouteNegotiationStats, RouteNode, RoutedPip,
-        SearchParentStep, SearchState, SiteRouteGraphs, WireId, WireInterner,
+        DeviceRouteImage, DeviceRoutePip, DeviceRouteSinkPath, RouteNegotiationStats, RouteNode,
+        RoutedPip, SearchParentStep, SearchState, SiteRouteGraphs, WireId, WireInterner,
     },
     wire::tile_distance,
 };
@@ -27,7 +27,10 @@ use crate::{
     DeviceCell, DeviceDesign, DeviceDesignIndex, DeviceEndpoint, DeviceNet,
     cil::Cil,
     domain::NetOrigin,
-    report::{StageReporter, emit_stage_info, emit_stage_progress, emit_stage_warning},
+    report::{
+        Diagnostic, ProgressUpdate, StageReporter, WorkUnit, emit_stage_diagnostic,
+        emit_stage_info, emit_stage_progress_update,
+    },
     resource::{
         Arch,
         routing::{
@@ -56,6 +59,7 @@ struct RoutingState {
 #[derive(Default)]
 struct NetRouteArtifacts {
     pips: Vec<DeviceRoutePip>,
+    sink_paths: Vec<DeviceRouteSinkPath>,
     notes: Vec<String>,
     guide_usage: GuideUsageStats,
     failed: bool,
@@ -138,6 +142,7 @@ struct PreparedRouteNet<'a> {
     tree_starts: HashSet<RouteNode>,
     tree_start_costs: HashMap<RouteNode, usize>,
     used_pips: HashSet<(usize, usize, WireId, WireId)>,
+    tree_paths: HashMap<RouteNode, Vec<RoutedPip>>,
 }
 
 pub fn route_device_design(
@@ -242,14 +247,14 @@ fn route_device_design_internal(
                     || routed_net_count == rerouteable_total
                     || routed_net_count.is_multiple_of(progress_interval)
                 {
-                    emit_stage_progress(
+                    emit_stage_progress_update(
                         reporter,
                         "route",
-                        format!(
-                            "pass {pass}: routed {}/{} affected nets ({:.0}%)",
+                        ProgressUpdate::new(
+                            format!("negotiation pass {pass}"),
                             routed_net_count,
                             rerouteable_total,
-                            (routed_net_count as f64 / rerouteable_total.max(1) as f64) * 100.0
+                            WorkUnit::Nets,
                         ),
                     );
                 }
@@ -324,16 +329,19 @@ fn route_device_design_internal(
     emit_stage_info(reporter, "route", &guide_summary);
 
     let mut pips = Vec::new();
+    let mut sink_paths = Vec::new();
     let mut notes = global_notes;
     for net_index in net_order {
         let route = std::mem::take(&mut state.routes[net_index]);
         pips.extend(route.pips);
+        sink_paths.extend(route.sink_paths);
         notes.extend(route.notes);
     }
     notes.push(guide_summary);
 
     Ok(DeviceRouteImage {
         pips,
+        sink_paths,
         notes,
         negotiation: RouteNegotiationStats {
             passes_used,
@@ -349,21 +357,38 @@ fn push_route_note(
     reporter: &mut Option<&mut dyn StageReporter>,
     note: String,
 ) {
-    if is_route_warning_note(&note) {
-        emit_stage_warning(reporter, "route", note.clone());
+    if let Some(diagnostic) = route_note_diagnostic(&note) {
+        emit_stage_diagnostic(reporter, "route", diagnostic);
     } else {
         emit_stage_info(reporter, "route", note.clone());
     }
     notes.push(note);
 }
 
-fn is_route_warning_note(note: &str) -> bool {
+pub(super) fn route_note_diagnostic(note: &str) -> Option<Diagnostic> {
     let lowered = note.to_ascii_lowercase();
-    lowered.contains("could not find a rust route")
-        || lowered.contains("has no routed driver")
+    if lowered.contains("did not fully converge") {
+        return Some(Diagnostic::warning("FDE-ROUTE-0001", note).with_help(
+            "inspect final_overuse_count and routing congestion; the legalizing pass was used",
+        ));
+    }
+    if lowered.contains("could not find a rust route") {
+        return Some(
+            Diagnostic::error("FDE-ROUTE-0002", note)
+                .with_help("check placement legality, routing resources, and route guides"),
+        );
+    }
+    if lowered.contains("has no routed driver")
         || lowered.contains("not a routable cell")
         || lowered.contains("has no route-source mapping")
         || lowered.contains("has no route-sink mapping")
+    {
+        return Some(
+            Diagnostic::error("FDE-ROUTE-0003", note)
+                .with_help("check primitive pin mappings and the architecture/CIL resource bundle"),
+        );
+    }
+    None
 }
 
 fn load_route_resources(
@@ -541,6 +566,11 @@ fn prepare_route_net<'a>(
         .copied()
         .map(|node| (node, 0usize))
         .collect::<HashMap<_, _>>();
+    let tree_paths = roots
+        .iter()
+        .copied()
+        .map(|node| (node, Vec::new()))
+        .collect::<HashMap<_, _>>();
 
     Some(PreparedRouteNet {
         net_index,
@@ -554,6 +584,7 @@ fn prepare_route_net<'a>(
         tree_starts,
         tree_start_costs,
         used_pips: HashSet::default(),
+        tree_paths,
     })
 }
 
@@ -660,7 +691,7 @@ fn route_net_sink(
             ));
             continue;
         };
-        commit_routed_path(context, prepared, state, guide_mode, path);
+        commit_routed_path(context, prepared, sink, state, guide_mode, path);
     }
 }
 
@@ -683,6 +714,7 @@ fn sink_wire_groups(
 fn commit_routed_path(
     context: &RouteSinkContext<'_>,
     prepared: &mut PreparedRouteNet<'_>,
+    sink: &DeviceEndpoint,
     state: &mut RoutingState,
     guide_mode: GuideRouteMode,
     path: SinkRoutePath,
@@ -698,7 +730,20 @@ fn commit_routed_path(
         &path.nodes,
         &path.pips,
     );
-    update_tree_state(prepared, &path.nodes);
+    let full_path = complete_sink_path(prepared, &path);
+    update_tree_state(prepared, &path);
+
+    let materialized_sink_pips = full_path
+        .iter()
+        .filter_map(|pip| context.materialize_pip(*pip, &prepared.net.name))
+        .collect::<Vec<_>>();
+    state.routes[prepared.net_index]
+        .sink_paths
+        .push(DeviceRouteSinkPath {
+            net_name: prepared.net.name.clone(),
+            sink: sink.clone(),
+            pips: materialized_sink_pips,
+        });
 
     for pip in path.pips {
         if prepared.used_pips.insert((pip.x, pip.y, pip.from, pip.to))
@@ -709,7 +754,19 @@ fn commit_routed_path(
     }
 }
 
-fn update_tree_state(prepared: &mut PreparedRouteNet<'_>, path_nodes: &[RouteNode]) {
+fn complete_sink_path(prepared: &PreparedRouteNet<'_>, path: &SinkRoutePath) -> Vec<RoutedPip> {
+    let mut complete = path
+        .nodes
+        .first()
+        .and_then(|node| prepared.tree_paths.get(node))
+        .cloned()
+        .unwrap_or_default();
+    complete.extend(path.pips.iter().copied());
+    complete
+}
+
+fn update_tree_state(prepared: &mut PreparedRouteNet<'_>, path: &SinkRoutePath) {
+    let path_nodes = path.nodes.as_slice();
     if let Some((&start, rest)) = path_nodes.split_first() {
         let base_cost = prepared.tree_start_costs.get(&start).copied().unwrap_or(0);
         for (offset, node) in rest
@@ -722,6 +779,22 @@ fn update_tree_state(prepared: &mut PreparedRouteNet<'_>, path_nodes: &[RouteNod
                 .tree_start_costs
                 .entry(node)
                 .or_insert(base_cost + offset + 1);
+        }
+    }
+    if let Some(start) = path_nodes.first() {
+        let mut prefix = prepared.tree_paths.get(start).cloned().unwrap_or_default();
+        let mut appended = vec![false; path.pips.len()];
+        for node in path_nodes.iter().copied().skip(1) {
+            for (index, pip) in path.pips.iter().copied().enumerate() {
+                if !appended[index] && (pip.x, pip.y, pip.to) == (node.x, node.y, node.wire) {
+                    prefix.push(pip);
+                    appended[index] = true;
+                }
+            }
+            prepared
+                .tree_paths
+                .entry(node)
+                .or_insert_with(|| prefix.clone());
         }
     }
     prepared.tree_starts.extend(

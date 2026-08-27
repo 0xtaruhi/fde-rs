@@ -24,7 +24,8 @@ pub(super) fn generate_bitstream(
         sha256.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     let sidecar = build_sidecar(circuit, options, &artifacts, &sha256);
-    let report = build_report(bytes.len(), &artifacts);
+    let mut report = build_report(bytes.len(), &artifacts);
+    report.metric("bitstream_sha256", sha256.clone());
 
     Ok(StageOutput {
         value: BitstreamImage {
