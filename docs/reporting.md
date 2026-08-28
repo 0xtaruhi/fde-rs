@@ -64,6 +64,15 @@ count. Each point has an incremental and cumulative delay plus its source. The
 sum of point increments reconciles with the reported path delay (including
 clock-to-Q, input delay, and setup checks where applicable).
 
+The human report uses stable semantic labels at the reporting boundary.
+Synthesized register names such as `state[3]_DFFHQ_Q` are shown as `state[3]`;
+generated Yosys source-location names are represented as deterministic
+`Register N`, `LUT4 N`, and `Net N` labels. The structured JSON retains the raw
+netlist identities for automation and debug correlation. `Longest path delay`
+means the largest data-path delay seen anywhere in the design, while estimated
+minimum period and Fmax are derived from synchronous register timing when that
+analysis is available.
+
 Routed nets retain a separate driver-to-sink branch. STA uses that branch's
 delay and only falls back to the whole-net route for legacy artifacts without
 per-sink data. Unrouted nets use the selected delay table or a clearly labeled

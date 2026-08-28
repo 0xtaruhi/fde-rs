@@ -66,6 +66,63 @@ fn timed_design() -> Design {
     }
 }
 
+fn register_path_design(
+    launch: &str,
+    logic: &str,
+    capture: &str,
+    q_net: &str,
+    data_net: &str,
+) -> Design {
+    Design {
+        name: "sta-constrained".to_string(),
+        stage: "routed".to_string(),
+        ports: vec![Port::input("clk").at(0, 0)],
+        cells: vec![
+            Cell::ff(launch, "DFFHQ")
+                .with_input("CK", "clk_net")
+                .with_output("Q", q_net)
+                .in_cluster("clb0"),
+            Cell::lut(logic, "LUT4")
+                .with_input("A", q_net)
+                .with_output("O", data_net)
+                .in_cluster("clb1"),
+            Cell::ff(capture, "DFFHQ")
+                .with_input("D", data_net)
+                .with_input("CK", "clk_net")
+                .in_cluster("clb2"),
+        ],
+        nets: vec![
+            Net::new("clk_net")
+                .with_driver(Endpoint::port("clk", "IN"))
+                .with_sink(Endpoint::cell(launch, "CK"))
+                .with_sink(Endpoint::cell(capture, "CK")),
+            Net::new(q_net)
+                .with_driver(Endpoint::cell(launch, "Q"))
+                .with_sink(Endpoint::cell(logic, "A"))
+                .with_route_segment(RouteSegment::new((1, 1), (2, 1))),
+            Net::new(data_net)
+                .with_driver(Endpoint::cell(logic, "O"))
+                .with_sink(Endpoint::cell(capture, "D"))
+                .with_route_segment(RouteSegment::new((2, 1), (3, 1))),
+        ],
+        clusters: vec![
+            Cluster::logic("clb0")
+                .with_member(launch)
+                .with_capacity(1)
+                .at(1, 1),
+            Cluster::logic("clb1")
+                .with_member(logic)
+                .with_capacity(1)
+                .at(2, 1),
+            Cluster::logic("clb2")
+                .with_member(capture)
+                .with_capacity(1)
+                .at(3, 1),
+        ],
+        ..Design::default()
+    }
+}
+
 #[test]
 fn sta_computes_expected_critical_path_and_graph_shape() -> Result<()> {
     let artifact = run(
@@ -84,7 +141,11 @@ fn sta_computes_expected_critical_path_and_graph_shape() -> Result<()> {
         summary.top_paths.first().map(|path| path.endpoint.as_str()),
         Some("out:OUT")
     );
-    assert!(artifact.report_text.contains("Critical Path: 0.790 ns"));
+    assert!(
+        artifact
+            .report_text
+            .contains("Longest path delay  : 0.790 ns")
+    );
     let path = summary.top_paths.first().expect("critical path");
     assert_eq!(path.startpoint, "in:IN");
     assert_eq!(path.logic_levels, 2);
@@ -241,54 +302,7 @@ fn sta_takes_slowest_fanin_arrival() -> Result<()> {
 
 #[test]
 fn sta_applies_clock_period_setup_and_clock_to_q() -> Result<()> {
-    let design = Design {
-        name: "sta-constrained".to_string(),
-        stage: "routed".to_string(),
-        ports: vec![Port::input("clk").at(0, 0)],
-        cells: vec![
-            Cell::ff("launch", "DFFHQ")
-                .with_input("CK", "clk_net")
-                .with_output("Q", "q_net")
-                .in_cluster("clb0"),
-            Cell::lut("logic", "LUT4")
-                .with_input("A", "q_net")
-                .with_output("O", "data_net")
-                .in_cluster("clb1"),
-            Cell::ff("capture", "DFFHQ")
-                .with_input("D", "data_net")
-                .with_input("CK", "clk_net")
-                .in_cluster("clb2"),
-        ],
-        nets: vec![
-            Net::new("clk_net")
-                .with_driver(Endpoint::port("clk", "IN"))
-                .with_sink(Endpoint::cell("launch", "CK"))
-                .with_sink(Endpoint::cell("capture", "CK")),
-            Net::new("q_net")
-                .with_driver(Endpoint::cell("launch", "Q"))
-                .with_sink(Endpoint::cell("logic", "A"))
-                .with_route_segment(RouteSegment::new((1, 1), (2, 1))),
-            Net::new("data_net")
-                .with_driver(Endpoint::cell("logic", "O"))
-                .with_sink(Endpoint::cell("capture", "D"))
-                .with_route_segment(RouteSegment::new((2, 1), (3, 1))),
-        ],
-        clusters: vec![
-            Cluster::logic("clb0")
-                .with_member("launch")
-                .with_capacity(1)
-                .at(1, 1),
-            Cluster::logic("clb1")
-                .with_member("logic")
-                .with_capacity(1)
-                .at(2, 1),
-            Cluster::logic("clb2")
-                .with_member("capture")
-                .with_capacity(1)
-                .at(3, 1),
-        ],
-        ..Design::default()
-    };
+    let design = register_path_design("launch", "logic", "capture", "q_net", "data_net");
     let timing = StaTimingContext {
         clocks: Arc::from([ClockConstraint {
             name: "sys".to_string(),
@@ -360,6 +374,70 @@ fn sta_applies_clock_period_setup_and_clock_to_q() -> Result<()> {
         error,
         super::StaError::UnknownClockPort { port, .. } if port == "other_clk"
     ));
+
+    Ok(())
+}
+
+#[test]
+fn sta_text_report_uses_professional_labels_without_yosys_internal_names() -> Result<()> {
+    let launch = "$auto$ff.cc:337:slice$1149";
+    let logic = "$abc$20704$auto$blifparse.cc:557:parse_blif$20705";
+    let capture = "state[3]_DFFHQ_Q";
+    let design = register_path_design(launch, logic, capture, "$abc$20704$q", "$abc$20704$data");
+    let timing = StaTimingContext {
+        clocks: Arc::from([ClockConstraint {
+            name: "sys".to_string(),
+            port_name: "clk".to_string(),
+            period_ns: 2.0,
+        }]),
+        cell_timing: Some(Arc::new(CellTimingModel {
+            sequential: SequentialTiming {
+                clock_to_q_ns: 1.0,
+                setup_ns: 0.5,
+            },
+        })),
+        ..StaTimingContext::default()
+    };
+
+    let artifact = run_with_timing(
+        design,
+        &StaOptions {
+            arch: Some(mini_arch().into()),
+            delay: None,
+        },
+        &timing,
+    )?
+    .value;
+    let report = artifact.report_text;
+
+    for leaked in [
+        "$abc$",
+        "$auto$",
+        "ff.cc",
+        "blifparse.cc",
+        "proc_rom.cc",
+        "rtlil.cc",
+        "DFFHQ_Q",
+    ] {
+        assert!(!report.contains(leaked), "leaked {leaked}:\n{report}");
+    }
+    for label in ["Register 1/Q", "LUT4 1", "Net 1", "state[3]/D"] {
+        assert!(report.contains(label), "missing {label}:\n{report}");
+    }
+    for section in [
+        "Path Type",
+        "Launch Clock",
+        "Capture Clock",
+        "Data Path",
+        "Delay Breakdown",
+        "Timing Calculation",
+        "Clock-to-Q",
+        "Cell delay",
+        "Net delay",
+        "Library setup time",
+    ] {
+        assert!(report.contains(section), "missing {section}:\n{report}");
+    }
 
     Ok(())
 }
@@ -698,7 +776,11 @@ fn sta_empty_design_reports_zero_critical_path() -> Result<()> {
     assert!(summary.top_paths.is_empty());
     assert!(artifact.graph.nodes.is_empty());
     assert!(artifact.graph.edges.is_empty());
-    assert!(artifact.report_text.contains("Critical Path: 0.000 ns"));
+    assert!(
+        artifact
+            .report_text
+            .contains("Longest path delay  : 0.000 ns")
+    );
 
     Ok(())
 }

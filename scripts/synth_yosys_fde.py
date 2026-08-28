@@ -110,6 +110,8 @@ def build_yosys_script(
         "clean",
         f"techmap -map {quote_yosys_path(support_files['cells_map'])}",
         "opt",
+        "splitnets",
+        "autoname t:*DFF*",
         "check",
         "stat",
         f"write_edif {quote_yosys_path(edif_path)}",
