@@ -5,6 +5,7 @@ mod delay;
 mod error;
 mod graph;
 mod keys;
+mod names;
 mod report;
 #[cfg(test)]
 mod tests;
