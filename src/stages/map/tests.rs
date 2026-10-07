@@ -530,6 +530,25 @@ fn map_normalizes_ramb4_dual_port_cells_into_canonical_blockram_2() -> Result<()
         .expect("ram0");
 
     assert_eq!(ram.type_name, "BLOCKRAM_2");
+    for (net, port) in [
+        ("clka", "CLKA"),
+        ("wea", "WEA"),
+        ("rsta", "RSTA"),
+        ("ena", "ENA"),
+        ("clkb", "CLKB"),
+        ("web", "WEB"),
+        ("rstb", "RSTB"),
+        ("enb", "ENB"),
+    ] {
+        assert_eq!(
+            ram.inputs
+                .iter()
+                .find(|pin| pin.net == net)
+                .map(|pin| pin.port.as_str()),
+            Some(port),
+            "control net {net} must keep a port-specific BLOCKRAM_2 pin"
+        );
+    }
     assert_eq!(ram.property("PORTA_ATTR"), Some("4096X1"));
     assert_eq!(ram.property("PORTB_ATTR"), Some("256X16"));
     assert_eq!(ram.property("INIT_00"), Some("0123456789ABCDEF"));
