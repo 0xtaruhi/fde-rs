@@ -1,6 +1,6 @@
 use fde::{
-    ImplementationOptions, io::load_design, load_arch, load_map_input, resource::ResourceBundle,
-    run_implementation,
+    CellKind, Design, ImplementationOptions, io::load_design, load_arch, load_map_input,
+    resource::ResourceBundle, run_implementation,
 };
 use roxmltree::Document;
 use serde_json::Value;
@@ -806,6 +806,117 @@ fn complex_external_resource_sidecar_contains_nontrivial_config_and_route_sectio
         assert!(
             !sidecar.contains(unwanted),
             "unexpected sidecar warning: {unwanted}"
+        );
+    }
+}
+
+#[test]
+fn dual_port_block_ram_routes_and_programs_both_clocks() {
+    use fde::ir::{Cell, Endpoint, Net, Port};
+
+    let design = Design {
+        name: "bram_dual_clk".to_string(),
+        ports: vec![
+            Port::input("clka"),
+            Port::input("clkb"),
+            Port::input("we"),
+            Port::input("din"),
+            Port::output("douta"),
+            Port::output("doutb"),
+        ],
+        cells: vec![
+            Cell::new("ram0", CellKind::BlockRam, "RAMB4_S16_S16")
+                .with_input("CLKA", "clka")
+                .with_input("CLKB", "clkb")
+                .with_input("WEA", "we")
+                .with_input("ENA", "we")
+                .with_input("ENB", "we")
+                .with_input("DIA[0]", "din")
+                .with_output("DOA[0]", "douta")
+                .with_output("DOB[0]", "doutb"),
+        ],
+        nets: vec![
+            Net::new("clka")
+                .with_driver(Endpoint::port("clka", "clka"))
+                .with_sink(Endpoint::cell("ram0", "CLKA")),
+            Net::new("clkb")
+                .with_driver(Endpoint::port("clkb", "clkb"))
+                .with_sink(Endpoint::cell("ram0", "CLKB")),
+            Net::new("we")
+                .with_driver(Endpoint::port("we", "we"))
+                .with_sink(Endpoint::cell("ram0", "WEA"))
+                .with_sink(Endpoint::cell("ram0", "ENA"))
+                .with_sink(Endpoint::cell("ram0", "ENB")),
+            Net::new("din")
+                .with_driver(Endpoint::port("din", "din"))
+                .with_sink(Endpoint::cell("ram0", "DIA[0]")),
+            Net::new("douta")
+                .with_driver(Endpoint::cell("ram0", "DOA[0]"))
+                .with_sink(Endpoint::port("douta", "douta")),
+            Net::new("doutb")
+                .with_driver(Endpoint::cell("ram0", "DOB[0]"))
+                .with_sink(Endpoint::port("doutb", "doutb")),
+        ],
+        ..Design::default()
+    };
+
+    let (_temp, out_dir) = temp_out("impl-bram-dual-clk");
+    fs::create_dir_all(&out_dir).expect("create out dir");
+    let input = out_dir.join("bram_dual_clk.json");
+    fde::io::save_design(&design, &input).expect("save design");
+
+    // Constrained STA still rejects block RAM cells, so the full flow stops
+    // after routing. Check the routed netlist, then run bitgen on it directly.
+    let flow_error = run_implementation(&ImplementationOptions {
+        input,
+        out_dir: out_dir.clone(),
+        resource_root: Some(fixture("resources/hw_lib")),
+        ..ImplementationOptions::default()
+    })
+    .err()
+    .map(|err| format!("{err:#}"));
+    if let Some(error) = &flow_error {
+        assert!(
+            error.contains("does not yet support block RAM"),
+            "flow failed for an unexpected reason: {error}"
+        );
+    }
+
+    let routed_path = out_dir.join("04-routed.xml");
+    let routed = fs::read_to_string(&routed_path)
+        .unwrap_or_else(|err| panic!("read routed design: {err} (flow error: {flow_error:?})"));
+    for wire in ["BRAM_CLKA", "BRAM_CLKB"] {
+        assert!(
+            routed.contains(&format!("to=\"{wire}\"")),
+            "block RAM clock pin {wire} must be routed"
+        );
+    }
+
+    let sidecar_path = out_dir.join("06-output.sidecar.txt");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_fde"))
+        .arg("bitgen")
+        .arg("--quiet")
+        .arg("--input")
+        .arg(&routed_path)
+        .arg("--arch")
+        .arg(fixture("resources/hw_lib/fdp3p7_arch.xml"))
+        .arg("--cil")
+        .arg(fixture("resources/hw_lib/fdp3p7_cil.xml"))
+        .arg("--output")
+        .arg(out_dir.join("06-output.bit"))
+        .arg("--sidecar")
+        .arg(&sidecar_path)
+        .status()
+        .expect("run fde bitgen");
+    assert!(status.success(), "fde bitgen failed: {status}");
+
+    let sidecar = fs::read_to_string(&sidecar_path).expect("read sidecar");
+    for mux in ["CLKAMUX", "CLKBMUX"] {
+        assert!(
+            sidecar
+                .lines()
+                .any(|line| line.starts_with(&format!("BIT BRAM {mux} CLK "))),
+            "{mux} must be programmed to CLK"
         );
     }
 }
