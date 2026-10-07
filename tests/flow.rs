@@ -865,26 +865,28 @@ fn dual_port_block_ram_routes_and_programs_both_clocks() {
     let input = out_dir.join("bram_dual_clk.json");
     fde::io::save_design(&design, &input).expect("save design");
 
-    // Constrained STA still rejects block RAM cells, so the full flow stops
-    // after routing. Check the routed netlist, then run bitgen on it directly.
-    let flow_error = run_implementation(&ImplementationOptions {
+    let constraints = out_dir.join("constraints.xml");
+    fs::write(
+        &constraints,
+        r#"<design name="bram_dual_clk">
+  <clock name="clk_a" port="clka" period="40.0"/>
+  <clock name="clk_b" port="clkb" period="40.0"/>
+</design>
+"#,
+    )
+    .expect("write constraints");
+
+    let report = run_implementation(&ImplementationOptions {
         input,
         out_dir: out_dir.clone(),
         resource_root: Some(fixture("resources/hw_lib")),
+        constraints: Some(constraints),
+        emit_sidecar: true,
         ..ImplementationOptions::default()
     })
-    .err()
-    .map(|err| format!("{err:#}"));
-    if let Some(error) = &flow_error {
-        assert!(
-            error.contains("does not yet support block RAM"),
-            "flow failed for an unexpected reason: {error}"
-        );
-    }
+    .unwrap_or_else(|err| panic!("dual-port block RAM implementation failed: {err:#}"));
 
-    let routed_path = out_dir.join("04-routed.xml");
-    let routed = fs::read_to_string(&routed_path)
-        .unwrap_or_else(|err| panic!("read routed design: {err} (flow error: {flow_error:?})"));
+    let routed = fs::read_to_string(out_dir.join("04-routed.xml")).expect("read routed design");
     for wire in ["BRAM_CLKA", "BRAM_CLKB"] {
         assert!(
             routed.contains(&format!("to=\"{wire}\"")),
@@ -892,24 +894,22 @@ fn dual_port_block_ram_routes_and_programs_both_clocks() {
         );
     }
 
-    let sidecar_path = out_dir.join("06-output.sidecar.txt");
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_fde"))
-        .arg("bitgen")
-        .arg("--quiet")
-        .arg("--input")
-        .arg(&routed_path)
-        .arg("--arch")
-        .arg(fixture("resources/hw_lib/fdp3p7_arch.xml"))
-        .arg("--cil")
-        .arg(fixture("resources/hw_lib/fdp3p7_cil.xml"))
-        .arg("--output")
-        .arg(out_dir.join("06-output.bit"))
-        .arg("--sidecar")
-        .arg(&sidecar_path)
-        .status()
-        .expect("run fde bitgen");
-    assert!(status.success(), "fde bitgen failed: {status}");
+    let timing = report_json(&PathBuf::from(
+        report.artifacts.get("sta_report_json").expect("sta json"),
+    ));
+    let coverage = &timing["coverage"];
+    // WEA, ENA, DIA0 on port A and ENB on port B.
+    assert_eq!(coverage["block_ram_endpoints"].as_u64(), Some(4));
+    assert_eq!(coverage["unmodeled_block_ram_endpoints"].as_u64(), Some(0));
+    let paths = timing["top_paths"].as_array().expect("top paths");
+    assert!(paths.iter().any(|path| {
+        path["startpoint"]
+            .as_str()
+            .is_some_and(|start| start.starts_with("ram0:DOB0"))
+            && path["launch_clock"].as_str() == Some("clk_b")
+    }));
 
+    let sidecar_path = out_dir.join("06-output.sidecar.txt");
     let sidecar = fs::read_to_string(&sidecar_path).expect("read sidecar");
     for mux in ["CLKAMUX", "CLKBMUX"] {
         assert!(

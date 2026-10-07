@@ -108,6 +108,14 @@ pub(crate) fn format_timing_report(design: &Design, summary: &TimingSummary) -> 
         summary.coverage.constrained_register_endpoints,
         summary.coverage.register_endpoints
     ));
+    if summary.coverage.block_ram_endpoints > 0 {
+        let modeled =
+            summary.coverage.block_ram_endpoints - summary.coverage.unmodeled_block_ram_endpoints;
+        report.push_str(&format!(
+            "{:<24}: {} / {} with library timing\n",
+            "Block RAM endpoints", modeled, summary.coverage.block_ram_endpoints
+        ));
+    }
     report.push_str(&format!(
         "{:<24}: {} / {} constrained\n",
         "Primary inputs",

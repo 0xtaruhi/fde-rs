@@ -194,7 +194,30 @@ fn run_internal(
             .with_help("provide architecture and delay-model resources for sign-off estimates"),
         );
     }
-    if summary.constraint_status == crate::ir::TimingConstraintStatus::PartiallyConstrained {
+    let coverage = &summary.coverage;
+    let incomplete_constraint_coverage = coverage.constrained_register_endpoints
+        < coverage.register_endpoints
+        || coverage.constrained_primary_inputs < coverage.primary_inputs
+        || coverage.constrained_primary_outputs < coverage.primary_outputs;
+    if coverage.unmodeled_block_ram_endpoints > 0 {
+        report.diagnostic(
+            Diagnostic::warning(
+                "FDE-STA-0005",
+                format!(
+                    "{} block RAM endpoint(s) were analyzed without library timing arcs; \
+                     block RAM paths cannot be signed off.",
+                    coverage.unmodeled_block_ram_endpoints
+                ),
+            )
+            .with_help(
+                "add rising_edge (clock-to-out) and setup_rising arcs for the RAMB cell to the \
+                 STA cell library",
+            ),
+        );
+    }
+    if summary.constraint_status == crate::ir::TimingConstraintStatus::PartiallyConstrained
+        && incomplete_constraint_coverage
+    {
         report.diagnostic(
             Diagnostic::warning(
                 "FDE-STA-0004",

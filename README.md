@@ -203,8 +203,9 @@ set_clock_uncertainty -setup 0.15 [get_clocks sys]
 ```
 
 Unsupported SDC commands fail with a source line instead of being ignored.
-Setup analysis is implemented; hold remains explicitly `NOT ANALYZED`. Latches
-and block RAM timing are rejected until their timing models are available.
+Setup analysis is implemented; hold remains explicitly `NOT ANALYZED`. Block
+RAM is timed per port clock using the `RAMB` arcs in the STA cell library;
+latches are rejected until a timing model is available.
 
 ### Output and CI behavior
 
