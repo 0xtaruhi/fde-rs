@@ -867,15 +867,24 @@ fn dual_port_block_ram_routes_and_programs_both_clocks() {
 
     // Constrained STA still rejects block RAM cells, so the full flow stops
     // after routing. Check the routed netlist, then run bitgen on it directly.
-    let _ = run_implementation(&ImplementationOptions {
+    let flow_error = run_implementation(&ImplementationOptions {
         input,
         out_dir: out_dir.clone(),
         resource_root: Some(fixture("resources/hw_lib")),
         ..ImplementationOptions::default()
-    });
+    })
+    .err()
+    .map(|err| format!("{err:#}"));
+    if let Some(error) = &flow_error {
+        assert!(
+            error.contains("does not yet support block RAM"),
+            "flow failed for an unexpected reason: {error}"
+        );
+    }
 
     let routed_path = out_dir.join("04-routed.xml");
-    let routed = fs::read_to_string(&routed_path).expect("read routed design");
+    let routed = fs::read_to_string(&routed_path)
+        .unwrap_or_else(|err| panic!("read routed design: {err} (flow error: {flow_error:?})"));
     for wire in ["BRAM_CLKA", "BRAM_CLKB"] {
         assert!(
             routed.contains(&format!("to=\"{wire}\"")),
