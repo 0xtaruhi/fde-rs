@@ -77,7 +77,7 @@ fn applies_default_transmission_bits_into_frame_images() {
         .expect("tile image");
 
     assert_eq!(tile.bits, vec![0]);
-    assert!(notes.is_empty());
+    assert_eq!(notes, Vec::<String>::new());
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn relocates_default_site_bits_into_owner_tiles() {
 
     assert_eq!(owner.bits, vec![0]);
     assert_eq!(source.bits, vec![1]);
-    assert!(notes.is_empty());
+    assert_eq!(notes, Vec::<String>::new());
 }
 
 #[test]
@@ -287,5 +287,5 @@ fn relocates_config_assignments_into_owner_tiles() {
 
     assert_eq!(owner.bits, vec![0]);
     assert_eq!(source.bits, vec![1]);
-    assert!(notes.is_empty());
+    assert_eq!(notes, Vec::<String>::new());
 }
