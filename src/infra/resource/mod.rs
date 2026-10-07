@@ -9,7 +9,7 @@ pub(crate) mod routing;
 
 pub use arch::{Arch, Pad, PadSiteKind, TileInstance, TileKind, TileSideCapacity, load_arch};
 pub use bundle::ResourceBundle;
-pub use cell_timing::{CellTimingModel, SequentialTiming, load_cell_timing_model};
+pub use cell_timing::{BlockRamTiming, CellTimingModel, SequentialTiming, load_cell_timing_model};
 pub use constants::{
     ARCH_FILE, CIL_FILE, DC_CELL_FILE, DELAY_FILE, PACK_CELL_FILE, PACK_CONFIG_FILE,
     PACK_DCP_LIB_FILE, STA_LIB_FILE,

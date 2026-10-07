@@ -70,11 +70,11 @@ fn timing_summary(
     let mut minimum_clock_period: f64 = 0.0;
     for net in &design.nets {
         for sink in &net.sinks {
-            if !is_path_endpoint(design, index, sink) {
+            let key = endpoint_arrival_key(index, sink);
+            if !is_path_endpoint(design, index, requirements, sink, &key) {
                 continue;
             }
             let category = path_category(index, sink);
-            let key = endpoint_arrival_key(index, sink);
             let data_arrival_ns = arrival.get(&key).copied().unwrap_or(0.0);
             let setup_ns = requirements.setup_ns(&key);
             let delay_ns = data_arrival_ns + setup_ns;
@@ -112,12 +112,11 @@ fn timing_summary(
             let capture_clock = requirements
                 .clock_name_for_endpoint(&key)
                 .map(ToString::to_string);
-            let launch_clock = trace.start.as_ref().and_then(|start| match start {
-                TimingKey::Endpoint(TimingEndpoint::Cell { cell_id, .. }) => requirements
-                    .clock_name_for_cell(*cell_id)
-                    .map(ToString::to_string),
-                _ => None,
-            });
+            let launch_clock = trace
+                .start
+                .as_ref()
+                .and_then(|start| requirements.clock_name_for_launch(start))
+                .map(ToString::to_string);
             let path_group = match category {
                 TimingPathCategory::RegisterInput => capture_clock
                     .clone()
@@ -206,7 +205,7 @@ fn timing_summary(
         TimingConstraintStatus::Unconstrained
     } else if failing_endpoint_count > 0 {
         TimingConstraintStatus::Violated
-    } else if incomplete_coverage {
+    } else if incomplete_coverage || requirements.unmodeled_block_ram_endpoint_count() > 0 {
         TimingConstraintStatus::PartiallyConstrained
     } else {
         TimingConstraintStatus::Met
@@ -243,6 +242,8 @@ fn timing_summary(
         constrained_primary_outputs: requirements.constrained_primary_output_count(),
         modeled_arc_count,
         fallback_arc_count,
+        block_ram_endpoints: requirements.block_ram_endpoint_count(),
+        unmodeled_block_ram_endpoints: requirements.unmodeled_block_ram_endpoint_count(),
     };
 
     Ok(TimingSummary {
@@ -328,7 +329,7 @@ fn collect_timing_edges(
         }
     }
     for (cell_index, cell) in design.cells.iter().enumerate() {
-        if cell.is_sequential() {
+        if cell.is_timing_boundary() {
             continue;
         }
         let cell_id = cell_index.into();
@@ -396,13 +397,16 @@ fn compute_required_times(
     required
 }
 
-fn is_path_endpoint(design: &Design, index: &DesignIndex<'_>, sink: &Endpoint) -> bool {
+fn is_path_endpoint(
+    design: &Design,
+    index: &DesignIndex<'_>,
+    requirements: &TimingRequirements,
+    sink: &Endpoint,
+    key: &TimingKey,
+) -> bool {
     match index.resolve_endpoint(sink) {
         EndpointTarget::Port(port_id) => index.port(design, port_id).direction.is_output_like(),
-        EndpointTarget::Cell(cell_id) => {
-            let cell = index.cell(design, cell_id);
-            cell.primitive_kind().is_register_data_pin(&sink.pin)
-        }
+        EndpointTarget::Cell(_) => requirements.is_register_input(key),
         EndpointTarget::Unknown => false,
     }
 }
@@ -457,7 +461,7 @@ fn trace_path(
             break;
         };
         let cell = index.cell(design, cell_id);
-        if cell.is_sequential() {
+        if cell.is_timing_boundary() {
             trace.start = Some(endpoint_arrival_key(index, driver));
             break;
         }
@@ -549,7 +553,7 @@ fn render_trace_points(
             TimingPointKind::Port
         }
         TimingKey::Endpoint(TimingEndpoint::Cell { cell_id, .. })
-            if index.cell(design, *cell_id).is_sequential() =>
+            if index.cell(design, *cell_id).is_timing_boundary() =>
         {
             TimingPointKind::ClockToQ
         }

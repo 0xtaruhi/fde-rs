@@ -201,6 +201,19 @@ impl PrimitiveKind {
                     == Some(BlockRamControlSignal::Reset))
     }
 
+    /// Cells that launch timing paths from their outputs and capture them at
+    /// their synchronous inputs.
+    pub fn is_timing_boundary(self) -> bool {
+        self.is_sequential() || self.is_block_ram()
+    }
+
+    /// Input pins that terminate a timing path with a setup check.
+    pub fn is_timing_endpoint_pin(self, pin: &str) -> bool {
+        self.is_register_data_pin(pin)
+            || (self.is_block_ram()
+                && BlockRamPin::parse(pin).is_some_and(BlockRamPin::is_synchronous_input))
+    }
+
     pub fn is_register_data_pin(self, pin: &str) -> bool {
         self.is_sequential() && trimmed_eq_ignore_ascii_case(pin, "D")
     }

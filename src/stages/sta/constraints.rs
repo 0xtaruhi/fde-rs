@@ -1,7 +1,7 @@
 use crate::{
     constraints::{ClockConstraint, ClockUncertaintyConstraint, IoDelayConstraint},
-    domain::PrimitiveKind,
-    ir::{CellId, Design, DesignIndex, Endpoint, EndpointTarget, PortId},
+    domain::{BlockRamPin, BlockRamPortSide, PrimitiveKind},
+    ir::{Cell, Design, DesignIndex, Endpoint, EndpointTarget, PortId},
     resource::CellTimingModel,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,13 +14,26 @@ use super::{
 #[derive(Debug)]
 pub(crate) struct TimingRequirements {
     pub(crate) clocks: Vec<ClockConstraint>,
-    register_inputs: BTreeSet<TimingKey>,
+    /// Synchronous capture endpoints and their library setup time.
+    register_inputs: BTreeMap<TimingKey, f64>,
     endpoint_requirements: BTreeMap<TimingKey, EndpointTimingRequirement>,
-    cell_clocks: BTreeMap<CellId, String>,
+    /// Constrained clock that launches each synchronous output pin.
+    launch_clocks: BTreeMap<TimingKey, String>,
     input_delays: BTreeMap<PortId, f64>,
     constrained_primary_outputs: usize,
     clock_uncertainties: BTreeMap<String, f64>,
+    block_ram_endpoints: usize,
+    block_ram_timing_modeled: bool,
+}
+
+/// One clock domain of a synchronous cell: a flip-flop, or one port of a
+/// block RAM.
+struct SyncDomain<'a> {
+    clock_net: Option<&'a str>,
+    capture_pins: Vec<&'a str>,
+    launch_pins: Vec<&'a str>,
     setup_ns: f64,
+    block_ram: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,62 +52,62 @@ impl TimingRequirements {
         clock_uncertainties: &[ClockUncertaintyConstraint],
         cell_timing: &CellTimingModel,
     ) -> Result<Self, StaError> {
-        let setup_ns = cell_timing.sequential.setup_ns;
         validate_clock_ports(design, index, clocks)?;
         validate_io_delays(design, index, clocks, input_delays, true)?;
         validate_io_delays(design, index, clocks, output_delays, false)?;
         let clock_uncertainties = compile_clock_uncertainties(clocks, clock_uncertainties)?;
-        if let Some(cell) = design.cells.iter().find(|cell| cell.is_block_ram()) {
-            return unsupported(cell, "block RAM");
-        }
-        let mut register_inputs = BTreeSet::new();
+        let mut register_inputs = BTreeMap::new();
         let mut endpoint_requirements = BTreeMap::new();
-        let mut cell_clocks = BTreeMap::new();
+        let mut launch_clocks = BTreeMap::new();
         let mut used_clocks = BTreeSet::new();
-        for (cell_index, cell) in design
-            .cells
-            .iter()
-            .enumerate()
-            .filter(|(_, cell)| cell.is_sequential())
-        {
+        let mut block_ram_endpoints = 0usize;
+        for cell in design.cells.iter().filter(|cell| cell.is_timing_boundary()) {
             if matches!(cell.primitive_kind(), PrimitiveKind::Latch) {
                 return unsupported(cell, "latch");
             }
-            let clock = if clocks.is_empty() {
-                None
-            } else {
-                let source_port = cell
-                    .register_clock_net()
-                    .and_then(|net| source_port_for_net(design, index, net, &mut BTreeSet::new()));
-                let Some(clock) = clocks
-                    .iter()
-                    .find(|clock| Some(clock.port_name.as_str()) == source_port)
-                else {
-                    return Err(StaError::UnconstrainedSequentialCell {
-                        cell: cell.name.clone(),
+            for domain in sync_domains(cell, cell_timing) {
+                let clock = if clocks.is_empty() {
+                    None
+                } else {
+                    let source_port = domain.clock_net.and_then(|net| {
+                        source_port_for_net(design, index, net, &mut BTreeSet::new())
                     });
+                    let Some(clock) = clocks
+                        .iter()
+                        .find(|clock| Some(clock.port_name.as_str()) == source_port)
+                    else {
+                        return Err(StaError::UnconstrainedSequentialCell {
+                            cell: cell.name.clone(),
+                        });
+                    };
+                    used_clocks.insert(clock.name.clone());
+                    Some(clock)
                 };
-                used_clocks.insert(clock.name.clone());
-                cell_clocks.insert(cell_index.into(), clock.name.clone());
-                Some(clock)
-            };
-            for pin in cell
-                .inputs
-                .iter()
-                .filter(|pin| cell.primitive_kind().is_register_data_pin(&pin.port))
-            {
-                let key = endpoint_arrival_key(index, &Endpoint::cell(&cell.name, &pin.port));
-                register_inputs.insert(key.clone());
                 if let Some(clock) = clock {
-                    endpoint_requirements.insert(
-                        key,
-                        EndpointTimingRequirement {
-                            clock_name: clock.name.clone(),
-                            required_ns: clock.period_ns
-                                - setup_ns
-                                - clock_uncertainties.get(&clock.name).copied().unwrap_or(0.0),
-                        },
-                    );
+                    for pin in &domain.launch_pins {
+                        launch_clocks.insert(
+                            endpoint_arrival_key(index, &Endpoint::cell(&cell.name, *pin)),
+                            clock.name.clone(),
+                        );
+                    }
+                }
+                for pin in &domain.capture_pins {
+                    let key = endpoint_arrival_key(index, &Endpoint::cell(&cell.name, *pin));
+                    register_inputs.insert(key.clone(), domain.setup_ns);
+                    if domain.block_ram {
+                        block_ram_endpoints += 1;
+                    }
+                    if let Some(clock) = clock {
+                        endpoint_requirements.insert(
+                            key,
+                            EndpointTimingRequirement {
+                                clock_name: clock.name.clone(),
+                                required_ns: clock.period_ns
+                                    - domain.setup_ns
+                                    - clock_uncertainties.get(&clock.name).copied().unwrap_or(0.0),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -170,11 +183,12 @@ impl TimingRequirements {
             clocks: clocks.to_vec(),
             register_inputs,
             endpoint_requirements,
-            cell_clocks,
+            launch_clocks,
             input_delays,
             constrained_primary_outputs: output_delays.len(),
             clock_uncertainties,
-            setup_ns,
+            block_ram_endpoints,
+            block_ram_timing_modeled: cell_timing.block_ram.is_some(),
         })
     }
 
@@ -185,10 +199,24 @@ impl TimingRequirements {
     }
 
     pub(crate) fn setup_ns(&self, key: &TimingKey) -> f64 {
-        if self.register_inputs.contains(key) {
-            self.setup_ns
+        self.register_inputs.get(key).copied().unwrap_or(0.0)
+    }
+
+    pub(crate) fn is_register_input(&self, key: &TimingKey) -> bool {
+        self.register_inputs.contains_key(key)
+    }
+
+    pub(crate) fn block_ram_endpoint_count(&self) -> usize {
+        self.block_ram_endpoints
+    }
+
+    /// Block RAM endpoints analyzed without library timing arcs. Their slacks
+    /// are optimistic, so they must never let the design report MET.
+    pub(crate) fn unmodeled_block_ram_endpoint_count(&self) -> usize {
+        if self.block_ram_timing_modeled {
+            0
         } else {
-            0.0
+            self.block_ram_endpoints
         }
     }
 
@@ -198,7 +226,7 @@ impl TimingRequirements {
 
     pub(crate) fn constrained_register_endpoint_count(&self) -> usize {
         self.register_inputs
-            .iter()
+            .keys()
             .filter(|key| self.endpoint_requirements.contains_key(*key))
             .count()
     }
@@ -232,13 +260,13 @@ impl TimingRequirements {
             .map(|requirement| requirement.clock_name.as_str())
     }
 
-    pub(crate) fn clock_name_for_cell(&self, cell_id: CellId) -> Option<&str> {
-        self.cell_clocks.get(&cell_id).map(String::as_str)
+    pub(crate) fn clock_name_for_launch(&self, key: &TimingKey) -> Option<&str> {
+        self.launch_clocks.get(key).map(String::as_str)
     }
 
     pub(crate) fn register_count_for_clock(&self, clock_name: &str) -> usize {
         self.register_inputs
-            .iter()
+            .keys()
             .filter_map(|key| self.endpoint_requirements.get(key))
             .filter(|requirement| requirement.clock_name == clock_name)
             .count()
@@ -345,6 +373,58 @@ fn validate_clock_ports(
         }
     }
     Ok(())
+}
+
+fn sync_domains<'a>(cell: &'a Cell, cell_timing: &CellTimingModel) -> Vec<SyncDomain<'a>> {
+    if !cell.is_block_ram() {
+        let kind = cell.primitive_kind();
+        return vec![SyncDomain {
+            clock_net: cell.register_clock_net(),
+            capture_pins: cell
+                .inputs
+                .iter()
+                .filter(|pin| kind.is_register_data_pin(&pin.port))
+                .map(|pin| pin.port.as_str())
+                .collect(),
+            launch_pins: cell.outputs.iter().map(|pin| pin.port.as_str()).collect(),
+            setup_ns: cell_timing.sequential.setup_ns,
+            block_ram: false,
+        }];
+    }
+
+    let setup_ns = cell_timing.block_ram.map_or(0.0, |timing| timing.setup_ns);
+    [BlockRamPortSide::A, BlockRamPortSide::B]
+        .into_iter()
+        .filter_map(|side| {
+            let on_side = |port: &str, select: fn(BlockRamPin) -> bool| {
+                BlockRamPin::parse(port).is_some_and(|pin| pin.side() == side && select(pin))
+            };
+            // A port whose clock pin is unconnected is unused; its tied-off
+            // inputs are not timing endpoints.
+            let clock_net = cell
+                .inputs
+                .iter()
+                .find(|pin| on_side(&pin.port, BlockRamPin::is_clock))
+                .map(|pin| pin.net.as_str())?;
+            Some(SyncDomain {
+                clock_net: Some(clock_net),
+                capture_pins: cell
+                    .inputs
+                    .iter()
+                    .filter(|pin| on_side(&pin.port, BlockRamPin::is_synchronous_input))
+                    .map(|pin| pin.port.as_str())
+                    .collect(),
+                launch_pins: cell
+                    .outputs
+                    .iter()
+                    .filter(|pin| on_side(&pin.port, BlockRamPin::is_data_output))
+                    .map(|pin| pin.port.as_str())
+                    .collect(),
+                setup_ns,
+                block_ram: true,
+            })
+        })
+        .collect()
 }
 
 fn unsupported<T>(cell: &crate::ir::Cell, kind: &str) -> Result<T, StaError> {

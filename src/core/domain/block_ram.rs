@@ -436,6 +436,35 @@ impl BlockRamPin {
         }
     }
 
+    pub(crate) const fn side(self) -> BlockRamPortSide {
+        match self {
+            Self::Control { side, .. }
+            | Self::DataIn { side, .. }
+            | Self::DataOut { side, .. }
+            | Self::Addr { side, .. } => side,
+        }
+    }
+
+    pub(crate) const fn is_clock(self) -> bool {
+        matches!(
+            self,
+            Self::Control {
+                signal: BlockRamControlSignal::Clock,
+                ..
+            }
+        )
+    }
+
+    /// Inputs sampled on the owning port's clock edge (data, address, and
+    /// write-enable/enable/reset controls).
+    pub(crate) const fn is_synchronous_input(self) -> bool {
+        match self {
+            Self::Control { signal, .. } => !matches!(signal, BlockRamControlSignal::Clock),
+            Self::DataIn { .. } | Self::Addr { .. } => true,
+            Self::DataOut { .. } => false,
+        }
+    }
+
     pub(crate) const fn is_data_output(self) -> bool {
         matches!(self, Self::DataOut { .. })
     }

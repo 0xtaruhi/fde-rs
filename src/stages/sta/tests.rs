@@ -1,10 +1,10 @@
 use super::{StaOptions, StaTimingContext, run, run_with_reporter, run_with_timing};
 use crate::{
     constraints::{ClockConstraint, ClockUncertaintyConstraint, IoDelayConstraint},
-    domain::TimingPathCategory,
-    ir::{Cell, Cluster, Design, Endpoint, Net, Port, RouteSegment},
+    domain::{CellKind, TimingPathCategory},
+    ir::{Cell, Cluster, Design, Endpoint, Net, Port, RouteSegment, TimingConstraintStatus},
     report::{StageEvent, StageReporter, run_stage_with_reporter},
-    resource::{Arch, CellTimingModel, DelayModel, SequentialTiming},
+    resource::{Arch, BlockRamTiming, CellTimingModel, DelayModel, SequentialTiming},
 };
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
@@ -314,6 +314,7 @@ fn sta_applies_clock_period_setup_and_clock_to_q() -> Result<()> {
                 clock_to_q_ns: 1.0,
                 setup_ns: 0.5,
             },
+            block_ram: None,
         })),
         ..StaTimingContext::default()
     };
@@ -395,6 +396,7 @@ fn sta_text_report_uses_professional_labels_without_yosys_internal_names() -> Re
                 clock_to_q_ns: 1.0,
                 setup_ns: 0.5,
             },
+            block_ram: None,
         })),
         ..StaTimingContext::default()
     };
@@ -583,6 +585,7 @@ fn sta_applies_sdc_io_delays_uncertainty_and_reports_full_coverage() -> Result<(
                 clock_to_q_ns: 1.0,
                 setup_ns: 0.5,
             },
+            block_ram: None,
         })),
     };
 
@@ -916,4 +919,192 @@ fn build_fanin_design() -> Design {
         ],
         ..Design::default()
     }
+}
+
+/// `launch` (`clk_a`) -> LUT -> `ram0.DIA0`; `ram0.DOB0` -> LUT -> `capture` (`clk_b`).
+fn dual_port_block_ram_design() -> Design {
+    Design {
+        name: "sta-bram".to_string(),
+        stage: "routed".to_string(),
+        ports: vec![Port::input("clk_a").at(0, 0), Port::input("clk_b").at(0, 1)],
+        cells: vec![
+            Cell::ff("launch", "DFFHQ")
+                .with_input("CK", "clk_a_net")
+                .with_output("Q", "q_net"),
+            Cell::lut("lut_in", "LUT4")
+                .with_input("A", "q_net")
+                .with_output("O", "din_net"),
+            Cell::new("ram0", CellKind::BlockRam, "BLOCKRAM_2")
+                .with_input("CLKA", "clk_a_net")
+                .with_input("CLKB", "clk_b_net")
+                .with_input("DIA0", "din_net")
+                .with_input("ENA", "q_net")
+                .with_output("DOB0", "dout_net"),
+            Cell::lut("lut_out", "LUT4")
+                .with_input("A", "dout_net")
+                .with_output("O", "d_net"),
+            Cell::ff("capture", "DFFHQ")
+                .with_input("D", "d_net")
+                .with_input("CK", "clk_b_net"),
+        ],
+        nets: vec![
+            Net::new("clk_a_net")
+                .with_driver(Endpoint::port("clk_a", "IN"))
+                .with_sink(Endpoint::cell("launch", "CK"))
+                .with_sink(Endpoint::cell("ram0", "CLKA")),
+            Net::new("clk_b_net")
+                .with_driver(Endpoint::port("clk_b", "IN"))
+                .with_sink(Endpoint::cell("ram0", "CLKB"))
+                .with_sink(Endpoint::cell("capture", "CK")),
+            Net::new("q_net")
+                .with_driver(Endpoint::cell("launch", "Q"))
+                .with_sink(Endpoint::cell("lut_in", "A"))
+                .with_sink(Endpoint::cell("ram0", "ENA")),
+            Net::new("din_net")
+                .with_driver(Endpoint::cell("lut_in", "O"))
+                .with_sink(Endpoint::cell("ram0", "DIA0")),
+            Net::new("dout_net")
+                .with_driver(Endpoint::cell("ram0", "DOB0"))
+                .with_sink(Endpoint::cell("lut_out", "A")),
+            Net::new("d_net")
+                .with_driver(Endpoint::cell("lut_out", "O"))
+                .with_sink(Endpoint::cell("capture", "D")),
+        ],
+        ..Design::default()
+    }
+}
+
+fn dual_clock_timing(block_ram: Option<BlockRamTiming>) -> StaTimingContext {
+    StaTimingContext {
+        clocks: Arc::from([
+            ClockConstraint {
+                name: "a".to_string(),
+                port_name: "clk_a".to_string(),
+                period_ns: 20.0,
+            },
+            ClockConstraint {
+                name: "b".to_string(),
+                port_name: "clk_b".to_string(),
+                period_ns: 20.0,
+            },
+        ]),
+        cell_timing: Some(Arc::new(CellTimingModel {
+            sequential: SequentialTiming {
+                clock_to_q_ns: 1.0,
+                setup_ns: 0.5,
+            },
+            block_ram,
+        })),
+        ..StaTimingContext::default()
+    }
+}
+
+#[test]
+fn sta_times_dual_port_block_ram_per_port_clock() -> Result<()> {
+    let timing = dual_clock_timing(Some(BlockRamTiming {
+        clock_to_out_ns: 5.0,
+        setup_ns: 0.25,
+    }));
+
+    let output = run_with_timing(
+        dual_port_block_ram_design(),
+        &StaOptions::default(),
+        &timing,
+    )?;
+    let artifact = output.value;
+    let summary = artifact.design.timing.expect("timing summary");
+
+    assert_eq!(summary.constraint_status, TimingConstraintStatus::Met);
+    assert_eq!(summary.coverage.block_ram_endpoints, 2);
+    assert_eq!(summary.coverage.unmodeled_block_ram_endpoints, 0);
+
+    let into_ram = summary
+        .top_paths
+        .iter()
+        .find(|path| path.endpoint == "ram0:DIA0")
+        .expect("path into block RAM data input");
+    assert_eq!(into_ram.category, TimingPathCategory::RegisterInput);
+    assert_eq!(into_ram.launch_clock.as_deref(), Some("a"));
+    assert_eq!(into_ram.capture_clock.as_deref(), Some("a"));
+    let setup = into_ram.points.last().expect("setup check point");
+    assert!((setup.increment_ns - 0.25).abs() < 1e-9);
+
+    let out_of_ram = summary
+        .top_paths
+        .iter()
+        .find(|path| path.endpoint == "capture:D")
+        .expect("path out of block RAM");
+    assert_eq!(out_of_ram.launch_clock.as_deref(), Some("b"));
+    assert_eq!(out_of_ram.capture_clock.as_deref(), Some("b"));
+    assert!(out_of_ram.startpoint.starts_with("ram0:DOB0"));
+    assert!(out_of_ram.data_arrival_ns >= 5.0);
+
+    assert!(
+        !artifact
+            .graph
+            .edges
+            .iter()
+            .any(|edge| edge.from.starts_with("ram0:") && edge.to.starts_with("ram0:")),
+        "block RAM must not expose combinational arcs from its inputs to its outputs"
+    );
+    assert!(
+        output
+            .report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "FDE-STA-0005")
+    );
+    Ok(())
+}
+
+#[test]
+fn sta_never_signs_off_block_ram_without_library_arcs() -> Result<()> {
+    let timing = dual_clock_timing(None);
+
+    let output = run_with_timing(
+        dual_port_block_ram_design(),
+        &StaOptions::default(),
+        &timing,
+    )?;
+    let summary = output.value.design.timing.expect("timing summary");
+
+    assert_eq!(
+        summary.constraint_status,
+        TimingConstraintStatus::PartiallyConstrained
+    );
+    assert_eq!(summary.coverage.unmodeled_block_ram_endpoints, 2);
+    assert!(
+        output
+            .report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "FDE-STA-0005")
+    );
+    assert!(
+        output
+            .report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "FDE-STA-0004"),
+        "I/O coverage is complete, so the I/O-delay hint would be misleading"
+    );
+    Ok(())
+}
+
+#[test]
+fn sta_rejects_block_ram_port_clock_outside_constrained_domains() {
+    let mut timing = dual_clock_timing(None);
+    timing.clocks = Arc::from([ClockConstraint {
+        name: "a".to_string(),
+        port_name: "clk_a".to_string(),
+        period_ns: 20.0,
+    }]);
+
+    let error = run_with_timing(
+        dual_port_block_ram_design(),
+        &StaOptions::default(),
+        &timing,
+    )
+    .expect_err("port B clock is unconstrained");
+    assert!(error.to_string().contains("ram0"), "{error}");
 }

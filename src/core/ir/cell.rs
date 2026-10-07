@@ -127,6 +127,10 @@ impl Cell {
         self.primitive_kind().is_block_ram()
     }
 
+    pub fn is_timing_boundary(&self) -> bool {
+        self.primitive_kind().is_timing_boundary()
+    }
+
     pub fn register_clock_net(&self) -> Option<&str> {
         self.input_net_matching(PrimitiveKind::is_clock_pin)
     }

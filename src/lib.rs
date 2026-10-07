@@ -73,7 +73,7 @@ pub use report::{
     format_stage_event_line, format_stage_status_name,
 };
 pub use resource::{
-    Arch, CellTimingModel, DelayModel, ResourceBundle, SequentialTiming, load_arch,
+    Arch, BlockRamTiming, CellTimingModel, DelayModel, ResourceBundle, SequentialTiming, load_arch,
     load_cell_timing_model, load_delay_model,
 };
 pub use route::{

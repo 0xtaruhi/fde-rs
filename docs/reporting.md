@@ -52,6 +52,7 @@ Diagnostics contain `code`, `severity`, `message`, and optional `detail`,
 | `FDE-STA-0002` | One or more arcs use a fallback delay model |
 | `FDE-STA-0003` | Timing violation promoted to failure by `--fail-on-timing` |
 | `FDE-STA-0004` | Only part of the synchronous interface is constrained |
+| `FDE-STA-0005` | Block RAM endpoints were analyzed without library timing arcs |
 
 Renderers de-duplicate the same typed diagnostic when it appears both live and
 inside the final stage report.
@@ -84,7 +85,8 @@ Timing status is deliberately conservative:
   constrained, and all analyzed setup slacks are non-negative.
 - `VIOLATED`: at least one analyzed setup slack is negative.
 - `PARTIALLY CONSTRAINED`: clocks exist and analyzed paths pass, but synchronous
-  register/I/O coverage is incomplete.
+  register/I/O coverage is incomplete, or block RAM endpoints lack library
+  timing arcs (`coverage.unmodeled_block_ram_endpoints > 0`).
 - `UNCONSTRAINED`: no clock constraint exists; Fmax is an estimate, not sign-off.
 - `NOT ANALYZED`: the check is unsupported or was not run. Hold currently uses
   this status and is never silently treated as passing.
@@ -94,9 +96,21 @@ The strict SDC parser accepts one object per command for `create_clock`,
 Unsupported commands, unknown ports/clocks, duplicate constraints, invalid
 directions, and non-finite/negative values are errors. Multiple clock domains
 and cross-domain path labeling are supported; false paths, multicycle paths,
-asynchronous clock groups, generated clocks, min/hold analysis, latches, and
-block RAM timing are not yet modeled and therefore are rejected or reported as
-not analyzed rather than guessed.
+asynchronous clock groups, generated clocks, min/hold analysis, and latches
+are not yet modeled and therefore are rejected or reported as not analyzed
+rather than guessed.
+
+Block RAM is timed as a synchronous element, one clock domain per port:
+data, address, and enable/write-enable/reset inputs are setup endpoints of
+that port's clock (`CLKA`/`CLKB`), data outputs launch from it, and no
+combinational arc crosses the RAM. Clock-to-out and setup come from the
+`RAMB` cell (or `BLOCKRAM_1`/`BLOCKRAM_2`) in the STA cell library; a missing
+setup arc counts as 0 ns, as in the legacy FDE engine. If the library has no
+block RAM clock-to-out arc, block RAM paths are still analyzed with an
+optimistic 0 ns launch so violations surface, but the status is capped at
+`PARTIALLY CONSTRAINED` and `FDE-STA-0005` is emitted. The JSON coverage
+object reports `block_ram_endpoints` and `unmodeled_block_ram_endpoints`.
+A block RAM port whose clock pin is unconnected is treated as unused.
 
 ## Exit codes
 

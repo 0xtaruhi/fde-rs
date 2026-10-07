@@ -1,5 +1,5 @@
 use crate::{
-    domain::PrimitiveKind,
+    domain::{BlockRamPin, PrimitiveKind},
     ir::{Design, DesignIndex},
     resource::{Arch, CellTimingModel, DelayModel},
 };
@@ -60,6 +60,17 @@ pub(crate) fn compute_arrivals(
             for output in &cell.outputs {
                 arrival.insert(cell_arrival_key(cell_id, &output.port), clock_to_q_ns);
             }
+        } else if cell.is_block_ram() {
+            // Without library arcs the launch is optimistic (0 ns); STA then
+            // caps the status so these paths are never reported as MET.
+            let clock_to_out_ns = cell_timing
+                .block_ram
+                .map_or(0.0, |timing| timing.clock_to_out_ns);
+            for output in cell.outputs.iter().filter(|output| {
+                BlockRamPin::parse(&output.port).is_some_and(BlockRamPin::is_data_output)
+            }) {
+                arrival.insert(cell_arrival_key(cell_id, &output.port), clock_to_out_ns);
+            }
         }
     }
 
@@ -71,7 +82,7 @@ pub(crate) fn compute_arrivals(
         }
         changed = false;
         for (cell_index, cell) in design.cells.iter().enumerate() {
-            if cell.is_sequential() {
+            if cell.is_timing_boundary() {
                 continue;
             }
             let cell_id = cell_index.into();

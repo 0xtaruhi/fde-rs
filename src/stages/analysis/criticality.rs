@@ -37,7 +37,7 @@ fn forward_levels(design: &Design, index: &DesignIndex<'_>) -> Vec<usize> {
         }
         changed = false;
         for cell in &design.cells {
-            if cell.is_sequential() {
+            if cell.is_timing_boundary() {
                 continue;
             }
 
@@ -82,7 +82,7 @@ fn backward_levels(design: &Design, index: &DesignIndex<'_>) -> Vec<usize> {
         }
         changed = false;
         for cell in design.cells.iter().rev() {
-            if cell.is_sequential() {
+            if cell.is_timing_boundary() {
                 continue;
             }
 
