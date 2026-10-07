@@ -23,18 +23,10 @@ pub(super) fn block_ram_rewrite(cell: &Cell) -> Option<BlockRamRewrite> {
         return None;
     }
 
-    if type_name.eq_ignore_ascii_case("BLOCKRAM_SINGLE_PORT") {
+    if let Some(kind) = BlockRamKind::from_legacy_type_name(type_name) {
         return Some(BlockRamRewrite {
-            canonical_type: BlockRamKind::SinglePort.canonical_type_name(),
-            pin_renames: canonical_pin_renames(cell, BlockRamKind::SinglePort, 0, 0),
-            property_writes: Vec::new(),
-        });
-    }
-
-    if type_name.eq_ignore_ascii_case("BLOCKRAM_DUAL_PORT") {
-        return Some(BlockRamRewrite {
-            canonical_type: BlockRamKind::DualPort.canonical_type_name(),
-            pin_renames: canonical_pin_renames(cell, BlockRamKind::DualPort, 0, 0),
+            canonical_type: kind.canonical_type_name(),
+            pin_renames: canonical_pin_renames(cell, kind, 0, 0),
             property_writes: Vec::new(),
         });
     }

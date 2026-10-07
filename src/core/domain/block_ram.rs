@@ -13,6 +13,15 @@ impl BlockRamKind {
         }
     }
 
+    /// Legacy library aliases that map onto a canonical block RAM kind.
+    pub(crate) fn from_legacy_type_name(type_name: &str) -> Option<Self> {
+        match type_name.trim() {
+            name if name.eq_ignore_ascii_case("BLOCKRAM_SINGLE_PORT") => Some(Self::SinglePort),
+            name if name.eq_ignore_ascii_case("BLOCKRAM_DUAL_PORT") => Some(Self::DualPort),
+            _ => None,
+        }
+    }
+
     pub(crate) fn canonical_type_name(self) -> &'static str {
         match self {
             Self::SinglePort => "BLOCKRAM_1",
@@ -656,6 +665,19 @@ mod tests {
             Some("INIT_00".to_string())
         );
         assert_eq!(normalized_init_property_key("PORT_ATTR"), None);
+    }
+
+    #[test]
+    fn classifies_legacy_block_ram_type_aliases() {
+        assert_eq!(
+            BlockRamKind::from_legacy_type_name(" blockram_single_port "),
+            Some(BlockRamKind::SinglePort)
+        );
+        assert_eq!(
+            BlockRamKind::from_legacy_type_name("BLOCKRAM_DUAL_PORT"),
+            Some(BlockRamKind::DualPort)
+        );
+        assert_eq!(BlockRamKind::from_legacy_type_name("BLOCKRAM_1"), None);
     }
 
     #[test]

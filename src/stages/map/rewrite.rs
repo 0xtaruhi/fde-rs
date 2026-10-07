@@ -23,7 +23,7 @@ pub(super) struct RewriteSummary {
 }
 
 pub(super) fn rewrite_design(design: &mut Design, options: &MapOptions) -> Result<RewriteSummary> {
-    let lut_inits_are_decimal = design.metadata.source_format.eq_ignore_ascii_case("edif");
+    let lut_inits_are_decimal = design.metadata.source_format.lut_inits_are_decimal();
 
     for cell in &mut design.cells {
         if cell.is_lut() {

@@ -92,7 +92,7 @@ pub(super) fn load_fde_physical_design_xml(root: Node<'_, '_>) -> Result<Design>
         name: attr(&root, "name"),
         stage,
         metadata: crate::ir::Metadata {
-            source_format: "fde-xml".to_string(),
+            source_format: crate::ir::SourceFormat::FdeXml,
             notes: vec![note],
             ..Default::default()
         },

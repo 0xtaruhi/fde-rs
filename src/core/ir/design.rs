@@ -27,7 +27,7 @@ pub struct Design {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Metadata {
     #[serde(default)]
-    pub source_format: String,
+    pub source_format: SourceFormat,
     #[serde(default)]
     pub family: String,
     #[serde(default)]
@@ -36,6 +36,28 @@ pub struct Metadata {
     pub lut_size: usize,
     #[serde(default)]
     pub notes: Vec<String>,
+}
+
+/// Frontend that produced a design. Serialized with the historical string
+/// spellings so existing JSON designs keep loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SourceFormat {
+    #[serde(rename = "ir")]
+    Ir,
+    #[serde(rename = "edif", alias = "EDIF")]
+    Edif,
+    #[serde(rename = "fde-xml")]
+    FdeXml,
+    #[default]
+    #[serde(rename = "", other)]
+    Unknown,
+}
+
+impl SourceFormat {
+    /// EDIF netlists carry LUT `init` properties as decimal values.
+    pub const fn lut_inits_are_decimal(self) -> bool {
+        matches!(self, Self::Edif)
+    }
 }
 
 impl Design {
@@ -197,5 +219,36 @@ fn propagate_slice_pair_bindings(design: &mut Design) {
                 changed = true;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Metadata, SourceFormat};
+
+    #[test]
+    fn source_format_keeps_historical_json_spellings() {
+        for (format, text) in [
+            (SourceFormat::Unknown, ""),
+            (SourceFormat::Ir, "ir"),
+            (SourceFormat::Edif, "edif"),
+            (SourceFormat::FdeXml, "fde-xml"),
+        ] {
+            let json = serde_json::to_string(&format).expect("serialize source format");
+            assert_eq!(json, format!("\"{text}\""));
+            let parsed: SourceFormat = serde_json::from_str(&json).expect("parse source format");
+            assert_eq!(parsed, format);
+        }
+    }
+
+    #[test]
+    fn source_format_tolerates_legacy_and_unknown_values() {
+        let parse = |text: &str| -> SourceFormat {
+            serde_json::from_str(&format!("\"{text}\"")).expect("parse source format")
+        };
+        assert_eq!(parse("EDIF"), SourceFormat::Edif);
+        assert_eq!(parse("verilog"), SourceFormat::Unknown);
+        let metadata: Metadata = serde_json::from_str("{}").expect("parse metadata");
+        assert_eq!(metadata.source_format, SourceFormat::Unknown);
     }
 }
