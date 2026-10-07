@@ -17,11 +17,11 @@ permissions:
 jobs:
   quality:
     name: Quality checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -93,7 +93,7 @@ jobs:
 
       - name: Upload smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: blinky-run-linux-x64
           path: ${{ runner.temp }}/blinky-run
@@ -134,7 +134,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -166,7 +166,7 @@ jobs:
           EOF
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fde-${{ matrix.target }}
           path: dist/fde-${{ matrix.target }}
