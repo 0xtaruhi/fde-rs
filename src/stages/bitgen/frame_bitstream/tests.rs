@@ -196,7 +196,7 @@ fn roundtrips_text_bitstream_back_into_tile_columns() {
         &HashMap::default(),
         &mut expected_notes,
     );
-    assert!(expected_notes.is_empty());
+    assert_eq!(expected_notes, Vec::<String>::new());
 
     let arch_file = NamedTempFile::new().expect("create temp arch file");
     fs::write(arch_file.path(), "<design name=\"mini\"/>").expect("write temp arch xml");

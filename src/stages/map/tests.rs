@@ -136,7 +136,7 @@ fn map_canonicalizes_edif_init_property_into_lut_init_hex() -> Result<()> {
         ],
         ..Design::default()
     };
-    design.metadata.source_format = "edif".to_string();
+    design.metadata.source_format = crate::ir::SourceFormat::Edif;
     design.cells[0].set_property("init", "10");
 
     let artifact = run(design, &MapOptions::default())?.value;

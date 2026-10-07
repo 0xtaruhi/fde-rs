@@ -1,6 +1,6 @@
 use super::{rewrite::rewrite_design, verilog::export_structural_verilog};
 use crate::{
-    ir::Design,
+    ir::{Design, SourceFormat},
     report::{StageOutput, StageReport, StageReporter, emit_stage_info},
 };
 use anyhow::Result;
@@ -48,8 +48,8 @@ fn run_internal(
 ) -> Result<StageOutput<MapArtifact>> {
     design.stage = "mapped".to_string();
     design.metadata.lut_size = options.lut_size;
-    if design.metadata.source_format.is_empty() {
-        design.metadata.source_format = "ir".to_string();
+    if design.metadata.source_format == SourceFormat::Unknown {
+        design.metadata.source_format = SourceFormat::Ir;
     }
     emit_stage_info(
         &mut reporter,

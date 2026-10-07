@@ -42,7 +42,7 @@ impl DesignBuilder {
             stage: "mapped".to_string(),
             ..Design::default()
         };
-        design.metadata.source_format = "edif".to_string();
+        design.metadata.source_format = crate::ir::SourceFormat::Edif;
         Self {
             top_name,
             design,
