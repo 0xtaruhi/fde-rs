@@ -73,6 +73,21 @@ impl BlockRamControlSignal {
         }
     }
 
+    /// Port name on the canonical `BLOCKRAM_2` cell. Unlike the CIL mux
+    /// function name, the clock pin must stay side-specific (`CLKA`/`CLKB`).
+    pub(crate) const fn dual_port_map_name(self, side: BlockRamPortSide) -> &'static str {
+        match (side, self) {
+            (BlockRamPortSide::A, Self::Clock) => "CLKA",
+            (BlockRamPortSide::A, Self::WriteEnable) => "WEA",
+            (BlockRamPortSide::A, Self::Reset) => "RSTA",
+            (BlockRamPortSide::A, Self::Enable) => "ENA",
+            (BlockRamPortSide::B, Self::Clock) => "CLKB",
+            (BlockRamPortSide::B, Self::WriteEnable) => "WEB",
+            (BlockRamPortSide::B, Self::Reset) => "RSTB",
+            (BlockRamPortSide::B, Self::Enable) => "ENB",
+        }
+    }
+
     pub(crate) const fn site_mux_function_name(self, side: BlockRamPortSide) -> &'static str {
         match (side, self) {
             (_, Self::Clock) => "CLK",
@@ -384,7 +399,7 @@ impl BlockRamPin {
             ) => Some(format!("ADDR{}", index + addr_shift_a)),
             (BlockRamKind::SinglePort, _) => None,
             (BlockRamKind::DualPort, Self::Control { side, signal }) => {
-                Some(signal.site_mux_function_name(side).to_string())
+                Some(signal.dual_port_map_name(side).to_string())
             }
             (BlockRamKind::DualPort, Self::DataIn { side, index }) => Some(match side {
                 BlockRamPortSide::A => format!("DIA{index}"),
