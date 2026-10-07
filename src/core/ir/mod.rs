@@ -14,7 +14,7 @@ mod timing;
 pub use crate::domain::{CellKind, ClusterKind, EndpointKind, TimingPathCategory};
 pub use bitstream::BitstreamImage;
 pub use cell::{Cell, SliceBinding, SliceBindingKind};
-pub use design::{Design, Metadata};
+pub use design::{Design, Metadata, SourceFormat};
 pub use endpoint::{Endpoint, EndpointKey};
 pub use id::{CellId, ClusterId, NetId, PortId};
 pub use index::{DesignIndex, EndpointTarget};

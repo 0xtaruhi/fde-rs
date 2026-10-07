@@ -74,7 +74,7 @@ pub(super) fn load_fde_mapped_design_xml(root: Node<'_, '_>) -> Result<Design> {
         name: attr(&root, "name"),
         stage: "mapped".to_string(),
         metadata: crate::ir::Metadata {
-            source_format: "fde-xml".to_string(),
+            source_format: crate::ir::SourceFormat::FdeXml,
             lut_size: 4,
             notes: vec!["Imported FDE mapped XML".to_string()],
             ..Default::default()
