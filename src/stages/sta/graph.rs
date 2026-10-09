@@ -205,7 +205,10 @@ fn timing_summary(
         TimingConstraintStatus::Unconstrained
     } else if failing_endpoint_count > 0 {
         TimingConstraintStatus::Violated
-    } else if incomplete_coverage || requirements.unmodeled_block_ram_endpoint_count() > 0 {
+    } else if incomplete_coverage
+        || requirements.unmodeled_block_ram_endpoint_count() > 0
+        || requirements.unmodeled_block_ram_launch_pin_count() > 0
+    {
         TimingConstraintStatus::PartiallyConstrained
     } else {
         TimingConstraintStatus::Met
@@ -244,6 +247,8 @@ fn timing_summary(
         fallback_arc_count,
         block_ram_endpoints: requirements.block_ram_endpoint_count(),
         unmodeled_block_ram_endpoints: requirements.unmodeled_block_ram_endpoint_count(),
+        block_ram_launch_pins: requirements.block_ram_launch_pin_count(),
+        unmodeled_block_ram_launch_pins: requirements.unmodeled_block_ram_launch_pin_count(),
     };
 
     Ok(TimingSummary {

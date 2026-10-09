@@ -644,3 +644,46 @@ first debugging loop.
   - the exact command used;
   - and whether the live board changed.
 - That prevents repeating dead-end experiments.
+
+
+## 2026-10-09: continuous-clock BRAM release validation
+
+A new manual-clock probe initially drove CLKA/CLKB through ordinary VeriComm
+input lanes and compared snapshots against edge-by-edge RAM semantics. This did
+not follow the established P77 fixture oracle. Its claimed clock-edge, EN-hold,
+and reset failures are withdrawn; they are not evidence of hardware defects.
+No experimental CIL changes were applied to the shipped hardware library.
+
+The supplied `Documents/123/ball_vga/bram_test` bitstream was reprogrammed and
+its autonomous test settled to `done=1, pass=1, fail=0`. The probe holds reset,
+runs repeated constant-input windows, then checks completion; USB frame counts
+are not fabric cycle counts.
+
+Fresh Rust 2.0.0 candidate and C++ bitstreams were then tested with both BRAM
+ports connected to P77. All checks use settled outputs and avoid same-address
+write collisions. Each design fills through A and reads through both ports,
+fills an inverted pattern through B and reads through both ports, then writes
+even/odd addresses simultaneously through A/B and reads the complete memory.
+
+| Mode | Full depth | Input stages per flow | Rust | Fresh C++ |
+| --- | --- | --- | --- | --- |
+| RAMB4_S2_S2 | 2048 | 11264 | PASS | PASS |
+| RAMB4_S8_S8 | 512 | 2816 | PASS | PASS |
+
+This validates both-port read/write operation with a shared continuous clock.
+It does not establish independently clocked operation, EN/reset behavior, or
+cycle-accurate read-during-write collision semantics.
+
+Additional 256x16 designs exposed a routing limitation: the direct-I/O design
+fails Rust routing for DOA13/DOA14, and the autonomous design also has incomplete
+BRAM output routes. The published v1.1.1 binary reproduces these failures; the
+current C++ flow routes them, and its direct-I/O bitstream passes all 1408
+stages. The 16-bit cases are not Rust hardware passes and the routing limitation
+is not attributed to the reviewed update.
+
+RTL/EDF, constraints, plans, fresh build logs, original raw board traces, and
+the probe source are preserved under
+`build/board-bram-release-20261009/continuous/`. The autonomous 256x16 oracle
+also passed RTL simulation. Candidate executables were explicitly checked with
+`--version`; early scratch runs using a stale release binary are excluded from
+the candidate results above.

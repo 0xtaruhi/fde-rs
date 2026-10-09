@@ -1091,6 +1091,100 @@ fn sta_never_signs_off_block_ram_without_library_arcs() -> Result<()> {
     Ok(())
 }
 
+fn block_ram_launch_only_design() -> Design {
+    Design {
+        name: "sta-bram-launch-only".to_string(),
+        ports: vec![Port::input("clk")],
+        cells: vec![
+            Cell::new("ram0", CellKind::BlockRam, "BLOCKRAM_2")
+                .with_input("CLKB", "clk_net")
+                .with_output("DOB0", "data_net"),
+            Cell::ff("capture", "DFFHQ")
+                .with_input("CK", "clk_net")
+                .with_input("D", "data_net"),
+        ],
+        nets: vec![
+            Net::new("clk_net")
+                .with_driver(Endpoint::port("clk", "IN"))
+                .with_sink(Endpoint::cell("ram0", "CLKB"))
+                .with_sink(Endpoint::cell("capture", "CK")),
+            Net::new("data_net")
+                .with_driver(Endpoint::cell("ram0", "DOB0"))
+                .with_sink(Endpoint::cell("capture", "D")),
+        ],
+        ..Design::default()
+    }
+}
+
+#[test]
+fn sta_never_signs_off_launch_only_block_ram_without_library_arcs() -> Result<()> {
+    let timing = StaTimingContext {
+        clocks: Arc::from([ClockConstraint {
+            name: "clk".to_string(),
+            port_name: "clk".to_string(),
+            period_ns: 20.0,
+        }]),
+        ..StaTimingContext::default()
+    };
+    let output = run_with_timing(
+        block_ram_launch_only_design(),
+        &StaOptions::default(),
+        &timing,
+    )?;
+    let summary = output.value.design.timing.expect("timing summary");
+
+    assert_eq!(summary.coverage.block_ram_endpoints, 0);
+    assert_eq!(summary.coverage.block_ram_launch_pins, 1);
+    assert_eq!(summary.coverage.unmodeled_block_ram_launch_pins, 1);
+    assert_eq!(
+        summary.constraint_status,
+        TimingConstraintStatus::PartiallyConstrained
+    );
+    assert_eq!(output.report.metrics["timing_met"], false);
+    assert!(
+        output
+            .report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "FDE-STA-0005")
+    );
+    assert!(output.value.report_text.contains("FDE-STA-0005"));
+    assert!(!output.value.report_text.contains("FDE-STA-0004"));
+    Ok(())
+}
+
+#[test]
+fn sta_signs_off_launch_only_block_ram_with_library_arcs() -> Result<()> {
+    let timing = StaTimingContext {
+        clocks: Arc::from([ClockConstraint {
+            name: "clk".to_string(),
+            port_name: "clk".to_string(),
+            period_ns: 20.0,
+        }]),
+        cell_timing: Some(Arc::new(CellTimingModel {
+            block_ram: Some(BlockRamTiming {
+                clock_to_out_ns: 5.0,
+                setup_ns: 0.0,
+            }),
+            ..CellTimingModel::default()
+        })),
+        ..StaTimingContext::default()
+    };
+    let output = run_with_timing(
+        block_ram_launch_only_design(),
+        &StaOptions::default(),
+        &timing,
+    )?;
+    let summary = output.value.design.timing.expect("timing summary");
+
+    assert_eq!(summary.constraint_status, TimingConstraintStatus::Met);
+    assert_eq!(summary.coverage.block_ram_launch_pins, 1);
+    assert_eq!(summary.coverage.unmodeled_block_ram_launch_pins, 0);
+    assert!(summary.top_paths[0].data_arrival_ns >= 5.0);
+    assert!(!output.value.report_text.contains("FDE-STA-0005"));
+    Ok(())
+}
+
 #[test]
 fn sta_rejects_block_ram_port_clock_outside_constrained_domains() {
     let mut timing = dual_clock_timing(None);

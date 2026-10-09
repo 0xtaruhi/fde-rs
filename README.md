@@ -236,6 +236,10 @@ cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-outp
 
 ## Releases
 
+Version 2.0 includes Rust API changes, per-port block RAM timing, and expanded
+timing reports. See [the 2.0 migration guide](docs/migration-2.0.md) before
+upgrading a library consumer from 1.x.
+
 Tag-driven releases are automated through GitHub Actions.
 
 ### Recommended release flow

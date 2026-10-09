@@ -23,6 +23,7 @@ pub(crate) struct TimingRequirements {
     constrained_primary_outputs: usize,
     clock_uncertainties: BTreeMap<String, f64>,
     block_ram_endpoints: usize,
+    block_ram_launch_pins: usize,
     block_ram_timing_modeled: bool,
 }
 
@@ -61,11 +62,15 @@ impl TimingRequirements {
         let mut launch_clocks = BTreeMap::new();
         let mut used_clocks = BTreeSet::new();
         let mut block_ram_endpoints = 0usize;
+        let mut block_ram_launch_pins = 0usize;
         for cell in design.cells.iter().filter(|cell| cell.is_timing_boundary()) {
             if matches!(cell.primitive_kind(), PrimitiveKind::Latch) {
                 return unsupported(cell, "latch");
             }
             for domain in sync_domains(cell, cell_timing) {
+                if domain.block_ram {
+                    block_ram_launch_pins += domain.launch_pins.len();
+                }
                 let clock = if clocks.is_empty() {
                     None
                 } else {
@@ -188,6 +193,7 @@ impl TimingRequirements {
             constrained_primary_outputs: output_delays.len(),
             clock_uncertainties,
             block_ram_endpoints,
+            block_ram_launch_pins,
             block_ram_timing_modeled: cell_timing.block_ram.is_some(),
         })
     }
@@ -222,6 +228,18 @@ impl TimingRequirements {
 
     pub(crate) fn register_endpoint_count(&self) -> usize {
         self.register_inputs.len()
+    }
+
+    pub(crate) fn block_ram_launch_pin_count(&self) -> usize {
+        self.block_ram_launch_pins
+    }
+
+    pub(crate) fn unmodeled_block_ram_launch_pin_count(&self) -> usize {
+        if self.block_ram_timing_modeled {
+            0
+        } else {
+            self.block_ram_launch_pins
+        }
     }
 
     pub(crate) fn constrained_register_endpoint_count(&self) -> usize {
