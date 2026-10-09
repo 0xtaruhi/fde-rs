@@ -52,7 +52,7 @@ Diagnostics contain `code`, `severity`, `message`, and optional `detail`,
 | `FDE-STA-0002` | One or more arcs use a fallback delay model |
 | `FDE-STA-0003` | Timing violation promoted to failure by `--fail-on-timing` |
 | `FDE-STA-0004` | Only part of the synchronous interface is constrained |
-| `FDE-STA-0005` | Block RAM endpoints were analyzed without library timing arcs |
+| `FDE-STA-0005` | Block RAM capture endpoints or launch pins were analyzed without library timing arcs |
 
 Renderers de-duplicate the same typed diagnostic when it appears both live and
 inside the final stage report.
@@ -85,8 +85,9 @@ Timing status is deliberately conservative:
   constrained, and all analyzed setup slacks are non-negative.
 - `VIOLATED`: at least one analyzed setup slack is negative.
 - `PARTIALLY CONSTRAINED`: clocks exist and analyzed paths pass, but synchronous
-  register/I/O coverage is incomplete, or block RAM endpoints lack library
-  timing arcs (`coverage.unmodeled_block_ram_endpoints > 0`).
+  register/I/O coverage is incomplete, or block RAM endpoints or launch pins lack
+  library timing arcs (`coverage.unmodeled_block_ram_endpoints > 0` or
+  `coverage.unmodeled_block_ram_launch_pins > 0`).
 - `UNCONSTRAINED`: no clock constraint exists; Fmax is an estimate, not sign-off.
 - `NOT ANALYZED`: the check is unsupported or was not run. Hold currently uses
   this status and is never silently treated as passing.
