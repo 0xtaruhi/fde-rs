@@ -236,7 +236,7 @@ mod tests {
                 exits: vec![a],
             },
         ];
-        assert!(assign_saturated(&requests).unwrap().is_empty());
+        assert_eq!(assign_saturated(&requests).unwrap(), vec![]);
     }
 
     #[test]
