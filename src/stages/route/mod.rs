@@ -1,6 +1,7 @@
 mod api;
 mod cost;
 mod endpoint;
+mod escape;
 mod guide;
 mod heap;
 mod image;

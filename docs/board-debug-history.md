@@ -687,3 +687,88 @@ the probe source are preserved under
 also passed RTL simulation. Candidate executables were explicitly checked with
 `--version`; early scratch runs using a stale release binary are excluded from
 the candidate results above.
+
+## 2026-10-10: full-width dual-port BRAM routing repair
+
+Both 256x16 failures now have checked-in implementation regressions under
+`examples/board-e2e/bram-dual16-check/` and
+`examples/board-e2e/bram-dual16-selftest/`. Their source RTL is retained in
+`tests/rtl/bram_dual16_*.v`. The original seed-1 direct-I/O failure was reproduced
+before changing the router. The new flow regression failed with incomplete
+DOA13, DOA14, and DIA5 routes, then passed after the final repair.
+
+The full-width BRAM access crossbars are saturated. Several flexible low-bit
+pins can use channels that are the only alternatives for high-bit pins.
+Independent shortest-path searches can occupy those alternatives in incompatible
+combinations. Incremental congestion negotiation then freezes unrelated routes
+and fails to find a simultaneous legal assignment. Merely changing the order
+moves the failure to different pins.
+
+The repair computes a deterministic augmenting-path matching of each saturated
+BRAM data-input/output crossbar, using canonical stitched-wire occupancy keys.
+Matched channels stay reserved for their endpoint net during every negotiated
+pass, rip-up, and final legalization. Unsaturated crossbars and multicast input
+groups keep the existing route policy. Global net order, clock policy, hardware
+XML, and bitgen encoding are unchanged.
+
+### Tested theories
+
+Artifacts and exact command output are retained under
+`build/bram16-route-fix-20261010/`. None of these experiments changed the board:
+the live probe found zero devices, so hardware programming did not start.
+
+- Full reroute instead of incremental reroute (`FDE_DEBUG_FULL_REROUTE=1
+  target/release/fde impl --input
+  build/board-bram-release-20261009/continuous/dual16/design.edf --constraints
+  build/board-bram-release-20261009/continuous/dual16/constraints.xml
+  --resource-root resources/hw_lib --out-dir
+  build/bram16-route-fix-20261010/full-reroute-direct`): direct-I/O still failed;
+  the autonomous design routed in six passes. This change was discarded.
+- Charging congestion only on entry into a stitched component:
+  `cargo test --locked --test flow
+  full_width_dual_port_block_ram_routes_without_shared_resources -- --nocapture`.
+  The direct-I/O case still failed, including when combined with full reroute.
+  This unrelated change and its temporary test were discarded.
+- Allowing the C++ left-IO H6 escape arcs by bypassing the old local-arc filter:
+  the same flow test still failed. C++ data PIPs were also checked for graph
+  connectivity and occupancy; the BRAM data paths were connected and exclusive.
+  The filter experiment was discarded.
+- Sorting BRAM outputs by the number of source exits: the same flow test moved
+  failures to DOA5/DOA6 and BRAM inputs. This change was discarded.
+- Matching saturated output channels removed the BRAM output failures but left
+  input/address failures. Including the saturated data-input crossbar completed
+  both original designs. Only this endpoint-assignment repair is retained.
+
+### Final software validation
+
+- `cargo fmt --all -- --check`, `cargo check --locked --all-targets`, strict
+  Clippy, 270 unit tests and 18 flow tests passed (two existing unit tests remain
+  ignored). Both 16-bit cases are covered by the new flow regression.
+- Board probe Clippy and its four tests passed. All 22 existing RTL simulations
+  passed; the autonomous 256x16 RTL testbench also passed.
+- Fresh native release-binary implementation runs for both 16-bit cases passed
+  with seeds 1 and 2. All four runs converged with zero final overuse; the direct
+  case used two negotiation passes, the autonomous case used two/six passes.
+- Rebuilding the 2-bit and 8-bit cases produced bitstreams byte-identical to the
+  previously board-validated Rust 2.0.0 candidates. No hardware-library changes
+  or temporary route experiments are retained.
+
+Reproduce the primary regression with:
+
+```sh
+cargo test --locked --test flow \
+  full_width_dual_port_block_ram_routes_without_shared_resources
+```
+
+Reproduce the native 16-bit direct-I/O build with:
+
+```sh
+cargo build --locked --release
+target/release/fde impl \
+  --input examples/board-e2e/bram-dual16-check/bram-dual16-check.edf \
+  --constraints examples/board-e2e/bram-dual16-check/constraints.xml \
+  --resource-root resources/hw_lib --seed 1 --out-dir build/bram-dual16-fixed
+```
+
+Fresh 16-bit Rust hardware validation is still pending reconnection of the board.
+Successful routing and RTL simulation are not recorded as a live-board pass.

@@ -47,13 +47,17 @@ pub(super) fn neighbor_congestion_cost(
     neighbor: &RouteNode,
     local_arc: Option<usize>,
 ) -> NeighborCost {
-    if availability.tree_nodes.contains(neighbor) {
-        return NeighborCost::Free;
-    }
-
     let node_key = availability.stitched_components.occupancy_key(neighbor);
     let node = RouteResource::Node(node_key);
     let sink = RouteResource::Sink(*neighbor);
+
+    if availability.congestion.reserved_for_other(node) {
+        return NeighborCost::Blocked;
+    }
+
+    if availability.tree_nodes.contains(neighbor) {
+        return NeighborCost::Free;
+    }
 
     if availability.congestion.hard_block {
         if availability.congestion.blocked(node, None)

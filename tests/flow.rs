@@ -811,6 +811,37 @@ fn complex_external_resource_sidecar_contains_nontrivial_config_and_route_sectio
 }
 
 #[test]
+fn full_width_dual_port_block_ram_routes_without_shared_resources() {
+    let Some(resource_root) = external_resource_root() else {
+        return;
+    };
+    for name in ["bram-dual16-check", "bram-dual16-selftest"] {
+        let (_temp, out_dir) = temp_out(name);
+        let report = run_implementation(&ImplementationOptions {
+            input: fixture(&format!("examples/board-e2e/{name}/{name}.edf")),
+            constraints: Some(fixture(&format!(
+                "examples/board-e2e/{name}/constraints.xml"
+            ))),
+            resource_root: Some(resource_root.clone()),
+            out_dir,
+            seed: 1,
+            ..ImplementationOptions::default()
+        })
+        .expect("all 32 BRAM output bits and both input ports must route legally");
+        let json = report_json(&PathBuf::from(report.artifacts.get("report").unwrap()));
+        let route = json["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stage| stage["stage"] == "route")
+            .unwrap();
+        assert_eq!(route["metrics"]["final_overuse_count"], 0);
+        assert_eq!(route["metrics"]["negotiation_converged"], true);
+        assert!(report.artifacts.contains_key("bitstream"));
+    }
+}
+
+#[test]
 fn dual_port_block_ram_routes_and_programs_both_clocks() {
     use fde::ir::{Cell, Endpoint, Net, Port};
 
