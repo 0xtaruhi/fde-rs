@@ -109,7 +109,10 @@ setup arc counts as 0 ns, as in the legacy FDE engine. If the library has no
 block RAM clock-to-out arc, block RAM paths are still analyzed with an
 optimistic 0 ns launch so violations surface, but the status is capped at
 `PARTIALLY CONSTRAINED` and `FDE-STA-0005` is emitted. The JSON coverage
-object reports `block_ram_endpoints` and `unmodeled_block_ram_endpoints`.
+object reports capture coverage in `block_ram_endpoints` and
+`unmodeled_block_ram_endpoints`, and launch coverage in `block_ram_launch_pins`
+and `unmodeled_block_ram_launch_pins`. Missing timing on either side prevents
+sign-off, including ports that only launch paths.
 A block RAM port whose clock pin is unconnected is treated as unused.
 
 ## Exit codes

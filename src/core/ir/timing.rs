@@ -115,6 +115,10 @@ pub struct TimingCoverage {
     #[serde(default)]
     pub unmodeled_block_ram_endpoints: usize,
     #[serde(default)]
+    pub block_ram_launch_pins: usize,
+    #[serde(default)]
+    pub unmodeled_block_ram_launch_pins: usize,
+    #[serde(default)]
     pub fallback_arc_count: usize,
 }
 

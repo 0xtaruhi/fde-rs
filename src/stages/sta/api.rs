@@ -199,14 +199,15 @@ fn run_internal(
         < coverage.register_endpoints
         || coverage.constrained_primary_inputs < coverage.primary_inputs
         || coverage.constrained_primary_outputs < coverage.primary_outputs;
-    if coverage.unmodeled_block_ram_endpoints > 0 {
+    if coverage.unmodeled_block_ram_endpoints > 0 || coverage.unmodeled_block_ram_launch_pins > 0 {
         report.diagnostic(
             Diagnostic::warning(
                 "FDE-STA-0005",
                 format!(
-                    "{} block RAM endpoint(s) were analyzed without library timing arcs; \
+                    "{} block RAM capture endpoint(s) and {} launch pin(s) were analyzed without library timing arcs; \
                      block RAM paths cannot be signed off.",
-                    coverage.unmodeled_block_ram_endpoints
+                    coverage.unmodeled_block_ram_endpoints,
+                    coverage.unmodeled_block_ram_launch_pins
                 ),
             )
             .with_help(

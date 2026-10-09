@@ -59,7 +59,14 @@ pub(crate) fn format_timing_report(design: &Design, summary: &TimingSummary) -> 
                 clock.register_count
             ));
         }
-        if summary.constraint_status == TimingConstraintStatus::PartiallyConstrained {
+        let coverage = &summary.coverage;
+        let incomplete_constraint_coverage = coverage.constrained_register_endpoints
+            < coverage.register_endpoints
+            || coverage.constrained_primary_inputs < coverage.primary_inputs
+            || coverage.constrained_primary_outputs < coverage.primary_outputs;
+        if summary.constraint_status == TimingConstraintStatus::PartiallyConstrained
+            && incomplete_constraint_coverage
+        {
             report.push_str("WARNING [FDE-STA-0004] Timing analysis is partially constrained.\n");
             report.push_str(
                 "  help: constrain all synchronous data inputs and outputs with set_input_delay/set_output_delay.\n",
@@ -71,6 +78,14 @@ pub(crate) fn format_timing_report(design: &Design, summary: &TimingSummary) -> 
                 summary.setup.status.as_str()
             ));
         }
+    }
+
+    if summary.coverage.unmodeled_block_ram_endpoints > 0
+        || summary.coverage.unmodeled_block_ram_launch_pins > 0
+    {
+        report.push_str("WARNING [FDE-STA-0005] Block RAM paths lack library timing arcs and cannot be signed off.\n");
+        report
+            .push_str("  help: add block RAM clock-to-out timing arcs to the STA cell library.\n");
     }
 
     report.push_str("\nSetup Summary\n");
@@ -114,6 +129,14 @@ pub(crate) fn format_timing_report(design: &Design, summary: &TimingSummary) -> 
         report.push_str(&format!(
             "{:<24}: {} / {} with library timing\n",
             "Block RAM endpoints", modeled, summary.coverage.block_ram_endpoints
+        ));
+    }
+    if summary.coverage.block_ram_launch_pins > 0 {
+        let modeled = summary.coverage.block_ram_launch_pins
+            - summary.coverage.unmodeled_block_ram_launch_pins;
+        report.push_str(&format!(
+            "{:<24}: {} / {} with library timing\n",
+            "Block RAM launch pins", modeled, summary.coverage.block_ram_launch_pins
         ));
     }
     report.push_str(&format!(
