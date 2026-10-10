@@ -772,3 +772,35 @@ target/release/fde impl \
 
 Fresh 16-bit Rust hardware validation is still pending reconnection of the board.
 Successful routing and RTL simulation are not recorded as a live-board pass.
+
+### Hardware validation after reconnection
+
+The board was reconnected and the repaired Rust bitstreams were freshly
+programmed using the continuous P77 fabric clock and settled constant-input
+sampling. These live results supersede the pending-hardware state above.
+
+- Direct-I/O seed 1: 1408 input stages, 768 checked read stages, and 98304
+  settled A/B samples passed with zero mismatches. This covers full-depth
+  A-write/A+B-read, B-write/A+B-read, and simultaneous writes to distinct A/B
+  addresses followed by reads. The direct seed-2 image is byte-identical;
+  it was not programmed a second time.
+- Autonomous seeds 1 and 2: both fresh bitstreams passed their 68-stage
+  reset/run plans. Each final 128-sample window returned `done=1`, `pass=1`,
+  `fail=0` (masked result 5), with zero mismatches.
+- The programmer/probe reported `continuous_clock=true` and a 1024-word FIFO.
+  USB frames were used to hold inputs and sample settled outputs.
+
+Exact live commands from the repository root:
+
+```sh
+build/bram16-route-fix-20261010/run-fixed-bram16-board.sh
+build/board-bram-release-20261009/continuous/probe/target/release/bram-board-probe \
+  build/bram16-route-fix-20261010/dual16-selftest-seed2/06-output.bit \
+  build/board-bram-release-20261009/continuous/dual16-selftest/plan.json \
+  build/bram16-route-fix-20261010/dual16-selftest-seed2-board.jsonl
+```
+
+Raw JSONL traces, programmer logs, bitstream hashes, and checked-stage/sample
+counts are retained in `build/bram16-route-fix-20261010/`; the compact hardware
+summary is `board-validation-results.json`. The router code was unchanged
+between the passing six-platform CI head `a1e36f0` and these live tests.
