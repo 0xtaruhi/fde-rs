@@ -1,6 +1,23 @@
 # Board E2E
 
-This directory contains board-probed EDF regression cases for `fde-rs`.
+This directory contains implementation and board regression cases for `fde-rs`.
+
+`bram-dual16-check` and `bram-dual16-selftest` also serve as implementation
+regressions for full-width dual-port BRAM routing. They are exercised by
+`full_width_dual_port_block_ram_routes_without_shared_resources` in `tests/flow.rs`.
+The direct-I/O case exposes both 256x16 ports; the autonomous case checks the
+full memory through each port and simultaneous writes to different addresses.
+Their source RTL is retained in `tests/rtl/bram_dual16_*.v`. They are not in
+the waveform manifest: their hardware oracle requires a shared continuous P77
+clock and settled readback, as described in `docs/board-debug-history.md`.
+
+The autonomous RTL oracle can be reproduced with:
+
+```bash
+iverilog -g2012 -s tb -o /tmp/bram-dual16-selftest \
+  tests/rtl/bram_dual16_selftest.v tests/rtl/bram_dual16_selftest_tb.v
+vvp /tmp/bram-dual16-selftest
+```
 
 Each case lives in its own subdirectory with:
 

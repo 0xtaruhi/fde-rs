@@ -23,6 +23,53 @@ use crate::route::{
 };
 
 #[test]
+fn endpoint_reservations_survive_incremental_rip_up_and_legalization() {
+    let mut wires = WireInterner::default();
+    let track = RouteNode::new(5, 0, wires.intern("BRAM_RDOUTS0"));
+    let resource = RouteResource::Node(track);
+    let components = StitchedComponentDb::default();
+    let mut claims = ClaimIndex::new(2);
+    claims.reserve_endpoint(resource, 0);
+    reserve_route_path(
+        &components,
+        &mut claims,
+        0,
+        NetOrigin::Logical,
+        &[track],
+        &[],
+    );
+    claims.rip_up(0);
+    claims.clear();
+    assert_eq!(claims.overuse_count(), 0);
+    let history = HashMap::default();
+    let tree_nodes = std::iter::once(track).collect();
+    for hard_block in [false, true] {
+        for net_index in [0, 1] {
+            let congestion = NegotiationContext {
+                claims: &claims,
+                history: &history,
+                present_factor: 2,
+                net_index,
+                net_origin: NetOrigin::Logical,
+                hard_block,
+            };
+            let availability = super::super::policy::NeighborAvailability {
+                stitched_components: &components,
+                congestion: &congestion,
+                tree_nodes: &tree_nodes,
+            };
+            let cost =
+                super::super::policy::neighbor_congestion_cost(&availability, &track, &track, None);
+            if net_index == 0 {
+                assert!(matches!(cost, super::super::policy::NeighborCost::Free));
+            } else {
+                assert!(matches!(cost, super::super::policy::NeighborCost::Blocked));
+            }
+        }
+    }
+}
+
+#[test]
 fn ordered_guide_allows_long_span_progress_along_straight_runs() {
     let guide = OrderedGuide::new(&[
         (16, 31),

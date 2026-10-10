@@ -83,6 +83,9 @@ impl ResourceClaims {
 pub(super) struct ClaimIndex {
     by_resource: HashMap<RouteResource, ResourceClaims>,
     by_net: Vec<Vec<RouteResource>>,
+    // Endpoint assignments are immutable across negotiated rip-up and the
+    // final legalizing pass; they are not provisional route claims.
+    reserved: HashMap<RouteResource, usize>,
 }
 
 impl ClaimIndex {
@@ -90,7 +93,12 @@ impl ClaimIndex {
         Self {
             by_resource: HashMap::default(),
             by_net: vec![Vec::new(); net_count],
+            reserved: HashMap::default(),
         }
+    }
+
+    pub(super) fn reserve_endpoint(&mut self, resource: RouteResource, net_index: usize) {
+        self.reserved.insert(resource, net_index);
     }
 
     fn claim(&mut self, resource: RouteResource, claim: Claim) {
@@ -206,6 +214,13 @@ pub(super) struct NegotiationContext<'a> {
 }
 
 impl NegotiationContext<'_> {
+    pub(super) fn reserved_for_other(&self, resource: RouteResource) -> bool {
+        self.claims
+            .reserved
+            .get(&resource)
+            .is_some_and(|&owner| owner != self.net_index)
+    }
+
     fn claim(&self, from: Option<WireId>) -> Claim {
         Claim {
             net_index: self.net_index,

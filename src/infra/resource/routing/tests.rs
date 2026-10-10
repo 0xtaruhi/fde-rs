@@ -1,6 +1,7 @@
 use super::{
-    RouteNode, TileSide, WireInterner, build_stitched_components, clock_spine_neighbors,
-    load_site_route_defaults, load_site_route_graphs, load_tile_stitch_db, stitched_neighbors,
+    RouteNode, SiteRouteArc, SiteRouteGraph, TileSide, WireInterner, build_stitched_components,
+    clock_spine_neighbors, load_site_route_defaults, load_site_route_graphs, load_tile_stitch_db,
+    stitched_neighbors,
 };
 use crate::{
     cil::parse_cil_str,
@@ -8,6 +9,38 @@ use crate::{
 };
 use std::{collections::BTreeMap, fs};
 use tempfile::NamedTempFile;
+
+#[test]
+fn incoming_arcs_exclude_disabled_paths_and_other_targets() {
+    let mut wires = WireInterner::default();
+    let input = wires.intern("LEFT_I0");
+    let disabled = wires.intern("LEFT_H6E3_BUF");
+    let target = wires.intern("LEFT_O0");
+    let other = wires.intern("LEFT_O1");
+    let arcs = [(input, target), (disabled, target), (input, other)]
+        .into_iter()
+        .map(|(from, to)| SiteRouteArc {
+            from,
+            to,
+            basic_cell: String::new(),
+            bits: vec![],
+        })
+        .collect();
+    let mut adjacency = vec![smallvec::SmallVec::new(); wires.len()];
+    adjacency[input.index()] = smallvec::smallvec![0, 2];
+    let graph = SiteRouteGraph {
+        arcs,
+        adjacency,
+        default_bits: vec![],
+    };
+    assert_eq!(
+        graph
+            .incoming_arcs(target)
+            .map(|arc| arc.from)
+            .collect::<Vec<_>>(),
+        vec![input]
+    );
+}
 
 #[test]
 fn extracts_default_transmission_bits_from_arch_instances() {

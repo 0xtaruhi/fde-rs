@@ -185,6 +185,22 @@ fn route_device_design_internal(
     };
 
     let net_order = route_net_order(device, &index);
+    let escapes = super::escape::saturated_bram_escapes(&mut context, device, &index)?;
+    for &(exit, net_index) in &escapes {
+        state
+            .claims
+            .reserve_endpoint(occupancy::RouteResource::Node(exit), net_index);
+    }
+    if !escapes.is_empty() {
+        emit_stage_info(
+            reporter,
+            "route",
+            format!(
+                "reserved {} saturated block RAM endpoint channels",
+                escapes.len()
+            ),
+        );
+    }
     let routeable_net_total = net_order
         .iter()
         .filter(|&&net_index| should_route_device_net(&device.nets[net_index]))

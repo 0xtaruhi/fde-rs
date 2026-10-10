@@ -166,6 +166,15 @@ pub(crate) struct SiteRouteGraph {
 pub(crate) type SiteRouteGraphs = HashMap<String, SiteRouteGraph>;
 
 impl SiteRouteGraph {
+    /// Incoming paths must follow the same filtered adjacency as route expansion.
+    pub(crate) fn incoming_arcs(&self, wire: WireId) -> impl Iterator<Item = &SiteRouteArc> {
+        self.arcs
+            .iter()
+            .enumerate()
+            .filter(move |(index, arc)| arc.to == wire && self.adjacency(arc.from).contains(index))
+            .map(|(_, arc)| arc)
+    }
+
     pub(crate) fn adjacency(&self, wire: WireId) -> &[usize] {
         self.adjacency
             .get(wire.index())

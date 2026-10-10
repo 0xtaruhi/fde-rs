@@ -236,6 +236,9 @@ cargo run --bin fde -- bitgen --input build/04-routed.xml --output build/06-outp
 
 ## Releases
 
+Version 2.0.1 fixes full-width dual-port block RAM routing; see the
+[2.0.1 release notes](docs/release-2.0.1.md) for validation and scope.
+
 Version 2.0 includes Rust API changes, per-port block RAM timing, and expanded
 timing reports. See [the 2.0 migration guide](docs/migration-2.0.md) before
 upgrading a library consumer from 1.x.
