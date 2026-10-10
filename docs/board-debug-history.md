@@ -824,3 +824,10 @@ No hardware programming occurred while applying this follow-up.
 
 Cargo metadata is prepared for patch version 2.0.1; release-specific scope and
 validation are recorded in `docs/release-2.0.1.md`.
+
+The package dry run identified the existing yanked `chacha20 0.10.1` lockfile
+entry. Upstream 0.10.2 fixes SSE4.1 intrinsic use in the SSE2 RNG backend
+(see the linked changelog in the release notes). Only this dependency's version
+and checksum were updated. Locked all-target check, strict Clippy, 271 unit
+tests and 18 flow tests passed again. The original package warning is preserved
+in `build/bram16-route-fix-20261010/publish-2.0.1-dry-run-yanked.log`.

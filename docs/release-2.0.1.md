@@ -13,3 +13,7 @@ board-validated 2.0.0 baseline. Live hardware checks pass for all three distinct
 readback stages and full-depth autonomous self-tests with done/pass/fail 1/1/0.
 Commands, raw-artifact locations, and scope are recorded in
 `docs/board-debug-history.md`.
+
+The lockfile updates `chacha20` from the yanked 0.10.1 version to 0.10.2,
+which fixes SSE4.1 intrinsic use in its SSE2 RNG backend. See the
+[upstream changelog](https://github.com/RustCrypto/stream-ciphers/blob/master/chacha20/CHANGELOG.md).
