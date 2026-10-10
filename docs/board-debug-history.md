@@ -804,3 +804,23 @@ Raw JSONL traces, programmer logs, bitstream hashes, and checked-stage/sample
 counts are retained in `build/bram16-route-fix-20261010/`; the compact hardware
 summary is `board-validation-results.json`. The router code was unchanged
 between the passing six-platform CI head `a1e36f0` and these live tests.
+
+### Filtered incoming-path follow-up and 2.0.1 preparation
+
+Review identified that the input-candidate collector scanned raw `graph.arcs`,
+which also retains paths excluded from the graph's adjacency. This was verified
+against the graph loader and reproduced with a graph containing one enabled
+incoming path, one disabled incoming path, and one path to another target.
+`cargo test --locked incoming_arcs_exclude_disabled_paths_and_other_targets`
+failed before the filter (two sources instead of one), then passed afterward.
+
+`SiteRouteGraph::incoming_arcs` now exposes only incoming paths present in the
+same filtered adjacency used by route expansion; BRAM input assignments use
+that iterator. This internal helper does not change the public Rust API.
+Local fmt, locked all-target check, strict Clippy, 271 unit tests and 18 flow
+tests passed. Raw before/after logs are retained as
+`build/bram16-route-fix-20261010/review-guard-{before,after}.log`.
+No hardware programming occurred while applying this follow-up.
+
+Cargo metadata is prepared for patch version 2.0.1; release-specific scope and
+validation are recorded in `docs/release-2.0.1.md`.

@@ -90,11 +90,9 @@ pub(super) fn saturated_bram_escapes(
             for target in targets {
                 let node = RouteNode::new(sink.x, sink.y, target);
                 if let Some(graph) = context.tile_context(&node).and_then(|tile| tile.graph) {
-                    for arc in &graph.arcs {
-                        if arc.to == target {
-                            let entry = RouteNode::new(sink.x, sink.y, arc.from);
-                            exits.push(context.stitched_components.occupancy_key(&entry));
-                        }
+                    for arc in graph.incoming_arcs(target) {
+                        let entry = RouteNode::new(sink.x, sink.y, arc.from);
+                        exits.push(context.stitched_components.occupancy_key(&entry));
                     }
                 }
             }
